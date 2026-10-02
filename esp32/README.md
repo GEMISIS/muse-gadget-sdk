@@ -101,10 +101,22 @@ Run the last line in every new terminal you build from.
 
 ### 2. Build
 
-From this directory, set your SDK token, then build:
+From this directory, configure your SDK token:
 
 ```sh
 idf.py menuconfig   # ESP32 Device SDK > Muse Gadgets SDK token
+```
+
+For the ESP32-C5 DevKitC-1, also check your board's RGB LED color order before
+building. Under **ESP32 Device SDK**, **Addressable LED takes red first (RGB
+order)** (`CONFIG_HOMEHUB_LED_RGB_ORDER`) is enabled by default. Keep it enabled
+for an RGB LED, or disable it for a GRB LED, according to your board's
+specification. A mismatch swaps red and green, so a healthy connection can
+appear red. The separate, always-on red power LED is normal.
+
+Save the configuration, then build:
+
+```sh
 idf.py build
 ```
 
