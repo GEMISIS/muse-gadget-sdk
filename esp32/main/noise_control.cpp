@@ -1268,7 +1268,7 @@ static char *build_register_json(void) {
         int bits = led_status_display_bits();
         bool mono = bits == 1;
         bool epaper = bits == 1 || bits == 4;
-        char desc[1024];
+        char desc[1536];
         snprintf(desc, sizeof(desc),
                  "Download an image and draw it on the %dx%d %s. Takes a "
                  "baseline "
