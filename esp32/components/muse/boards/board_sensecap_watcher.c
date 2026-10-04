@@ -44,6 +44,7 @@
 #include "esp_lcd_spd2010.h"
 #include "esp_lcd_touch_spd2010.h"
 #include "esp_log.h"
+#include "esp_rom_gpio.h"
 #include "esp_lv_adapter.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
@@ -55,6 +56,7 @@
 #include "muse_board.h"
 #include "muse_lcd_bands.h"
 #include "muse_mem.h"
+#include "soc/spi_periph.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
 #include "camera.h"
@@ -87,6 +89,7 @@ static const char *TAG = "board";
 #define I2S_DOUT GPIO_NUM_16
 #define ES7243_ADDR 0x13       /* 7-bit; newer units have an ES7243E at 0x14 */
 #define ES7243E_ADDR 0x14
+#define AMP_ON_MS 20           /* the speaker amp starting up before the first sound */
 
 #define KNOB_A GPIO_NUM_41
 #define KNOB_B GPIO_NUM_42
@@ -534,13 +537,73 @@ static void panel_sleep(bool sleep)
 }
 
 /*
+ * The LCD rail is off while paused. Idle, the SPI holds the clock (mode 3) and
+ * CS high, which would feed the unpowered panel, so the lines go to plain
+ * GPIOs driven low first, as init() holds them before the rail is up.
+ */
+static void lcd_bus(void *spi)
+{
+    const spi_signal_conn_t *sig = &spi_periph_signal[LCD_HOST];
+    const struct {
+        gpio_num_t pin;
+        int in, out;
+    } lines[] = {
+        { LCD_PCLK, -1, sig->spiclk_out },
+        { LCD_D0, sig->spid_in, sig->spid_out },
+        { LCD_D1, sig->spiq_in, sig->spiq_out },
+        { LCD_D2, sig->spiwp_in, sig->spiwp_out },
+        { LCD_D3, sig->spihd_in, sig->spihd_out },
+        { LCD_CS, -1, sig->spics_out[0] },
+    };
+    for (int i = 0; i < sizeof(lines) / sizeof(lines[0]); i++) {
+        if (*(bool *)spi) {
+            gpio_set_direction(lines[i].pin, lines[i].in >= 0 ? GPIO_MODE_INPUT_OUTPUT : GPIO_MODE_OUTPUT);
+            if (lines[i].in >= 0) {
+                esp_rom_gpio_connect_in_signal(lines[i].pin, lines[i].in, false);
+            }
+            esp_rom_gpio_connect_out_signal(lines[i].pin, lines[i].out, false, false);
+        } else {
+            gpio_set_level(lines[i].pin, 0);
+            gpio_set_direction(lines[i].pin, GPIO_MODE_OUTPUT);
+        }
+    }
+}
+
+/* Powered again, the panel has lost its setup and what it showed. Its reset
+ * line follows the chip's, so a software reset. */
+static void panel_setup(void *arg)
+{
+    bool spi = true;
+    lcd_bus(&spi);
+    esp_lcd_panel_reset(s_panel);
+    esp_lcd_panel_init(s_panel);   /* ends with SLPOUT */
+    esp_lcd_panel_disp_on_off(s_panel, true);
+}
+
+static void lcd_power(bool on)
+{
+    if (!on) {
+        bool spi = false;
+        muse_lcd_bands_run(lcd_bus, &spi);
+        exp_set(EXP_PWR_LCD, false);
+        ESP_LOGI(TAG, "LCD rail off");
+        return;
+    }
+    exp_set(EXP_PWR_LCD, true);
+    vTaskDelay(pdMS_TO_TICKS(50));   /* as init() waits for its rails */
+    muse_lcd_bands_run(panel_setup, NULL);
+    ESP_LOGI(TAG, "LCD rail on, panel set up");
+}
+
+/*
  * Screen off: LVGL stops and the chip light-sleeps in wait_buttons(). PCNT has
  * to stop too: it holds the APB clock up, and light sleep would stop it
  * anyway. Instead each wheel line wakes the chip, and interrupts, at the level
- * it isn't at now. The panel sleeps: left scanning with its backlight off, its
- * touch interrupt reached the expander about six times a second, and each one
- * woke the chip. Touch doesn't wake it while paused, so nothing is lost; the
- * touch driver restarts the controller on its first read after.
+ * it isn't at now. The panel sleeps, then loses its rail: left scanning with
+ * its backlight off, its touch interrupt reached the expander about six times
+ * a second, and each one woke the chip. Touch doesn't wake it while paused, so
+ * nothing is lost; the touch driver restarts the controller on its first read
+ * after. LVGL redraws the whole screen on resume, since the panel forgot it.
  */
 static void display_pause(bool pause)
 {
@@ -550,6 +613,7 @@ static void display_pause(bool pause)
         s_waiter = xTaskGetCurrentTaskHandle();   /* the input task, before a line can fire */
         esp_lv_adapter_pause(-1);
         panel_sleep(true);
+        lcd_power(false);
         pcnt_unit_stop(s_knob);
         pcnt_unit_disable(s_knob);
         s_wheel_moved = false;
@@ -568,9 +632,13 @@ static void display_pause(bool pause)
         pcnt_unit_enable(s_knob);
         pcnt_unit_clear_count(s_knob);
         pcnt_unit_start(s_knob);
-        panel_sleep(false);
+        lcd_power(true);
         xTaskNotifyGive(s_tp_task);
         esp_lv_adapter_resume();
+        if (esp_lv_adapter_lock(-1) == ESP_OK) {
+            lv_obj_invalidate(lv_screen_active());
+            esp_lv_adapter_unlock();
+        }
     }
 }
 
@@ -583,6 +651,19 @@ static void set_brightness(int pct)
 {
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, pct * 1023 / 100);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+}
+
+/*
+ * EXP_PWR_CODEC_PA is the speaker amp's enable. The amp runs straight from the
+ * battery, so left enabled while resting it idles all night. The codecs have
+ * a rail of their own, always on, and keep their setup.
+ */
+static void audio_power(bool on)
+{
+    exp_set(EXP_PWR_CODEC_PA, on);
+    if (on) {
+        vTaskDelay(pdMS_TO_TICKS(AMP_ON_MS));
+    }
 }
 
 /* ES8311 plays and a separate ES7243(E) ADC records, on one duplex I2S bus with MCLK. */
@@ -812,6 +893,7 @@ static const muse_board_t s_board = {
     .set_brightness = set_brightness,
     .display_pause = display_pause,
     .audio_init = audio_init,
+    .audio_power = audio_power,
     .mic_slot = 1,              /* one mic, on the right slot */
     .poll_buttons = poll_buttons,
     .wait_buttons = wait_buttons,

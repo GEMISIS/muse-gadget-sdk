@@ -28,6 +28,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "nvs.h"
 #include "sdkconfig.h"
 #if CONFIG_PM_ENABLE
 #include "esp_pm.h"
@@ -84,9 +85,12 @@ typedef struct {
  * SAVE_MS, from a battery reading the input task takes anyway, so it never
  * wakes the chip. Plugging back in resets some boards once their port opens,
  * and a board can crash on battery; either way the next boot reports the last
- * one saved.
+ * one saved. The USB-back and periodic saves also go to flash, for a battery
+ * that runs flat. The one at the start doesn't, or each boot on battery would
+ * replace the run with an empty one.
  */
 #define SAVE_MS (30 * 60 * 1000)
+#define NVS_NS "muse_battery"
 #define SAVED_MAGIC 0x4d424154   /* "MBAT" */
 #if CONFIG_PM_PROFILING
 #define SAVED_MAX 2048           /* two dozen power locks */
@@ -102,6 +106,9 @@ typedef struct {
 static RTC_NOINIT_ATTR saved_t s_saved;
 static char *s_prev;             /* the one saved before this boot, until power.reset */
 static int64_t s_saved_us;
+static nvs_handle_t s_nvs;
+static uint16_t s_boots;         /* runs started at boot on battery since USB power was last seen, in flash */
+static bool s_seen_usb;          /* on USB power at some point since boot (">nap" included) */
 
 static SemaphoreHandle_t s_lock;
 static snap_t *s_start, *s_end, *s_now;   /* s_end once stopped; s_now for reads while running */
@@ -233,10 +240,15 @@ static void accrue(int64_t now)
     s_last_us = now;
 }
 
-static void persist(void);
+static void persist(bool flash);
 
 static void start(void)
 {
+    s_boots = s_seen_usb ? 0 : s_boots + 1;
+    if (s_nvs) {
+        nvs_set_u16(s_nvs, "boots", s_boots);
+        nvs_commit(s_nvs);
+    }
     snap(s_start);
     s_started = s_running = true;
     s_pct_start = s_pct_now = s_power.battery_pct;
@@ -244,7 +256,7 @@ static void start(void)
     s_off_us = s_rest_us = 0;
     s_last_us = s_start->at_us;
     ESP_LOGI(TAG, "on battery at %d%% (%d mV): measuring", s_pct_start, s_mv_start);
-    persist();
+    persist(false);
 }
 
 static void stop(void)
@@ -255,7 +267,7 @@ static void stop(void)
     ESP_LOGI(TAG, "USB back after %lld s on battery: %d%% -> %d%% (%d -> %d mV)",
              (long long)((s_end->at_us - s_start->at_us) / 1000000), s_pct_start, s_pct_now,
              s_mv_start, s_mv_now);
-    persist();
+    persist(true);
 }
 
 /* Brings a running measurement up to now; returns its end. */
@@ -350,9 +362,21 @@ static uint32_t checksum(const char *p, size_t n)
 void muse_battery_init(void)
 {
     s_lock = xSemaphoreCreateMutex();
+    if (nvs_open(NVS_NS, NVS_READWRITE, &s_nvs) != ESP_OK) {
+        s_nvs = 0;
+    } else {
+        nvs_get_u16(s_nvs, "boots", &s_boots);
+    }
+    size_t n = SAVED_MAX;
     if (s_saved.magic == SAVED_MAGIC && s_saved.len < SAVED_MAX && s_saved.sum == checksum(s_saved.json, s_saved.len)) {
         s_prev = alloc(s_saved.len + 1);
         memcpy(s_prev, s_saved.json, s_saved.len);
+    } else if (s_nvs && nvs_get_blob(s_nvs, "run", NULL, &n) == ESP_OK && n < SAVED_MAX) {
+        s_prev = alloc(n + 1);
+        nvs_get_blob(s_nvs, "run", s_prev, &n);
+        s_prev[n] = '\0';
+    }
+    if (s_prev) {
         /* Also unasked: a board whose USB is a UART bridge (the Watcher) takes no commands. */
         printf("@power.saved %s\n", s_prev);
     }
@@ -375,6 +399,7 @@ void muse_battery_note_power(const muse_power_t *p, bool on_battery)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_power = *p;
+    s_seen_usb |= p->usb;
     if (on_battery && !s_running) {
         start();
     } else if (!on_battery && s_running) {
@@ -384,7 +409,7 @@ void muse_battery_note_power(const muse_power_t *p, bool on_battery)
         s_pct_now = p->battery_pct;
         s_mv_now = p->battery_mv;
         if (esp_timer_get_time() - s_saved_us >= SAVE_MS * 1000LL) {
-            persist();
+            persist(true);
         }
     }
     xSemaphoreGive(s_lock);
@@ -408,6 +433,10 @@ void muse_battery_reset(void)
     free(s_prev);
     s_prev = NULL;
     s_saved.magic = 0;
+    if (s_nvs) {
+        nvs_erase_key(s_nvs, "run");
+        nvs_commit(s_nvs);
+    }
     if (s_running) {
         start();
     } else {
@@ -480,10 +509,10 @@ static int json(char *buf, size_t cap)
     summarize(end, &m);
     /* How this boot began and how long ago: a panic or brownout on battery shows here. */
     add(buf, cap, &len,
-        "{\"boot\":\"%s\",\"uptime\":%lld,"
+        "{\"boot\":\"%s\",\"uptime\":%lld,\"battery_boots\":%u,"
         "\"started\":%s,\"running\":%s,\"secs\":%lld,\"battery_pct\":[%d,%d],\"battery_mv\":[%d,%d],"
         "\"screen_off\":%s,\"resting\":%s,\"slept\":%s,\"sleeps\":%lu,\"busy\":%s",
-        reset_name(esp_reset_reason()), (long long)(esp_timer_get_time() / 1000000),
+        reset_name(esp_reset_reason()), (long long)(esp_timer_get_time() / 1000000), s_boots,
         m.started ? "true" : "false", m.running ? "true" : "false", (long long)m.secs, m.pct_start, m.pct_now,
         m.mv_start, m.mv_now, pct(a, m.screen_off_pm), pct(b, m.resting_pm), pct(c, m.slept_pm),
         (unsigned long)m.sleeps, pct(d, m.busy_pm));
@@ -510,12 +539,16 @@ static int json(char *buf, size_t cap)
 }
 
 /* With s_lock held. Written in place: a reset partway leaves a bad checksum. */
-static void persist(void)
+static void persist(bool flash)
 {
     s_saved.len = json(s_saved.json, sizeof(s_saved.json));
     s_saved.sum = checksum(s_saved.json, s_saved.len);
     s_saved.magic = SAVED_MAGIC;
     s_saved_us = esp_timer_get_time();
+    if (flash && s_nvs && s_saved.len < SAVED_MAX) {
+        nvs_set_blob(s_nvs, "run", s_saved.json, s_saved.len);
+        nvs_commit(s_nvs);
+    }
 }
 
 int muse_battery_json(char *buf, size_t cap)

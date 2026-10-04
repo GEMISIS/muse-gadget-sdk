@@ -85,6 +85,9 @@ void muse_audio_power(bool on)
     esp_log_level_t lvl = esp_log_level_get("i2s_common");
     esp_log_level_set("i2s_common", ESP_LOG_NONE);
     if (on) {
+        if (muse_board->audio_power) {
+            muse_board->audio_power(true);
+        }
         if (open_codecs() == ESP_OK) {
             muse_audio_set_volume(muse_settings_volume());
             muse_audio_set_mic_gain(muse_settings_mic_gain());
@@ -93,6 +96,9 @@ void muse_audio_power(bool on)
         esp_codec_dev_close(s_spk);
         esp_codec_dev_close(s_mic);
         s_open = false;
+        if (muse_board->audio_power) {
+            muse_board->audio_power(false);
+        }
     }
     esp_log_level_set("i2s_common", lvl);
 }
