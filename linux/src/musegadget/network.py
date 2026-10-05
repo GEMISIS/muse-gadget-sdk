@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import socket
 import subprocess
@@ -48,9 +49,11 @@ def _ssid_from_nmcli() -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     for line in out.splitlines():
+        # ACTIVE is yes or no, so the first colon ends it. In terse mode nmcli
+        # escapes the SSID's colons and backslashes with a backslash.
         active, _, ssid = line.partition(":")
         if active == "yes" and ssid:
-            return ssid.replace("\\:", ":")
+            return re.sub(r"\\(.)", r"\1", ssid)
     return None
 
 
@@ -63,6 +66,28 @@ def _wireless_interfaces() -> list[str]:
         )
     except OSError:
         return []
+
+
+_WPA_ESCAPE = re.compile(r'\\(x[0-9a-fA-F]{2}|[\\"enrt])')
+_WPA_SIMPLE = {"\\": 0x5C, '"': 0x22, "e": 0x1B, "n": 0x0A, "r": 0x0D, "t": 0x09}
+
+
+def _wpa_unescape(text: str) -> str:
+    """An SSID as wpa_cli prints it, decoded.
+
+    wpa_supplicant's printf_encode() writes the SSID's bytes as \\xNN, except
+    printable ASCII, and \\", \\\\, \\e, \\n, \\r and \\t. SSIDs are bytes,
+    nearly always UTF-8; others get replacement characters.
+    """
+    raw = bytearray()
+    pos = 0
+    for m in _WPA_ESCAPE.finditer(text):
+        raw += text[pos:m.start()].encode()
+        esc = m.group(1)
+        raw.append(int(esc[1:], 16) if esc[0] == "x" else _WPA_SIMPLE[esc])
+        pos = m.end()
+    raw += text[pos:].encode()
+    return raw.decode("utf-8", errors="replace")
 
 
 def _ssid_from_wpa_cli() -> str | None:
@@ -88,7 +113,8 @@ def _ssid_from_wpa_cli() -> str | None:
             if key == "wpa_state":
                 state = value.strip()
             elif key == "ssid":
-                ssid = value.strip()
+                # Not stripped: an SSID can start or end with a space.
+                ssid = _wpa_unescape(value)
         if ssid and state == "COMPLETED":
             return ssid
     return None

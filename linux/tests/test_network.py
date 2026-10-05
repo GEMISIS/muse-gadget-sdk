@@ -95,6 +95,37 @@ def test_wpa_cli_reads_the_ssid_of_an_associated_interface(monkeypatch):
     assert network._ssid_from_wpa_cli() == "Example Net"
 
 
+def test_wpa_cli_decodes_an_escaped_ssid(monkeypatch):
+    monkeypatch.setattr(network.shutil, "which", lambda name: "/usr/sbin/wpa_cli")
+    monkeypatch.setattr(network, "_wireless_interfaces", lambda: ["wlan0"])
+    monkeypatch.setattr(
+        network.subprocess, "run",
+        _fake_run("wpa_state=COMPLETED\nssid=\\xf0\\x9f\\x8f\\xa0 Caf\\xc3\\xa9 \n"),
+    )
+    assert network._ssid_from_wpa_cli() == "\U0001f3e0 Café "
+
+
+def test_wpa_unescape():
+    for printed, ssid in (
+        ("Example Net", "Example Net"),
+        ("Caf\\xc3\\xa9", "Café"),
+        ('a\\\\b\\"c', 'a\\b"c'),
+        ("\\\\x41", "\\x41"),
+        ("tab\\there", "tab\there"),
+        ("bad\\xzz", "bad\\xzz"),
+        ("Latin-1 \\xe9", "Latin-1 �"),
+    ):
+        assert network._wpa_unescape(printed) == ssid
+
+
+def test_nmcli_unescapes_colons_and_backslashes(monkeypatch):
+    monkeypatch.setattr(network.shutil, "which", lambda name: "/usr/bin/nmcli")
+    monkeypatch.setattr(
+        network.subprocess, "run", _fake_run("no:Other\nyes:My\\:Net\\\\5G\n")
+    )
+    assert network._ssid_from_nmcli() == "My:Net\\5G"
+
+
 def test_wpa_cli_ignores_an_interface_that_is_not_associated(monkeypatch):
     monkeypatch.setattr(network.shutil, "which", lambda name: "/usr/sbin/wpa_cli")
     monkeypatch.setattr(network, "_wireless_interfaces", lambda: ["wlan0"])
