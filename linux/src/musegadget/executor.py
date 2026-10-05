@@ -42,6 +42,8 @@ DEFAULT_TIMEOUT_S = 120
 MAX_TIMEOUT_S = 600
 # How long to wait for output after killing a timed-out command's process group.
 KILL_GRACE_S = 2
+# How long to keep reading queued output after the shell exits.
+DRAIN_S = 0.5
 # /link-control accepts at most 256 KiB per message from the device; leave
 # room for the JSON envelope and escaping.
 MAX_OUTPUT_BYTES = 96 * 1024
@@ -220,9 +222,11 @@ class Executor:
             return error(proc.stderr.decode(errors="replace")[-2000:] or "file operation failed")
 
 
-def _read_available(pipe) -> tuple[bytes, bool]:
+def _read_available(pipe, deadline: float) -> tuple[bytes, bool]:
+    # Stop at the deadline too: a writer that outpaces the reads would
+    # otherwise keep this loop from ever seeing an empty pipe.
     chunks = []
-    while True:
+    while time.monotonic() < deadline:
         try:
             chunk = pipe.read(65536)
         except BlockingIOError:
@@ -232,6 +236,7 @@ def _read_available(pipe) -> tuple[bytes, bool]:
         if chunk == b"":
             return b"".join(chunks), False
         chunks.append(chunk)
+    return b"".join(chunks), True
 
 
 def _wait_for_shell(proc, timeout_s: float) -> tuple[bool, bytes, bytes]:
@@ -254,15 +259,16 @@ def _wait_for_shell(proc, timeout_s: float) -> tuple[bool, bytes, bytes]:
             continue
         ready, _, _ = select.select(watching, [], [], min(remaining, 0.05))
         for pipe in ready:
-            data, still_open = _read_available(pipe)
+            data, still_open = _read_available(pipe, deadline)
             if data:
                 streams[pipe].append(data)
             if not still_open:
                 watching.remove(pipe)
+    drain_deadline = time.monotonic() + DRAIN_S
     for pipe in streams:
         if pipe.closed:
             continue
-        data, _ = _read_available(pipe)
+        data, _ = _read_available(pipe, drain_deadline)
         if data:
             streams[pipe].append(data)
     return False, _joined(streams, proc.stdout), _joined(streams, proc.stderr)
