@@ -77,6 +77,7 @@ static const char *TAG = "board";
 #define LCD_BL GPIO_NUM_8
 #define DRAW_BUF_LINES 104      /* four bands to the screen (muse_lcd_bands.h) */
 #define LCD_CHUNK_BYTES (LCD_RES * 8 * 2)
+#define LCD_POWER_UP_MS 200   /* the LCD rail on before the panel's setup (lcd_power) */
 
 #define TP_SDA GPIO_NUM_39     /* touch has its own I2C bus */
 #define TP_SCL GPIO_NUM_38
@@ -570,15 +571,27 @@ static void lcd_bus(void *spi)
     }
 }
 
-/* Powered again, the panel has lost its setup and what it showed. Its reset
- * line follows the chip's, so a software reset. */
+/*
+ * Powered again, the panel has lost its setup and what it showed. Its reset
+ * line follows the chip's, so a software reset. Its memory comes up random,
+ * and the backlight goes on before LVGL's redraw has reached the panel, so it
+ * is cleared to black first. Runs on the send task between bands, so its
+ * chunk buffers are idle; the clearing takes a buffer of its own for a moment.
+ */
 static void panel_setup(void *arg)
 {
     bool spi = true;
     lcd_bus(&spi);
     esp_lcd_panel_reset(s_panel);
     esp_lcd_panel_init(s_panel);   /* ends with SLPOUT */
-    esp_lcd_panel_disp_on_off(s_panel, true);
+    uint8_t *black = heap_caps_calloc(1, LCD_CHUNK_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (black) {
+        for (int y = 0; y < LCD_RES; y += 8) {
+            esp_lcd_panel_draw_bitmap(s_panel, 0, y, LCD_RES, y + 8 < LCD_RES ? y + 8 : LCD_RES, black);
+        }
+    }
+    esp_lcd_panel_disp_on_off(s_panel, true);   /* waits for the queued draws first */
+    free(black);
 }
 
 /*
@@ -623,7 +636,10 @@ static void lcd_power(bool on)
         return;
     }
     exp_set(EXP_PWR_LCD, true);
-    vTaskDelay(pdMS_TO_TICKS(50));   /* as init() waits for its rails */
+    /* The SPD2010 runs firmware of its own, which takes a while to start: at
+     * boot ~150 ms pass between the rail and its setup, and after only 50 ms
+     * some of the setup was lost and the panel showed garbage. */
+    vTaskDelay(pdMS_TO_TICKS(LCD_POWER_UP_MS));
     tp_bus(true);
     muse_lcd_bands_run(panel_setup, NULL);
     ESP_LOGI(TAG, "LCD rail on, panel set up");
