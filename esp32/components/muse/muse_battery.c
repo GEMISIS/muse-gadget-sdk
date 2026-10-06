@@ -107,8 +107,9 @@ static RTC_NOINIT_ATTR saved_t s_saved;
 static char *s_prev;             /* the one saved before this boot, until power.reset */
 static int64_t s_saved_us;
 static nvs_handle_t s_nvs;
-static uint16_t s_boots;         /* runs started at boot on battery since USB power was last seen, in flash */
+static uint16_t s_boots;         /* boots on battery since USB power was last seen, in flash */
 static bool s_seen_usb;          /* on USB power at some point since boot (">nap" included) */
+static bool s_counted;           /* this boot is in s_boots */
 
 static SemaphoreHandle_t s_lock;
 static snap_t *s_start, *s_end, *s_now;   /* s_end once stopped; s_now for reads while running */
@@ -242,13 +243,17 @@ static void accrue(int64_t now)
 
 static void persist(bool flash);
 
-static void start(void)
+static void save_boots(uint16_t n)
 {
-    s_boots = s_seen_usb ? 0 : s_boots + 1;
+    s_boots = n;
     if (s_nvs) {
-        nvs_set_u16(s_nvs, "boots", s_boots);
+        nvs_set_u16(s_nvs, "boots", n);
         nvs_commit(s_nvs);
     }
+}
+
+static void start(void)
+{
     snap(s_start);
     s_started = s_running = true;
     s_pct_start = s_pct_now = s_power.battery_pct;
@@ -399,8 +404,19 @@ void muse_battery_note_power(const muse_power_t *p, bool on_battery)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_power = *p;
-    s_seen_usb |= p->usb;
+    if (p->usb && !s_seen_usb) {
+        s_seen_usb = true;
+        if (s_boots) {
+            save_boots(0);   /* charged: a later power-on from battery counts from 1 */
+        }
+    }
     if (on_battery && !s_running) {
+        /* Once a boot, and only one that began on battery: a run started
+         * after unplugging, or by power.reset, isn't a boot. */
+        if (!s_seen_usb && !s_counted) {
+            s_counted = true;
+            save_boots(s_boots + 1);
+        }
         start();
     } else if (!on_battery && s_running) {
         stop();

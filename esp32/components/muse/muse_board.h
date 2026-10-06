@@ -86,8 +86,8 @@ typedef struct {
     esp_err_t (*audio_init)(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t *mic);
     int mic_slot;           /* slot carrying the mic (0/1), or -1 to mix both */
     void (*set_mic_gain)(esp_codec_dev_handle_t mic, int db);   /* NULL: esp_codec_dev_set_in_gain */
-    /* Audio power the board can switch, such as an amp's enable: off once
-     * the codecs are closed to rest, on before they open. NULL: none. */
+    /* Audio power the board can switch, such as an amp's enable: on once
+     * the codecs are open, off before they close to rest. NULL: none. */
     void (*audio_power)(bool on);
 
     /* Called every 10 ms from the input task (50 ms while the display is

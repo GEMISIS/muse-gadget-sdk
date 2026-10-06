@@ -56,6 +56,7 @@
 #include "muse_board.h"
 #include "muse_lcd_bands.h"
 #include "muse_mem.h"
+#include "hal/i2c_periph.h"
 #include "soc/spi_periph.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
@@ -580,17 +581,50 @@ static void panel_setup(void *arg)
     esp_lcd_panel_disp_on_off(s_panel, true);
 }
 
+/*
+ * The touch controller shares the rail, and its bus's pull-ups would feed it
+ * too, so its lines are held low as well, as init() holds them. The touch task
+ * is parked while paused. The I2C peripheral sees an idle (high) bus meanwhile.
+ */
+static void tp_bus(bool on)
+{
+    const i2c_signal_conn_t *sig = &i2c_periph_signal[I2C_NUM_1];
+    const struct {
+        gpio_num_t pin;
+        int in, out;
+    } lines[] = {
+        { TP_SDA, sig->sda_in_sig, sig->sda_out_sig },
+        { TP_SCL, sig->scl_in_sig, sig->scl_out_sig },
+    };
+    for (int i = 0; i < 2; i++) {
+        if (on) {
+            gpio_set_level(lines[i].pin, 1);
+            gpio_set_direction(lines[i].pin, GPIO_MODE_INPUT_OUTPUT_OD);
+            gpio_pullup_en(lines[i].pin);
+            esp_rom_gpio_connect_out_signal(lines[i].pin, lines[i].out, false, false);
+            esp_rom_gpio_connect_in_signal(lines[i].pin, lines[i].in, false);
+        } else {
+            esp_rom_gpio_connect_in_signal(GPIO_MATRIX_CONST_ONE_INPUT, lines[i].in, false);
+            gpio_pullup_dis(lines[i].pin);
+            gpio_set_level(lines[i].pin, 0);
+            gpio_set_direction(lines[i].pin, GPIO_MODE_OUTPUT);
+        }
+    }
+}
+
 static void lcd_power(bool on)
 {
     if (!on) {
         bool spi = false;
         muse_lcd_bands_run(lcd_bus, &spi);
+        tp_bus(false);
         exp_set(EXP_PWR_LCD, false);
         ESP_LOGI(TAG, "LCD rail off");
         return;
     }
     exp_set(EXP_PWR_LCD, true);
     vTaskDelay(pdMS_TO_TICKS(50));   /* as init() waits for its rails */
+    tp_bus(true);
     muse_lcd_bands_run(panel_setup, NULL);
     ESP_LOGI(TAG, "LCD rail on, panel set up");
 }

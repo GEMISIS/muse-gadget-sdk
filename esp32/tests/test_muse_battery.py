@@ -283,6 +283,27 @@ class BatteryTest(unittest.TestCase):
         self.assertIn("Booted 2 times on battery since USB power was last seen.", text)
         self.assertNotIn("Booted", power.report({**first, "secs": 600, "uptime": 603}))
 
+    def test_boots_not_counted_by_reset(self) -> None:
+        flash = str(Path(self.tmp.name) / "flash")
+        Path(flash).unlink(missing_ok=True)
+        # power.reset restarts the run, but it isn't a boot.
+        reset, = self.run_harness(f"flash {flash}", "t 3000000", START, "p 0 50 3900", "x", "x", "j")
+        self.assertEqual(reset["battery_boots"], 1)
+        again, = self.run_harness(f"flash {flash}", "t 3000000", START, "p 0 50 3900", "j")
+        self.assertEqual(again["battery_boots"], 2)
+
+    def test_boots_cleared_when_usb_is_seen(self) -> None:
+        flash = str(Path(self.tmp.name) / "flash")
+        Path(flash).unlink(missing_ok=True)
+        on_battery = ("t 3000000", START, "p 0 50 3900", "j")
+        self.run_harness(f"flash {flash}", *on_battery)
+        self.run_harness(f"flash {flash}", *on_battery)
+        # Charged on USB and switched off without unplugging: no run starts, but the count clears.
+        charged, = self.run_harness(f"flash {flash}", "p 1 80 4100", "j")
+        self.assertEqual(charged["battery_boots"], 0)
+        woke, = self.run_harness(f"flash {flash}", *on_battery)
+        self.assertEqual(woke["battery_boots"], 1)
+
     def test_report_reads_the_json(self) -> None:
         j, = self.measure("j")
         text = power.report(j)
