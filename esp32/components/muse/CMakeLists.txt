@@ -34,6 +34,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_input.c"
         "muse_menu.c"
         "muse_power_menu.c"
+        "muse_gadget_mode.c"
         "muse_voice.c"
         "muse_adpcm.c"
         "muse_settings.c"

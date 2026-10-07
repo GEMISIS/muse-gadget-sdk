@@ -39,6 +39,10 @@ static struct {
     uint16_t sleep_s;
     bool wifi_on;
     bool ble_on;
+    uint8_t gadget_mode;
+    bool mode_override;
+    uint32_t override_until;
+    char home_ssid[MUSE_SSID_MAX + 1];
     char ssid[MUSE_SSID_MAX + 1];
     char pass[MUSE_PASS_MAX + 1];
     char host[MUSE_HOST_MAX + 1];
@@ -127,6 +131,12 @@ esp_err_t muse_settings_init(void)
     if (nvs_get_u8(s_nvs, "ble_on", &b) == ESP_OK) {
         s.ble_on = b;
     }
+    load_u8("gmode", &s.gadget_mode);
+    if (nvs_get_u8(s_nvs, "gmode_ovr", &b) == ESP_OK) {
+        s.mode_override = b;
+    }
+    nvs_get_u32(s_nvs, "gmode_until", &s.override_until);
+    load_str("home_ssid", s.home_ssid, sizeof(s.home_ssid));
     load_str("ssid", s.ssid, sizeof(s.ssid));
     load_str("pass", s.pass, sizeof(s.pass));
     load_str("host", s.host, sizeof(s.host));
@@ -136,6 +146,7 @@ esp_err_t muse_settings_init(void)
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
     s.brightness = clampi(s.brightness, 10, 100);
+    s.gadget_mode = clampi(s.gadget_mode, 0, 2);
     ESP_LOGI(TAG, "vol %d%s, mic %d dB, bright %d, sleep %ds, wifi %s (%s), ble %s, muse %s",
              s.volume, s.speaker_on ? "" : " (speaker off)", s.mic_gain, s.brightness, s.sleep_s, s.wifi_on ? "on" : "off",
              "network saved by Link", s.ble_on ? "on" : "off", s.token[0] ? "token set" : "no token");
@@ -154,6 +165,24 @@ int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
 bool muse_settings_wifi_on(void) { return s.wifi_on; }
 bool muse_settings_ble_on(void) { return s.ble_on; }
+int muse_settings_gadget_mode(void) { return s.gadget_mode; }
+
+bool muse_settings_mode_override(uint32_t *until)
+{
+    bool on = false;
+    LOCKED({
+        on = s.mode_override;
+        if (until) {
+            *until = s.override_until;
+        }
+    });
+    return on;
+}
+
+void muse_settings_home_ssid(char out[MUSE_SSID_MAX + 1])
+{
+    LOCKED(strlcpy(out, s.home_ssid, MUSE_SSID_MAX + 1));
+}
 
 /* Home Link owns the saved networks (this is the first); the local copy is only a fallback. */
 void muse_settings_wifi(char ssid[MUSE_SSID_MAX + 1], char pass[MUSE_PASS_MAX + 1])
@@ -239,6 +268,35 @@ void muse_settings_set_ble_on(bool on)
     s.ble_on = on;
     save_u8("ble_on", on);
     notify(MUSE_SETTING_BLE);
+}
+
+void muse_settings_set_gadget_mode(int mode)
+{
+    s.gadget_mode = clampi(mode, 0, 2);
+    save_u8("gmode", s.gadget_mode);
+    notify(MUSE_SETTING_GADGET_MODE);
+}
+
+void muse_settings_set_mode_override(bool on, uint32_t until)
+{
+    LOCKED({
+        s.mode_override = on;
+        s.override_until = on ? until : 0;
+        nvs_set_u8(s_nvs, "gmode_ovr", on);
+        nvs_set_u32(s_nvs, "gmode_until", s.override_until);
+        nvs_commit(s_nvs);
+    });
+    notify(MUSE_SETTING_GADGET_MODE);
+}
+
+void muse_settings_set_home_ssid(const char *ssid)
+{
+    LOCKED({
+        strlcpy(s.home_ssid, ssid ? ssid : "", sizeof(s.home_ssid));
+        save_str("home_ssid", s.home_ssid);
+    });
+    ESP_LOGI(TAG, "home network: %s", s.home_ssid[0] ? s.home_ssid : "(none)");
+    notify(MUSE_SETTING_GADGET_MODE);
 }
 
 void muse_settings_set_wifi(const char *ssid, const char *pass)
