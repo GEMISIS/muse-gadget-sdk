@@ -25,6 +25,7 @@
 #include "muse_board.h"
 #include "muse_ble.h"
 #include "muse_chat.h"
+#include "muse_gadget_mode.h"
 #include "muse_input.h"
 #include "muse_settings.h"
 #include "muse_state.h"
@@ -90,6 +91,7 @@ void muse_app_run(const muse_board_t *board)
     }
 
     muse_hatch_start();
+    muse_gadget_mode_start();   /* after the chat session it tells the Muse through */
     /* Home Link owns the radios; these just hand it the saved settings. */
     muse_wifi_apply();
     muse_ble_apply();

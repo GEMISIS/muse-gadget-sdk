@@ -38,6 +38,7 @@
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
+#include "muse_power_menu.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_ui.h"
@@ -62,6 +63,9 @@ static const char *TAG = "muse_input";
 #define HINT_TICKS 60          /* 0.6 s: warn that holding powers off */
 #define LONG_TICKS 150         /* 1.5 s: power off */
 #define SLEEP_CHECK_MS 100
+#define VOLUME_STEP 5          /* per volume key press */
+#define VOLUME_DELAY_TICKS 50  /* 500 ms: holding volume down starts repeating */
+#define VOLUME_REPEAT_TICKS 30 /* ... every 300 ms */
 
 #define SERIAL_RX 1024         /* the driver drops what doesn't fit, so a console line must */
 #define SERIAL_LINE 1024
@@ -249,6 +253,10 @@ static void talk_button(unsigned ev)
             muse_state_poke();
             if (!muse_board->keyboard) muse_menu_key(MUSE_MENU_SELECT);
             swallow = true;
+        } else if (muse_power_menu_is_open()) {
+            muse_state_poke();
+            muse_power_menu_key(MUSE_POWER_MENU_SELECT);
+            swallow = true;
         } else {
             post(MUSE_PTT_DOWN, false);
             talk_down = true;
@@ -290,6 +298,64 @@ static void keyboard_buttons(unsigned ev)
     else if (ev & MUSE_BTN_LEFT) muse_menu_key(MUSE_MENU_LEFT);
     else if (ev & MUSE_BTN_RIGHT) muse_menu_key(MUSE_MENU_RIGHT);
     else if (ev & MUSE_BTN_ENTER) muse_menu_key(MUSE_MENU_SELECT);
+}
+
+static void volume_step(int delta)
+{
+    int pct = muse_settings_volume() + delta;
+    pct = pct < 0 ? 0 : pct > 100 ? 100 : pct;
+    if (pct != muse_settings_volume()) {
+        muse_settings_set_volume(pct);   /* saved, and applied by the app's listener */
+    }
+    muse_power_menu_show_volume(pct);
+}
+
+/*
+ * Volume and power keys (MUSE_BTN_VOL_*, MUSE_BTN_POWER_MENU), on boards that
+ * have them in place of aux. Asleep, a press only wakes. With the power menu
+ * open they move through it instead: volume down up, volume up down, and a
+ * long press closes it. Otherwise volume down steps down, repeating while
+ * held, volume up steps up, and a long press opens the menu.
+ */
+static void volume_keys(unsigned ev)
+{
+    static bool down_held, swallow;
+    static int held;
+
+    if (ev & MUSE_BTN_VOL_DOWN_PRESS) {
+        down_held = true;
+        held = 0;
+        swallow = muse_state_asleep() || muse_power_menu_is_open();
+        muse_state_poke();
+        if (muse_state_asleep()) {
+            set_asleep(false, muse_board->aux_button);
+        } else if (muse_power_menu_is_open()) {
+            muse_power_menu_key(MUSE_POWER_MENU_UP);
+        } else {
+            volume_step(-VOLUME_STEP);
+        }
+    } else if (ev & MUSE_BTN_VOL_DOWN_RELEASE) {
+        down_held = false;
+    } else if (down_held && !swallow && ++held >= VOLUME_DELAY_TICKS
+               && (held - VOLUME_DELAY_TICKS) % VOLUME_REPEAT_TICKS == 0) {
+        muse_state_poke();
+        volume_step(-VOLUME_STEP);
+    }
+
+    if (ev & (MUSE_BTN_VOL_UP | MUSE_BTN_POWER_MENU)) {
+        muse_state_poke();
+        if (muse_state_asleep()) {
+            set_asleep(false, muse_board->aux_button);
+        } else if (muse_power_menu_is_open()) {
+            muse_power_menu_key(ev & MUSE_BTN_POWER_MENU ? MUSE_POWER_MENU_CLOSE : MUSE_POWER_MENU_DOWN);
+        } else if (ev & MUSE_BTN_POWER_MENU) {
+            if (!s_talk_down) {
+                muse_power_menu_key(MUSE_POWER_MENU_OPEN);
+            }
+        } else {
+            volume_step(VOLUME_STEP);
+        }
+    }
 }
 
 /* A pairing prompt wakes the screen and keeps it on; otherwise idle sleeps. */
@@ -405,6 +471,7 @@ static void input_task(void *arg)
             talk_button(ev);
         }
         keyboard_buttons(ev);
+        volume_keys(ev);
         /* A latched key (the 1.75's PMU) can report press and release in the
          * same poll, and a release can land just before the next press; keep
          * them ordered, as talk_button does. */

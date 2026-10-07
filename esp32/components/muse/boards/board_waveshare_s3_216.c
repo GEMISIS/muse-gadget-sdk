@@ -33,7 +33,10 @@
  * - AXP2101 at 0x34: examples/esp-idf/01_AXP2101 in the vendor repo. The
  *   schematic feeds VCC3V3 from DCDC1 and A3V3 (the codecs) from ALDO1.
  *
- * GPIO18 talks; BOOT and PWR are aux (sleep, hold to power off).
+ * GPIO18 talks. BOOT and PWR set the volume in place of an aux button:
+ * BOOT turns it down (repeating while held), a PWR click turns it up, and
+ * holding PWR 1.5 s opens the power menu (muse_power_menu.h), where BOOT,
+ * PWR and GPIO18 are up, down and select. Sleep is in that menu.
  */
 #include "esp_err.h"         /* the BSP's display.h uses esp_err_t without it */
 #include "bsp/display.h"
@@ -58,6 +61,7 @@ static const char *TAG = "board";
 #define LCD_CHUNK_BYTES (BSP_LCD_H_RES * 8 * 2)
 #define TALK_GPIO GPIO_NUM_18
 #define PMU_KEY_EVERY 2         /* poll the PMU over I2C every 20 ms */
+#define PWR_LONG_MS 1500        /* the power menu; the hardware cuts power at 10 s */
 
 static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_touch_handle_t s_tp;
@@ -80,6 +84,10 @@ static esp_err_t init(void)
     err = muse_pmu_keep_rails(BIT(0), BIT(0));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "unused rails left on (%s)", esp_err_to_name(err));
+    }
+    err = muse_pmu_set_long_press_ms(PWR_LONG_MS);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "PWR long press left at the PMU's default (%s)", esp_err_to_name(err));
     }
     return ESP_OK;
 }
@@ -211,14 +219,31 @@ static void set_mic_gain(esp_codec_dev_handle_t mic, int db)
     esp_codec_dev_set_in_gain(mic, db == 33 ? 34.5f : (float)db);
 }
 
+/*
+ * BOOT's edges are volume down's (muse_gpio_button_poll reports them as the
+ * talk bits). PWR is the PMU's own click and long press: a long press once
+ * it's held past PWR_LONG_MS, a click on the release of a shorter one. Should
+ * both come in for one press, the long press wins.
+ */
 static unsigned poll_buttons(void)
 {
     static unsigned tick;
-    unsigned ev = muse_gpio_button_poll(&s_talk) | muse_gpio_button_poll(&s_boot) << 2;
+    static bool long_pressed;
+    unsigned boot = muse_gpio_button_poll(&s_boot);
+    unsigned ev = muse_gpio_button_poll(&s_talk) |
+                  (boot & MUSE_BTN_TALK_PRESS ? MUSE_BTN_VOL_DOWN_PRESS : 0) |
+                  (boot & MUSE_BTN_TALK_RELEASE ? MUSE_BTN_VOL_DOWN_RELEASE : 0);
     if (tick++ % PMU_KEY_EVERY == 0) {
         unsigned key = muse_pmu_poll_key();
-        ev |= (key & MUSE_PMU_KEY_PRESS ? MUSE_BTN_AUX_PRESS : 0) |
-              (key & MUSE_PMU_KEY_RELEASE ? MUSE_BTN_AUX_RELEASE : 0);
+        if (key & MUSE_PMU_KEY_PRESS) {
+            long_pressed = false;
+        }
+        if (key & MUSE_PMU_KEY_LONG) {
+            long_pressed = true;
+            ev |= MUSE_BTN_POWER_MENU;
+        } else if ((key & MUSE_PMU_KEY_CLICK) && !long_pressed) {
+            ev |= MUSE_BTN_VOL_UP;
+        }
     }
     return ev;
 }
@@ -231,10 +256,11 @@ static const muse_board_t s_board = {
     .touch = true,
     .diagonal_in = 2.16f,
     .talk_button = "top right",
-    .aux_button = "top left",
-    /* Keys along the top edge (USB-C below): BOOT, PWR, then GPIO18. */
+    .aux_button = "top left",   /* BOOT and PWR, in captions and wake logs */
+    /* Keys along the top edge (USB-C below): BOOT, PWR, then GPIO18. No
+     * aux_hint: the volume keys don't sleep or power off, so there's no
+     * power icon to show. */
     .talk_hint = { LV_ALIGN_TOP_MID, 150, 16 },
-    .aux_hint = { LV_ALIGN_TOP_MID, -150, 16 },
     .frame_ms = 40,
     .init = init,
     .display_start = display_start,

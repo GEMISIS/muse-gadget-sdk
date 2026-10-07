@@ -1355,6 +1355,25 @@ static char *build_register_json(void) {
     }
 #endif
 
+#if CONFIG_MUSE_ENABLED
+    cJSON *text_required = cJSON_CreateObject();
+    cJSON_AddItemToObject(text_required, "text",
+                          string_param("Text to show, up to 400 bytes."));
+    add_command(commands, "show_text",
+                "Show text as the caption under the avatar, waking the "
+                "screen. Two short lines fit; longer text is cut off.",
+                text_required, nullptr);
+    cJSON *mode_required = cJSON_CreateObject();
+    cJSON_AddItemToObject(mode_required, "mode",
+                          string_param("desk, night or on_the_go."));
+    add_command(commands, "set_mode",
+                "Switch the gadget mode: desk (full detail, replies spoken), "
+                "night (dim screen, nothing spoken) or on_the_go (bright "
+                "screen, captions only). Holds until the next scheduled "
+                "switch, at 05:00 or 21:00.",
+                mode_required, nullptr);
+#endif
+
 #if CONFIG_HOMEHUB_VOICE
     cJSON *volume_optional = cJSON_CreateObject();
     cJSON *volume_param = cJSON_CreateObject();

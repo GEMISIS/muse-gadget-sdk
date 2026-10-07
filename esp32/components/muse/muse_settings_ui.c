@@ -29,6 +29,7 @@
 #include "muse_ble.h"
 #include "muse_board.h"
 #include "muse_chat.h"
+#include "muse_gadget_mode.h"
 #include "muse_input.h"
 #include "muse_keypad.h"
 #include "muse_link.h"
@@ -61,6 +62,7 @@ static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
 static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
+static lv_obj_t *s_mode;
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -74,6 +76,7 @@ typedef struct {
 
 /* Home values. */
 static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home_sleep, *s_home_battery, *s_about;
+static lv_obj_t *s_home_mode;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -102,6 +105,9 @@ static const int SLEEP_CHOICES[] = { 0, 30, 60, 120, 300, 600 };
 static const char *const SLEEP_NAMES[] = { "Never", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes" };
 #define SLEEP_COUNT (int)(sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]))
 static lv_obj_t *s_sleep_checks[SLEEP_COUNT];
+
+/* Mode */
+static lv_obj_t *s_mode_checks[MUSE_GADGET_MODE_COUNT], *s_mode_home, *s_mode_note;
 
 /* Battery page. */
 static lv_obj_t *s_batt_status, *s_batt_level, *s_batt_drain, *s_batt_full, *s_batt_off, *s_batt_slept, *s_batt_wakes,
@@ -359,7 +365,8 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text,
+                                 &s_mode };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -1106,6 +1113,46 @@ static void tick_sleep(void)
     }
 }
 
+/* ---------- Mode ---------- */
+
+static void on_mode_choice(lv_event_t *e)
+{
+    muse_gadget_mode_pick((muse_gadget_mode_t)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void on_mode_home(lv_event_t *e)
+{
+    (void)e;
+    set_text(s_mode_note, muse_gadget_mode_set_home() ? "Saved." : "Join a Wi-Fi network first.");
+}
+
+static void build_mode_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_mode = page(tile, "MODE", true, &list);
+    for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
+        row(list, NULL, muse_gadget_mode_name((muse_gadget_mode_t)m), &s_mode_checks[m], on_mode_choice,
+            (void *)(intptr_t)m);
+        lv_obj_set_style_text_color(s_mode_checks[m], lv_color_hex(COLOR_ACCENT), 0);
+    }
+    note(list, "Night runs 21:00 to 05:00 and Desk the rest of the day, once the clock is set. "
+               "A mode picked here holds until the next switch.");
+    s_mode_home = info_row(list, "Home Wi-Fi");
+    button(list, LV_SYMBOL_WIFI "  Set current as home", COLOR_ACCENT, on_mode_home, NULL);
+    s_mode_note = note(list, "Away from home Wi-Fi, Muse offers On-the-go.");
+}
+
+static void tick_mode(void)
+{
+    muse_gadget_mode_t cur = muse_gadget_mode();
+    for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
+        set_text(s_mode_checks[m], (int)cur == m ? LV_SYMBOL_OK : "");
+    }
+    char home[MUSE_SSID_MAX + 1];
+    muse_settings_home_ssid(home);
+    set_text(s_mode_home, home[0] ? home : "Not set");
+}
+
 /* ---------- Battery ---------- */
 
 static void on_battery_reset(lv_event_t *e)
@@ -1243,6 +1290,7 @@ static const page_t SOUND = { &s_sound, build_sound_page };
 static const page_t SLEEP = { &s_sleep, build_sleep_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
+static const page_t MODE = { &s_mode, build_mode_page };
 
 static void build_home(lv_obj_t *tile)
 {
@@ -1253,6 +1301,7 @@ static void build_home(lv_obj_t *tile)
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
+    row(list, LV_SYMBOL_SHUFFLE, "Mode", &s_home_mode, on_nav, (void *)&MODE);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
     s_about = note(list, "");
@@ -1279,6 +1328,7 @@ static void tick_home(void)
         set_text(s_home_sound, "Muted");
     }
     set_text(s_home_sleep, sleep_name(muse_settings_sleep_s()));
+    set_text(s_home_mode, muse_gadget_mode_name(muse_gadget_mode()));
 
     muse_power_t p = muse_state_power();
     char buf[96];
@@ -1331,6 +1381,8 @@ void muse_settings_ui_tick(bool visible)
         tick_sleep();
     } else if (s_current == s_battery) {
         tick_battery();
+    } else if (s_current == s_mode) {
+        tick_mode();
     }
 }
 
