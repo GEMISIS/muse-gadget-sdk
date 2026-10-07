@@ -26,6 +26,7 @@
 #include "muse_ble.h"
 #include "muse_chat.h"
 #include "muse_gadget_mode.h"
+#include "muse_extras.h"
 #include "muse_input.h"
 #include "muse_settings.h"
 #include "muse_state.h"
@@ -76,6 +77,7 @@ void muse_app_run(const muse_board_t *board)
 
     QueueHandle_t q = xQueueCreate(16, sizeof(muse_input_event_t));
     ESP_ERROR_CHECK(muse_input_start(q));
+    muse_extras_start();   /* the board's other peripherals, if it has any (muse_extras.h) */
 
     /* Let the boot animation (flame ignites, eyes open) play out. */
     vTaskDelay(pdMS_TO_TICKS(1400));

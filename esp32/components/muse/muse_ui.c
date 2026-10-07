@@ -36,6 +36,7 @@
 #include "muse_chat.h"
 #include "muse_console.h"
 #include "muse_gadget_mode.h"
+#include "muse_home_extras.h"
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
@@ -865,6 +866,7 @@ static void build_screen(void)
         lv_obj_move_foreground(s_ring);
     }
     build_button_icons(face);
+    muse_home_extras_build(face);
 
     /* Status line: connectivity icons + power. */
     lv_obj_t *status = lv_obj_create(face);
@@ -1509,6 +1511,7 @@ static void frame_tick(lv_timer_t *timer)
         return;
     }
     update_chrome(now);
+    muse_home_extras_tick(now);
     if (muse_menu_tick(now)) {
         image_hide_locked();
         return;   /* the menu covers the face */

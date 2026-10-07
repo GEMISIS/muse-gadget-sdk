@@ -1,0 +1,115 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Sourced from Kconfig: the Waveshare ESP32-S3-Touch-AMOLED-2.16's other
+# peripherals (muse_extras.c).
+
+menu "Waveshare 2.16 extras: microSD, clock, motion"
+    depends on MUSE_BOARD_WAVESHARE_S3_216
+
+    config MUSE_GADGET_EXTRAS
+        bool "Use the board's microSD slot, RTC and IMU"
+        default y
+        help
+            The 2.16's PCF85063 real-time clock, QMI8658 IMU and microSD
+            slot, and a clock, battery and step count on the face. One
+            low-priority task polls them (muse_extras.c).
+
+    config MUSE_GADGET_TZ
+        string "Time zone (POSIX TZ string)"
+        depends on MUSE_GADGET_EXTRAS
+        default "PST8PDT,M3.2.0,M11.1.0"
+        help
+            Local time for the clock, the alarm and file names. The RTC
+            keeps UTC.
+
+    config MUSE_GADGET_SD
+        bool "microSD card: save images and log captions"
+        depends on MUSE_GADGET_EXTRAS
+        default y
+        help
+            Mounts a FAT card at /sdcard (SDMMC, 1-bit) if one is in the
+            slot. Without a card everything else carries on.
+
+    config MUSE_GADGET_SD_SAVE_IMAGES
+        bool "Save display.draw_url images to /sdcard/muse/images by default"
+        depends on MUSE_GADGET_SD
+        default y
+        help
+            The default for the "sd_save_images" key in the "gadget" NVS
+            namespace, which overrides it once set.
+
+    config MUSE_GADGET_CAPTION_LOG
+        bool "Append what was heard and Muse's replies to /sdcard/muse/captions.log"
+        depends on MUSE_GADGET_SD
+        default y
+
+    config MUSE_GADGET_RTC
+        bool "PCF85063 clock, set from NTP"
+        depends on MUSE_GADGET_EXTRAS
+        default y
+        help
+            Restores the time from the RTC at boot, sets it over SNTP once
+            Wi-Fi is up and writes the result back to the RTC.
+
+    config MUSE_GADGET_NTP_SERVER
+        string "NTP server"
+        depends on MUSE_GADGET_RTC
+        default "pool.ntp.org"
+
+    config MUSE_GADGET_ALARM
+        bool "Daily alarm"
+        depends on MUSE_GADGET_EXTRAS
+        default y
+        help
+            At the time below (local), wakes the screen and chirps. The
+            "alarm_min" key (minutes after midnight, -1 for off) in the
+            "gadget" NVS namespace overrides it once set.
+
+    config MUSE_GADGET_ALARM_HOUR
+        int "Alarm hour (0-23)"
+        depends on MUSE_GADGET_ALARM
+        range 0 23
+        default 5
+
+    config MUSE_GADGET_ALARM_MINUTE
+        int "Alarm minute (0-59)"
+        depends on MUSE_GADGET_ALARM
+        range 0 59
+        default 0
+
+    config MUSE_GADGET_IMU
+        bool "QMI8658 motion: wake on lift or double tap, shake to replay, steps"
+        depends on MUSE_GADGET_EXTRAS
+        default y
+
+    config MUSE_GADGET_MOTION_WAKE
+        bool "Wake the screen when the board is picked up or tilted"
+        depends on MUSE_GADGET_IMU
+        default y
+        help
+            A double tap always wakes it.
+
+    config MUSE_GADGET_STEP_GOAL
+        int "Daily step goal"
+        depends on MUSE_GADGET_IMU
+        range 100 100000
+        default 10000
+
+    config MUSE_GADGET_HOME_EXTRAS
+        bool "Clock, battery and steps in the face's top corners"
+        depends on MUSE_GADGET_EXTRAS
+        default y
+
+endmenu
