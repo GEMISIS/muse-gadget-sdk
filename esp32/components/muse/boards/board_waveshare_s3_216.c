@@ -35,6 +35,7 @@
  *
  * GPIO18 talks; BOOT and PWR are aux (sleep, hold to power off).
  */
+#include "esp_err.h"   /* bsp/display.h uses esp_err_t without including it */
 #include "bsp/display.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
