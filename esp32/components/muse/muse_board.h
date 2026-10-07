@@ -48,6 +48,14 @@ extern "C" {
 #define MUSE_BTN_RIGHT        (1u << 7)
 #define MUSE_BTN_ENTER        (1u << 8)
 #define MUSE_BTN_ESCAPE       (1u << 9)
+/* Volume and power keys, for boards whose side keys do that in place of aux
+ * (the 2.16). Volume down repeats while held, so it reports both edges; the
+ * PMU's power key reports a click (volume up) or a long press (power menu).
+ * Asleep, any of them only wakes. */
+#define MUSE_BTN_VOL_DOWN_PRESS   (1u << 10)
+#define MUSE_BTN_VOL_DOWN_RELEASE (1u << 11)
+#define MUSE_BTN_VOL_UP           (1u << 12)
+#define MUSE_BTN_POWER_MENU       (1u << 13)
 
 /* Where a button's icon goes on screen: beside the button, inside the panel. */
 typedef struct {

@@ -39,6 +39,7 @@
 #include "muse_mem.h"
 #include "muse_menu.h"
 #include "muse_pixel.h"
+#include "muse_power_menu.h"
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
 #include "muse_state.h"
@@ -1059,6 +1060,9 @@ static void build_overlays(void)
     lv_obj_add_event_cb(s_camera_hint, on_camera_hint_clicked, LV_EVENT_CLICKED, NULL);
 #endif
 
+    /* Volume bar and power menu: under the pairing code and the sleep cover. */
+    muse_power_menu_build(lv_layer_top(), s_w, s_h);
+
     /* BLE pairing code, or the Muse app's ask for the talk button: a centred
      * column in one typeface, the code large. The small card grows with the hint. */
     s_pair = lv_obj_create(lv_layer_top());
@@ -1491,6 +1495,7 @@ static void frame_tick(lv_timer_t *timer)
         }
         s_last_mode = mode;
     }
+    muse_power_menu_tick(now);
     if (update_sleep()) {
         return;
     }

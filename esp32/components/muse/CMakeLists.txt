@@ -33,6 +33,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_pmu.c"
         "muse_input.c"
         "muse_menu.c"
+        "muse_power_menu.c"
         "muse_voice.c"
         "muse_adpcm.c"
         "muse_settings.c"

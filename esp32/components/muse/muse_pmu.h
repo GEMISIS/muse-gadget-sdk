@@ -43,6 +43,11 @@ esp_err_t muse_pmu_init(i2c_master_bus_handle_t bus, bool key_irqs);
  * in bit 8. Turns nothing on. */
 esp_err_t muse_pmu_keep_rails(uint8_t dcdc, uint16_t ldo);
 
+/* How long PWR must be held for MUSE_PMU_KEY_LONG (shorter is a CLICK on
+ * release): rounded up to 1, 1.5, 2 or 2.5 s. The 10 s hardware power-off
+ * hold set by muse_pmu_init() is separate. */
+esp_err_t muse_pmu_set_long_press_ms(int ms);
+
 /* Returns and clears latched MUSE_PMU_KEY_* events. */
 unsigned muse_pmu_poll_key(void);
 
