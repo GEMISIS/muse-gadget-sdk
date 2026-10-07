@@ -17,6 +17,9 @@
 # Load last, after sdkconfig.muse.
 CONFIG_IDF_TARGET="esp32s3"
 CONFIG_MUSE_BOARD_WAVESHARE_S3_216=y
+# Replies are spoken on the device (CONFIG_MUSE_TTS_PICO, on by default for
+# this board): partitions_muse.csv plus partitions for SVOX Pico's voice.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_muse_tts.csv"
 
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y

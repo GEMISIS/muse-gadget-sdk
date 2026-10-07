@@ -27,7 +27,8 @@
  *      the connection's long-lived POST /chat/subscribe stream: one or more
  *      assistant messages, each delta.message_start / text_append / message_done.
  *   3. Each finished message is shown at reading pace (see start_tts to
- *      speak it with a TTS API of your own; Muse doesn't speak gadget replies).
+ *      speak it with a TTS API of your own; Muse doesn't speak gadget replies),
+ *      or spoken on the device with CONFIG_MUSE_TTS_PICO (muse_tts.h).
  * A turn has no explicit end event; like Sidekick, it settles once every
  * message is done and nothing has arrived for a few seconds.
  *
@@ -70,6 +71,9 @@ extern "C" {
 #include "muse_link.h"
 #include "muse_settings.h"
 #include "muse_wifi.h"
+#if CONFIG_MUSE_TTS_PICO
+#include "muse_tts.h"
+#endif
 }
 #include "muse_chat_priv.h"
 
@@ -237,6 +241,7 @@ struct turn_t {
     /* TTS */
     int tts_msg;             /* message being fetched (or shown, speaker off), or -1 */
     bool silent;             /* speaker off: tts_msg is paced by silence, not fetched */
+    bool pico;               /* tts_msg is spoken on the device (muse_tts.h) */
     uint8_t *mp3;            /* MP3_BUF */
     size_t mp3_len;
     bool mp3_ended;
@@ -959,6 +964,12 @@ static void turn_finish(void)
     s_turn.tts_msg = -1;
     s_turn.silent = false;
     s_turn.mp3_len = 0;
+#if CONFIG_MUSE_TTS_PICO
+    if (s_turn.pico) {
+        muse_tts_stop();   /* cancelled, interrupted or failed mid-sentence */
+    }
+#endif
+    s_turn.pico = false;
 }
 
 static void turn_fail(const char *why)
@@ -1526,6 +1537,25 @@ static void start_tts(void)
          * end. decode() plays it at the speaker's volume, captions following,
          * and finishes the message once it's drained.
          */
+#if CONFIG_MUSE_TTS_PICO
+        /* On-device speech (muse_tts.h): its PCM goes where decoded MP3 would. */
+        if (!s_turn.text && s_turn.texts) {
+            const char *text = s_turn.texts + i * TEXT_MAX;
+            muse_tts_remember(text, i > 0);
+            if (muse_tts_wanted() && muse_tts_say(text)) {
+                m.pcm_start = s_turn.pcm_out;
+                m.pcm_frames = 0;
+                m.tts = TTS_ACTIVE;
+                s_turn.tts_msg = i;
+                s_turn.silent = false;
+                s_turn.pico = true;
+                mark(M_TTS);
+                ESP_LOGI(TAG, "speaking message %s (%u chars)", m.id, (unsigned)m.len);
+                show_reply_start(m);
+                return;
+            }
+        }
+#endif
         m.pcm_start = s_turn.pcm_out;
         m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
         m.tts = TTS_ACTIVE;
@@ -1581,6 +1611,42 @@ static void pace_silently(void)
     }
 }
 
+#if CONFIG_MUSE_TTS_PICO
+/* On-device speech: moves what's synthesized into the reply audio while there's room. */
+static void pump_speech(void)
+{
+    enum { CHUNK = 256, LEAD = MIC_RATE / 2 };
+    msg_t &m = s_turn.msgs[s_turn.tts_msg];
+    muse_tts_status_t st = muse_tts_status();
+    /* Half a second ahead before the first word, so a slow sentence doesn't stutter. */
+    if (s_turn.pcm_out == m.pcm_start && st == MUSE_TTS_SPEAKING && muse_tts_buffered() < LEAD) {
+        return;
+    }
+    size_t n;
+    while (xStreamBufferSpacesAvailable(s_out) >= CHUNK * sizeof(int16_t) && (n = muse_tts_read(s_pcm16, CHUNK)) > 0) {
+        if (s_turn.gen == s_gen.load()) {
+            mark(M_AUDIO);
+            xStreamBufferSend(s_out, s_pcm16, n * sizeof(int16_t), 0);
+        }
+        s_turn.pcm_out += n;
+    }
+    st = muse_tts_status();
+    if (st == MUSE_TTS_SPEAKING) {
+        return;
+    }
+    s_turn.pico = false;
+    if (st == MUSE_TTS_FAILED && s_turn.pcm_out == m.pcm_start) {
+        /* Nothing was said: show it at reading pace instead. */
+        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
+        s_turn.silent = true;
+        return;
+    }
+    m.pcm_frames = s_turn.pcm_out - m.pcm_start;
+    m.tts = TTS_FINISHED;
+    s_turn.tts_msg = -1;
+}
+#endif
+
 /* Decodes buffered MP3 while the reply buffer has room. */
 static void decode(void)
 {
@@ -1591,6 +1657,12 @@ static void decode(void)
         pace_silently();
         return;
     }
+#if CONFIG_MUSE_TTS_PICO
+    if (s_turn.pico) {
+        pump_speech();
+        return;
+    }
+#endif
     /*
      * minimp3 only takes a frame once it can see the next one's header. Given
      * less, it resets and says to skip all of it, which drops speech and clicks.
@@ -2063,6 +2135,9 @@ extern "C" void muse_hatch_start(void)
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "start failed");
     }
+#if CONFIG_MUSE_TTS_PICO
+    muse_tts_init();
+#endif
 }
 
 extern "C" void muse_hatch_chat_connect(void)
