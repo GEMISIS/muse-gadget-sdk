@@ -34,6 +34,7 @@
 #include "muse_chat.h"
 #include "muse_input.h"
 #include "muse_mem.h"
+#include "muse_sd.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_wifi.h"
@@ -359,6 +360,7 @@ static bool hatch_reply(bool *delivered)
     for (;;) {
         muse_hatch_ev_t ev;
         while ((ev = muse_hatch_turn_event(text, sizeof(text))) != MUSE_HATCH_EV_NONE) {
+            muse_sd_caption_event(ev, text);   /* the SD card's caption log, if any */
             switch (ev) {
             case MUSE_HATCH_EV_HEARD:
                 if (!speaking && !replied) {
@@ -417,8 +419,10 @@ static bool hatch_reply(bool *delivered)
         /* The page being said, or before the speech the reply's opening page. */
         if ((speaking || replied) && muse_hatch_turn_caption(played, page, sizeof(page))) {
             muse_state_set_caption("%s", page);
+            muse_sd_caption_page(page);
         }
     }
+    muse_sd_caption_flush();
     muse_state_set_level(0);
     ESP_LOGI(TAG, "muse reply: %.2fs of audio, %.2fs total", (double)played / MUSE_AUDIO_RATE,
              (esp_timer_get_time() - t0) / 1e6);

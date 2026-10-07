@@ -67,6 +67,11 @@ if(CONFIG_MUSE_ENABLED)
         list(APPEND srcs "boards/board_waveshare_s3_175c.c" "boards/muse_lcd_bands.c")
     elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_216)
         list(APPEND srcs "boards/board_waveshare_s3_216.c" "boards/muse_lcd_bands.c")
+        if(CONFIG_MUSE_GADGET_EXTRAS)
+            # microSD, RTC, IMU and the face's corner readouts (Kconfig.gadget)
+            list(APPEND srcs "muse_extras.c" "muse_sd.c" "muse_rtc.c" "muse_imu.c"
+                             "muse_home_extras.c")
+        endif()
     elseif(CONFIG_MUSE_BOARD_AIPI)
         list(APPEND srcs "boards/board_aipi.c")
     elseif(CONFIG_MUSE_BOARD_ESPRESSIF_BOX_3)
@@ -109,7 +114,8 @@ set(muse_priv_requires
     bt esp-tls mbedtls esp_app_format esp_http_client
     noise_core minimp3
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
-    esp_driver_pcnt)
+    esp_driver_pcnt
+    fatfs sdmmc esp_driver_sdmmc esp_netif lwip)   # the 2.16's extras: microSD, SNTP
 list(APPEND muse_priv_requires camera)
 
 idf_component_register(

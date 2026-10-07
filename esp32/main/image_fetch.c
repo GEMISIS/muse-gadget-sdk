@@ -36,6 +36,15 @@
 #include "freertos/task.h"
 #include "rom/tjpgd.h"
 
+#if CONFIG_MUSE_GADGET_SD
+#include "muse_sd.h"
+#else
+typedef struct muse_sd_tee muse_sd_tee_t;
+#define muse_sd_tee_begin() ((muse_sd_tee_t *)NULL)
+#define muse_sd_tee_write(t, data, len) ((void)(t))
+#define muse_sd_tee_end(t, ok, ext, w, h) ((void)(t))
+#endif
+
 static const char *TAG = "link.image";
 
 // The download task's stack. The TLS handshake runs on it for HTTPS.
@@ -69,6 +78,13 @@ static const char *TAG = "link.image";
 #define FETCH_MAX_REDIRECTS 3
 // Raw RGB565 is read and drawn this many rows at a time.
 #define RAW_ROWS            4
+// Saving the download to the microSD card as it streams (muse_sd.h): the
+// card's driver and FAT on the task's stack.
+#if CONFIG_MUSE_GADGET_SD
+#define FETCH_SD_STACK      1536
+#else
+#define FETCH_SD_STACK      0
+#endif
 // Work pool for the ROM JPEG decoder, the size its documentation asks for.
 #define JPEG_POOL_BYTES     3100
 // Largest block the decoder emits: a 16x16 MCU.
@@ -94,6 +110,8 @@ typedef struct {
     bool low_memory;
     bool timed_out;
     bool scheme_changed;
+    // Every body byte also goes here, if the download is being saved.
+    muse_sd_tee_t *tee;
     // JPEG output placement and one MCU converted for the panel.
     int x0, y0;
     uint16_t mcu[JPEG_MCU_PIXELS];
@@ -162,6 +180,7 @@ static int fetch_read(fetch_t *f, uint8_t *buf, size_t len) {
         if (!within_deadline(f)) return -1;
         int n = esp_http_client_read(f->http, (char *)buf + have, (int)(len - have));
         if (n < 0) return -1;
+        if (n > 0) muse_sd_tee_write(f->tee, buf + have, (size_t)n);
         if (n == 0) {
             if (esp_http_client_is_complete_data_received(f->http)) f->eof = true;
             else return -1;
@@ -351,6 +370,7 @@ static void fetch_task(void *arg) {
         snprintf(msg, sizeof(msg), "server answered HTTP %d", status);
         result.message = msg;
     } else {
+        f->tee = muse_sd_tee_begin();
         int n = fetch_read(f, f->peek, sizeof(f->peek));
         f->peek_len = n > 0 ? (size_t)n : 0;
         const char *fail;
@@ -367,6 +387,13 @@ static void fetch_task(void *arg) {
         }
         // Show what arrived, even if the download broke off.
         led_status_draw_done();
+        // The decoder stops at the image's end: save whatever follows too.
+        while (!fail && f->tee && !f->eof && fetch_read(f, (uint8_t *)f->mcu, sizeof(f->mcu)) > 0) {
+        }
+        muse_sd_tee_end(f->tee, !fail && f->eof, result.format[0] == 'j' ? "jpg" : "raw",
+                        result.format[0] == 'j' ? 0 : result.width,
+                        result.format[0] == 'j' ? 0 : result.height);
+        f->tee = NULL;
         if (fail && f->timed_out) fail = "download timed out";
         if (fail) {
             result.message = fail;
@@ -421,7 +448,7 @@ bool image_fetch_start(const char *url, int row, image_fetch_done_cb done,
         return false;
     }
 
-    size_t stack = https ? FETCH_TLS_STACK : FETCH_STACK_BYTES;
+    size_t stack = (https ? FETCH_TLS_STACK : FETCH_STACK_BYTES) + FETCH_SD_STACK;
     size_t need = stack + FETCH_RESERVE_BYTES
                 + (https ? FETCH_TLS_BYTES : FETCH_HTTP_BYTES);
     size_t block = heap_caps_get_largest_free_block(BYTE_CAPS);
