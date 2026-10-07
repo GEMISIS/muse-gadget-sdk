@@ -17,8 +17,8 @@
 /*
  * The face's corner readouts (muse_home_extras.h). On the 480x480 screen the
  * bezel ring is a 236 px circle about the centre; everything here stays
- * outside it, in the corners above the status line's ends. The bottom
- * corners are left to the button icons.
+ * outside it, in the bottom corners. The top corners are left to the
+ * button icons, as the keys are on the top edge.
  */
 #include "muse_home_extras.h"
 
@@ -57,13 +57,13 @@ static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, 
 
 void muse_home_extras_build(lv_obj_t *face)
 {
-    s_clock = label(face, &lv_font_montserrat_28, COLOR_TEXT, LV_ALIGN_TOP_LEFT, EDGE, 12);
-    s_batt = label(face, &lv_font_unscii_16, COLOR_DIM, LV_ALIGN_TOP_RIGHT, -EDGE, 14);
+    s_clock = label(face, &lv_font_montserrat_28, COLOR_TEXT, LV_ALIGN_BOTTOM_LEFT, EDGE, -12);
+    s_batt = label(face, &lv_font_unscii_16, COLOR_DIM, LV_ALIGN_BOTTOM_RIGHT, -EDGE, -54);
 #if CONFIG_MUSE_GADGET_IMU
-    s_steps = label(face, &lv_font_unscii_16, COLOR_DIM, LV_ALIGN_TOP_RIGHT, -EDGE, 34);
+    s_steps = label(face, &lv_font_unscii_16, COLOR_DIM, LV_ALIGN_BOTTOM_RIGHT, -EDGE, -34);
     s_bar = lv_bar_create(face);
     lv_obj_set_size(s_bar, BAR_W, 4);
-    lv_obj_align(s_bar, LV_ALIGN_TOP_RIGHT, -EDGE, 54);
+    lv_obj_align(s_bar, LV_ALIGN_BOTTOM_RIGHT, -EDGE, -14);
     lv_bar_set_range(s_bar, 0, CONFIG_MUSE_GADGET_STEP_GOAL);
     lv_obj_set_style_radius(s_bar, 2, LV_PART_MAIN);
     lv_obj_set_style_radius(s_bar, 2, LV_PART_INDICATOR);
