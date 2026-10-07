@@ -242,6 +242,12 @@ class PacingTest(unittest.TestCase):
         self.assertIn(lcd7.device, chat.ports.command_ports([lcd7]))
         self.assertFalse(chat.ports.paced(lcd7.device, [lcd7]))
 
+    def test_s3_216_uses_usj_for_chat_and_flash(self) -> None:
+        s3_216 = SimpleNamespace(device="/dev/cu.usbmodem2101", vid=0x303A, pid=0x1001,
+                                 serial_number="AA:BB:CC:DD:EE:FF")
+        self.assertEqual(chat.ports.find("s3-216", ports=[s3_216]), s3_216.device)
+        self.assertIn(s3_216.device, chat.ports.command_ports([s3_216]))
+
     def test_usbs_keeps_single_pairs_single(self) -> None:
         self.assertEqual(chat.ports._usbs(chat.ports.USJ), (chat.ports.USJ,))
         self.assertEqual(chat.ports._usbs(chat.ports.USB["core2"]), chat.ports.USB["core2"])

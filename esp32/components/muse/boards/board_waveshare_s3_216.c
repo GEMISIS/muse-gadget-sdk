@@ -35,6 +35,7 @@
  *
  * GPIO18 talks; BOOT and PWR are aux (sleep, hold to power off).
  */
+#include "esp_err.h"         /* the BSP's display.h uses esp_err_t without it */
 #include "bsp/display.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
@@ -229,11 +230,11 @@ static const muse_board_t s_board = {
     .round = false,
     .touch = true,
     .diagonal_in = 2.16f,
-    .talk_button = "right",
-    .aux_button = "left",
-    /* Keys along one edge: BOOT, PWR, then GPIO18. */
-    .talk_hint = { LV_ALIGN_BOTTOM_MID, 150, -16 },
-    .aux_hint = { LV_ALIGN_BOTTOM_MID, -150, -16 },
+    .talk_button = "top right",
+    .aux_button = "top left",
+    /* Keys along the top edge (USB-C below): BOOT, PWR, then GPIO18. */
+    .talk_hint = { LV_ALIGN_TOP_MID, 150, 16 },
+    .aux_hint = { LV_ALIGN_TOP_MID, -150, 16 },
     .frame_ms = 40,
     .init = init,
     .display_start = display_start,
