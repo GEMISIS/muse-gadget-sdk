@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 
@@ -88,6 +89,7 @@ static lv_obj_t *s_mode;
 static lv_obj_t *s_advanced;   /* Muse, Bluetooth and Battery, under home */
 static lv_obj_t *s_general;    /* Mode, Wi-Fi, Display and Sound, under home */
 static lv_obj_t *s_reset;      /* Reset device's two warnings, under Advanced */
+static lv_obj_t *s_about;      /* what this device is and how it's doing, under Advanced */
 static lv_obj_t *s_reset_note, *s_reset_go_lbl;
 static int s_reset_step;       /* warnings agreed to so far */
 
@@ -106,7 +108,10 @@ static lv_obj_t *s_home_wifi, *s_home_sound, *s_home_display;
 static lv_obj_t *s_home_mode;
 
 /* Advanced values. */
-static lv_obj_t *s_adv_hatch, *s_adv_ble, *s_adv_battery, *s_about;
+static lv_obj_t *s_adv_hatch, *s_adv_ble, *s_adv_battery;
+
+/* About page. */
+static lv_obj_t *s_about_ip, *s_about_wifi, *s_about_signal, *s_about_uptime, *s_about_mem;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -429,7 +434,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 static void drop(lv_obj_t *p)
 {
     lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_display, &s_battery, &s_power, &s_text,
-                                 &s_mode, &s_advanced, &s_general, &s_reset };
+                                 &s_mode, &s_advanced, &s_general, &s_reset, &s_about };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -445,7 +450,7 @@ static lv_obj_t *parent(lv_obj_t *p)
     if (p == s_text) {
         return s_text_back;
     }
-    if (p && (p == s_hatch || p == s_ble || p == s_battery || p == s_reset)) {
+    if (p && (p == s_hatch || p == s_ble || p == s_battery || p == s_reset || p == s_about)) {
         return s_advanced;
     }
     if (p && (p == s_wifi || p == s_sound || p == s_display || p == s_mode)) {
@@ -1633,6 +1638,97 @@ static void build_reset_page(lv_obj_t *tile)
 
 static const page_t RESET = { &s_reset, build_reset_page };
 
+/* ---------- About: what this device is, and how it's doing ---------- */
+
+/* A card of a dim label over its value, the whole width for a long one. */
+static lv_obj_t *about_row(lv_obj_t *list, const char *text, const char *value)
+{
+    lv_obj_t *c = card(list, false);
+    lv_obj_set_height(c, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_ver(c, 8, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(c, 2, 0);
+    label(c, &lv_font_montserrat_16, COLOR_DIM, text);
+    lv_obj_t *v = label(c, FONT_VALUE, COLOR_TEXT, value);
+    lv_obj_set_width(v, lv_pct(100));
+    lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_DOTS);
+    return v;
+}
+
+static void build_about_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_about = page(tile, "ABOUT", &list);
+    about_row(list, "Firmware", esp_app_get_description()->version);
+    about_row(list, "Board", muse_board->name);
+    muse_ble_status_t b;
+    muse_ble_status(&b);
+    about_row(list, "Device name", b.name[0] ? b.name : "-");
+    s_about_wifi = about_row(list, "Wi-Fi network", "");
+    s_about_signal = about_row(list, "Signal", "");
+    s_about_ip = about_row(list, "IP address", "");
+    char buf[18] = "-";
+    uint8_t m[6];
+    if (esp_read_mac(m, ESP_MAC_WIFI_STA) == ESP_OK) {
+        snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", m[0], m[1], m[2], m[3], m[4], m[5]);
+    }
+    about_row(list, "MAC address", buf);
+    s_about_uptime = about_row(list, "Up for", "");
+    s_about_mem = about_row(list, "Free memory", "");
+    back_row(list, "Back");
+}
+
+/* 1.5 MB, 18 KB */
+static void bytes_text(size_t n, char *out, size_t cap)
+{
+    if (n >= 1024 * 1024) {
+        snprintf(out, cap, "%u.%u MB", (unsigned)(n >> 20), (unsigned)((n & 0xfffff) * 10 >> 20));
+    } else {
+        snprintf(out, cap, "%u KB", (unsigned)(n >> 10));
+    }
+}
+
+static void tick_about(void)
+{
+    muse_wifi_status_t w;
+    muse_wifi_status(&w);
+    bool on = w.state == MUSE_WIFI_CONNECTED;
+    char buf[64];
+    set_text(s_about_wifi, on ? w.ssid : "Not connected");
+    set_text(s_about_ip, on ? w.ip : "-");
+    if (on) {
+        const char *how = w.rssi >= -60 ? "strong" : w.rssi >= -70 ? "good" : w.rssi >= -80 ? "fair" : "weak";
+        snprintf(buf, sizeof(buf), "%d dBm, %s", w.rssi, how);
+    } else {
+        strlcpy(buf, "-", sizeof(buf));
+    }
+    set_text(s_about_signal, buf);
+
+    int64_t up = esp_timer_get_time() / 1000000;
+    int d = (int)(up / 86400), h = (int)(up / 3600 % 24), min = (int)(up / 60 % 60);
+    if (d) {
+        snprintf(buf, sizeof(buf), "%d d %d h %d min", d, h, min);
+    } else if (h) {
+        snprintf(buf, sizeof(buf), "%d h %d min", h, min);
+    } else {
+        snprintf(buf, sizeof(buf), "%d min", min);
+    }
+    set_text(s_about_uptime, buf);
+
+    char in[16], ps[16];
+    bytes_text(heap_caps_get_free_size(MALLOC_CAP_INTERNAL), in, sizeof(in));
+    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) {
+        bytes_text(heap_caps_get_free_size(MALLOC_CAP_SPIRAM), ps, sizeof(ps));
+        snprintf(buf, sizeof(buf), "%s internal, %s PSRAM", in, ps);
+    } else {
+        snprintf(buf, sizeof(buf), "%s", in);
+    }
+    set_text(s_about_mem, buf);
+}
+
+static const page_t ABOUT = { &s_about, build_about_page };
+
 static void build_advanced_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -1640,16 +1736,29 @@ static void build_advanced_page(lv_obj_t *tile)
     row(list, LV_SYMBOL_HOME, "Muse connection", &s_adv_hatch, on_nav, (void *)&HATCH);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_adv_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_adv_battery, on_nav, (void *)&BATTERY);
+    row(list, LV_SYMBOL_FILE, "About", NULL, on_nav, (void *)&ABOUT);
     row(list, LV_SYMBOL_WARNING, "Reset device", NULL, on_nav, (void *)&RESET);
-    s_about = note(list, "");
     back_row(list, "Back");
 }
 
 static void tick_advanced(void)
 {
+    /* A tick once it's connected, as the row has little room for words. */
     muse_hatch_status_t h;
     muse_hatch_status(&h);
-    set_text(s_adv_hatch, muse_hatch_state_name(h.state));
+    const char *sym = LV_SYMBOL_CLOSE;   /* not set up */
+    uint32_t color = COLOR_DIM;
+    if (h.state == MUSE_HATCH_REACHABLE) {
+        sym = LV_SYMBOL_OK;
+        color = COLOR_OK;
+    } else if (h.state == MUSE_HATCH_TESTING || h.state == MUSE_HATCH_UNTESTED) {
+        sym = LV_SYMBOL_REFRESH;
+    } else if (h.state == MUSE_HATCH_UNREACHABLE || h.state == MUSE_HATCH_OFFLINE) {
+        sym = LV_SYMBOL_WARNING;
+        color = COLOR_WARN;
+    }
+    set_text(s_adv_hatch, sym);
+    lv_obj_set_style_text_color(s_adv_hatch, lv_color_hex(color), 0);
 
     muse_ble_status_t b;
     muse_ble_status(&b);
@@ -1663,12 +1772,6 @@ static void tick_advanced(void)
         snprintf(buf, sizeof(buf), "%s%d%%", p.charging ? LV_SYMBOL_CHARGE " " : "", p.battery_pct);
     }
     set_text(s_adv_battery, buf);
-
-    muse_wifi_status_t w;
-    muse_wifi_status(&w);
-    snprintf(buf, sizeof(buf), "Firmware %s\nIP address %s", esp_app_get_description()->version,
-             w.state == MUSE_WIFI_CONNECTED ? w.ip : "none (no Wi-Fi)");
-    set_text(s_about, buf);
 }
 
 static const page_t ADVANCED = { &s_advanced, build_advanced_page };
@@ -1758,6 +1861,8 @@ void muse_settings_ui_tick(bool visible)
         tick_mode();
     } else if (s_current == s_advanced) {
         tick_advanced();
+    } else if (s_current == s_about) {
+        tick_about();
     }
 }
 
