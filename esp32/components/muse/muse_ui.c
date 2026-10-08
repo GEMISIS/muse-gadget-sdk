@@ -117,8 +117,8 @@ static const char *TAG = "muse_ui";
  */
 #if CONFIG_MUSE_GADGET_HOME_EXTRAS
 #define CORNERS 1
-#define STATE_Y 86          /* under the clock (muse_home_extras.c's CLOCK_Y, FONT_CLOCK) */
-#define NAME_Y 110
+#define STATE_Y 68          /* just under the clock (muse_home_extras.c's CLOCK_Y, FONT_CLOCK) */
+#define NAME_Y 92
 #else
 #define CORNERS 0
 #define STATE_Y 40
