@@ -133,6 +133,13 @@ esp_err_t muse_settings_chat_new(const char *name, char sid_out[MUSE_CHAT_SID_MA
 esp_err_t muse_settings_chat_pick_new(void);
 /* The new chat picked by muse_settings_chat_pick_new(), not yet titled. */
 bool muse_settings_chat_untitled(const char *sid);
+/* Chat `sid` is waiting on a real title (asked for after the Muse titled it
+ * after an audio file): listed as MUSE_CHAT_TITLING until then. NULL or ""
+ * clears it. RAM only; any task. */
+#define MUSE_CHAT_TITLING "Title generating..."
+void muse_settings_chat_set_titling(const char *sid);
+/* Chat `sid` has a real title now, or won't get one: if it's the one waiting, it isn't any more. */
+void muse_settings_chat_titled(const char *sid);
 /* The Muse's title for a chat: a named one's new name, or the new chat's,
  * which then joins the named chats (*started set). Kept in RAM at once, so
  * any task may call it; muse_settings_chats_flush() writes it to flash.
