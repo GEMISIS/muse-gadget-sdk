@@ -60,6 +60,20 @@ typedef struct {
      * of sparkles, and a lightning bolt popping up beside the head, glowing,
      * that flickers out. Idle only. A renderer may leave it alone. */
     float plugged;
+    /* The battery (muse_state_power), when `battery` says there's a reading:
+     * battery_pct 0..100, and `charging` on USB power (charging, or full).
+     * Run low (20% or less) and not charging, a battery badge beside Muse,
+     * yellow, then red and blinking under 10%. `belly` (charging, or just
+     * patted): the level on his belly, with a bolt going red to green as it
+     * fills. A renderer may leave them alone. */
+    bool battery;
+    bool charging;
+    bool belly;
+    int battery_pct;
+    /* 0..1: tired, as the battery runs down (muse_ui.c; 0 when charging, or
+     * in bed). Idle only: heavy lids, a slower bob, a slouch, yawns, and at
+     * the most, nodding off. A renderer may leave it alone. */
+    float tired;
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */
