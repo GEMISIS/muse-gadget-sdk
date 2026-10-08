@@ -168,6 +168,9 @@ typedef enum {
  * time: false if one is under way or it can't be queued. Any task.
  */
 bool muse_chat_bg_ask(const char *sid, const char *message);
+/* The same, but it goes beside a turn rather than waiting for it to end (an
+ * image the turn's speech waits for: muse_present_ask). */
+bool muse_chat_bg_ask_now(const char *sid, const char *message);
 /* The request's state; once DONE or FAILED, taking it (with the reply's
  * first 255 bytes in out for DONE) puts it back to NONE. Any task. */
 muse_chat_bg_state_t muse_chat_bg_result(char *out, size_t cap);
@@ -184,8 +187,9 @@ typedef enum {
     MUSE_CHAT_BG_FOR_IMAGE,     /* asking Muse to push a reply's image (muse_present.c) */
 } muse_chat_bg_for_t;
 
-/* muse_chat_bg_ask for `who`: false, too, while another's request is under
- * way or its result hasn't been taken. Any task. */
+/* muse_chat_bg_ask for `who` (muse_chat_bg_ask_now for an image): false,
+ * too, while another's request is under way or its result hasn't been
+ * taken. Any task. */
 bool muse_chat_bg_ask_for(muse_chat_bg_for_t who, const char *sid, const char *message);
 /* muse_chat_bg_result for `who`: NONE unless the request is its own. Taking
  * DONE or FAILED frees it for the next asker. Any task. */

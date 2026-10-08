@@ -57,8 +57,7 @@ static const char *TAG = "muse_present";
 #define LABEL_MAX 48
 #define PATH_MAX_LEN 256                /* a workspace file's path, to ask for */
 #define ASK_POLL_MS 1000                /* how often a request waiting to go, or for its reply, is looked at */
-#define ASK_GIVE_UP_US (120 * 1000000LL)        /* waiting to ask, once it may */
-#define TURN_WAIT_US (5 * 60 * 1000000LL)       /* waiting for the turn to be over (muse_present_turn_over) */
+#define ASK_GIVE_UP_US (120 * 1000000LL)        /* waiting to ask */
 #define ASKED_AGAIN_US (10 * 60 * 1000000LL)    /* a path asked for isn't asked for again this soon */
 #define ASKED_KEPT 4
 
@@ -248,7 +247,6 @@ static portMUX_TYPE s_ask_lock = portMUX_INITIALIZER_UNLOCKED;
 EXT_RAM_BSS_ATTR static struct {
     bool want;
     int64_t since_us;
-    int64_t ready_us;           /* asked for from then on; INT64_MAX until the turn's over */
     char path[PATH_MAX_LEN];
     char label[LABEL_MAX];
 } s_want;
@@ -278,6 +276,20 @@ static void new_sid(char out[MUSE_CHAT_SID_MAX + 1])
     snprintf(out, MUSE_CHAT_SID_MAX + 1, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
              u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15]);
 }
+
+/*
+ * A request under way, and whether a push came while it was (with
+ * s_ask_lock): Muse may push the image by itself in the turn as well as
+ * answer the request, and only the first of the two is shown.
+ */
+EXT_RAM_BSS_ATTR static bool s_guard, s_guard_shown;
+
+/* Waiting for an image (muse_present_wait), and its bytes so far (with s_ask_lock). */
+EXT_RAM_BSS_ATTR static struct {
+    int64_t since_us;   /* 0: not waiting */
+    uint32_t seq;       /* s_seq then: a move means it's shown */
+    size_t received, size;
+} s_wait;
 
 /* The task's own: the request under way. */
 EXT_RAM_BSS_ATTR static bool s_asking;
@@ -332,6 +344,9 @@ static void ask_tick(void)
             return;   /* the request gives up by itself after two minutes */
         }
         s_asking = false;
+        portENTER_CRITICAL(&s_ask_lock);
+        s_guard = s_guard_shown = false;
+        portEXIT_CRITICAL(&s_ask_lock);
         strlcpy(s_ask_prev, s_ask_sid, sizeof(s_ask_prev));   /* deleted with the next ask */
         if (st == MUSE_CHAT_BG_DONE) {
             ESP_LOGI(TAG, "\"%s\": Muse answered \"%s\"", s_asking_label, reply);
@@ -351,9 +366,7 @@ static void ask_tick(void)
     portENTER_CRITICAL(&s_ask_lock);
     bool want = s_want.want;
     since = s_want.since_us;
-    bool held = s_want.ready_us == INT64_MAX;
-    bool early = now < s_want.ready_us;
-    bool late = now - since > (held ? TURN_WAIT_US : ASK_GIVE_UP_US);
+    bool late = now - since > ASK_GIVE_UP_US;
     if (want) {
         memcpy(path, s_want.path, sizeof(path));
         memcpy(label, s_want.label, sizeof(label));
@@ -368,9 +381,6 @@ static void ask_tick(void)
     if (late) {
         ESP_LOGW(TAG, "\"%s\": couldn't ask Muse for it in time; given up", label);
         return;
-    }
-    if (early) {
-        return;   /* Muse may push it by itself yet */
     }
     if (!muse_hatch_ready()) {
         return;   /* out of reach for now */
@@ -407,6 +417,8 @@ static void ask_tick(void)
     s_asked[s_asked_next].hash = s_asking_hash;
     s_asked[s_asked_next].us = now;
     s_asked_next = (s_asked_next + 1) % ASKED_KEPT;
+    s_guard = true;
+    s_guard_shown = false;
     if (s_want.since_us == since) {
         s_want.want = false;   /* unless a newer one came meanwhile */
     }
@@ -487,9 +499,17 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
         s_want.want = false;
         memcpy(called_off, s_want.label, sizeof(called_off));
     }
+    bool twice = s_guard && s_guard_shown;
+    s_guard_shown |= s_guard;
     portEXIT_CRITICAL(&s_ask_lock);
     if (called_off[0]) {
         ESP_LOGI(TAG, "\"%s\": pushed by Muse itself; not asking for \"%s\"", job->label, called_off);
+    }
+    if (twice) {
+        /* By itself in the turn, and again for the request (or the other way round). */
+        ESP_LOGI(TAG, "\"%s\": pushed again while asked for; the first is shown", job->label);
+        job_free(job);
+        return true;
     }
     if (!start() || xQueueSend(s_jobs, &job, 0) != pdTRUE) {
         ESP_LOGW(TAG, "\"%s\": busy with others, dropped", job->label);
@@ -512,7 +532,6 @@ void muse_present_ask(const char *path, const char *label)
     if (!asked) {
         s_want.want = true;
         s_want.since_us = now;
-        s_want.ready_us = INT64_MAX;   /* muse_present_turn_over */
         strlcpy(s_want.path, path, sizeof(s_want.path));
         strlcpy(s_want.label, label && label[0] ? label : "image", sizeof(s_want.label));
     }
@@ -527,23 +546,45 @@ void muse_present_ask(const char *path, const char *label)
     }
 }
 
-void muse_present_turn_over(void)
-{
-    int64_t now = esp_timer_get_time();
-    portENTER_CRITICAL(&s_ask_lock);
-    bool waiting = s_want.want && s_want.ready_us == INT64_MAX;
-    if (waiting) {
-        s_want.ready_us = now + MUSE_PRESENT_PUSH_WAIT_US;
-        s_want.since_us = now;   /* the two minutes to ask in start now */
-    }
-    portEXIT_CRITICAL(&s_ask_lock);
-    if (waiting) {
-        ESP_LOGI(TAG, "turn over: asking for the image in %d s unless Muse pushes it first",
-                 (int)(MUSE_PRESENT_PUSH_WAIT_US / 1000000));
-    }
-}
-
 uint32_t muse_present_seq(void)
 {
     return atomic_load(&s_seq);
+}
+
+void muse_present_wait(bool on)
+{
+    int64_t now = esp_timer_get_time();
+    uint32_t seq = atomic_load(&s_seq);
+    portENTER_CRITICAL(&s_ask_lock);
+    if (!on) {
+        s_wait.since_us = 0;
+    } else if (!s_wait.since_us) {
+        s_wait.since_us = now;
+        s_wait.seq = seq;
+        s_wait.received = s_wait.size = 0;
+    }
+    portEXIT_CRITICAL(&s_ask_lock);
+}
+
+void muse_present_chunk(size_t received, size_t size)
+{
+    portENTER_CRITICAL(&s_ask_lock);
+    s_wait.received = received;
+    s_wait.size = size;
+    portEXIT_CRITICAL(&s_ask_lock);
+}
+
+int muse_present_progress(void)
+{
+    int64_t now = esp_timer_get_time();
+    uint32_t seq = atomic_load(&s_seq);
+    portENTER_CRITICAL(&s_ask_lock);
+    int64_t since = s_wait.since_us;
+    bool shown = seq != s_wait.seq;
+    size_t received = s_wait.received, size = s_wait.size;
+    portEXIT_CRITICAL(&s_ask_lock);
+    if (!since) {
+        return -1;
+    }
+    return shown ? 100 : muse_present_estimate(now - since, received, size);
 }

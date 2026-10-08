@@ -115,7 +115,7 @@ bool muse_chat_bg_ask_for(muse_chat_bg_for_t who, const char *sid, const char *m
     if (!free) {
         return false;
     }
-    if (!muse_chat_bg_ask(sid, message)) {
+    if (!(who == MUSE_CHAT_BG_FOR_IMAGE ? muse_chat_bg_ask_now : muse_chat_bg_ask)(sid, message)) {
         bg_release();
         return false;
     }

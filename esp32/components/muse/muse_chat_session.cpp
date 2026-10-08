@@ -51,10 +51,12 @@
  * to push it over Link (display.show_image), and Muse holds it up on the face.
  * One written into the reply's text as Markdown (`![alt](sandbox://...)`)
  * is taken out of the text, and asked for the same way if no event named one.
- * Every mode's contract asks Muse to push the image itself in the same turn,
- * which is quicker; the request after the turn is called off if it does.
+ * The request goes straight away, beside the turn; every mode's contract also
+ * asks Muse to push the image itself in the turn, and the first push wins.
  * A voice reply with an image coming waits for it: its speech and captions
- * hold ("DOWNLOADING IMAGE...") until Muse holds the image up, then follow.
+ * hold ("GETTING THE IMAGE... 40%") until Muse holds the image up, then
+ * follow. Muse saying he's at work on an image (agent.status) holds them from
+ * the start, and the speech gives an image event a moment to turn up first.
  *
  * A background request (muse_chat_bg_ask, for the face's "up next" line) is a
  * typed message to a chat of the asker's, on streams of its own beside the
@@ -144,10 +146,12 @@ static const char *TAG = "muse_chat_session";
 #define TEXT_TURN_CAP_US (15 * 60 * 1000000LL)
 #define TEXT_BUSY_HOLD_US (5 * 60 * 1000000LL)
 #define PRESENT_LATE_US (30 * 1000000LL)   /* an image for the turn's chat may come this long after it */
-#define IMG_HOLD_CAP_US (45 * 1000000LL)   /* a reply's speech waits for its image this long at most */
-#define IMG_PUSH_WAIT_US (15 * 1000000LL)  /* the reply in: Muse may still push it this long (muse_present.h) */
+#define IMG_HOLD_CAP_US (120 * 1000000LL)  /* a reply's speech waits for its image this long at most */
+#define IMG_GRACE_US (1500 * 1000LL)       /* a reply ready to speak: an image event may still be this close behind */
 #define IMG_RISE_US (1100 * 1000LL)        /* shown: out of the pocket and held up (muse_ui.c's PHOTO_REACH_S + PHOTO_RISE_S) */
-#define IMG_CAPTION "DOWNLOADING IMAGE..."
+#define IMG_CAPTION "GETTING THE IMAGE..."
+/* After the words of every message (and any mode contract): Muse forgets the contract's standing order. */
+#define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: 200x200 baseline JPEG, one chunk.)"
 /*
  * The VM's streaming dictation has no ASR behind it right now, so each press
  * goes to the chat as a voice note, the way the phone app sends them, and the
@@ -252,7 +256,9 @@ struct stream_t {
 /* The last reply image's presentation id (img_present): a repeat isn't asked for again. */
 EXT_RAM_BSS_ATTR static char s_img_last[96];
 static uint32_t img_seq(void);         /* muse_present_seq: images handled */
-static void img_turn_over(void);       /* muse_present_turn_over */
+static void img_wait(bool on);         /* muse_present_wait */
+static int img_progress(void);         /* muse_present_progress */
+static bool bg_chat(const char *sid);  /* the background request's chat (bg_t) */
 
 #define MAX_STREAMS 6
 static stream_t s_streams[MAX_STREAMS];
@@ -309,7 +315,11 @@ struct turn_t {
     uint32_t img_seq;        /* img_seq() as the turn started: a change is an image pushed meanwhile */
     bool img_hold;           /* the speech waits for an image on its way (speech_held) */
     bool img_held;           /* it has, this turn: once is enough */
-    int64_t img_hold_us, img_over_us, img_shown_us;   /* held since; the reply all in; the image shown */
+    bool img_coming;         /* an image was named (an event, or Markdown) and asked for */
+    bool img_none;           /* held on Muse's word alone, and the reply's all in without one */
+    bool speech_go;          /* the reply may be spoken and captioned (speech_wait) */
+    int64_t img_hold_us, img_hold_end_us, img_shown_us;   /* held from, to; the image shown */
+    int64_t grace_us;        /* the reply first ready to speak (IMG_GRACE_US) */
     uint32_t pcm_out;        /* reply audio frames handed to the voice task */
     char committed[512];     /* finals that arrived before the half-close */
     char partial[512];
@@ -1083,8 +1093,11 @@ static void turn_finish(void)
     free_rec();
     s_turn.phase = P_IDLE;
     s_turn.dict_id = s_turn.chat_id = 0;
-    s_turn.img_hold = false;
-    img_turn_over();   /* an image asked for goes once Muse has had its chance to push it */
+    if (s_turn.img_hold) {
+        s_turn.img_hold = false;
+        s_turn.img_hold_end_us = now_us();
+    }
+    img_wait(false);
     s_turn.tts_msg = -1;
     s_turn.silent = false;
     s_turn.mp3_len = 0;
@@ -1311,11 +1324,13 @@ static bool open_note(void)
     if (muse_settings_chat_untitled(sid)) {
         strlcpy(s_voice_new_sid, sid, sizeof(s_voice_new_sid));   /* titled after the audio: retitle it */
     }
-    /* The mode goes as the text with the audio. */
+    /* The mode goes as the text with the audio, and the reminder to push an image. */
     int mode = -1;
     const char *ctx = muse_gadget_mode_context(sid, &mode);
     message_to(sid, ctx ? mode : -1);
-    size_t n = muse_chat_note_head(sid, ctx, head, sizeof(head));
+    char msg[MUSE_CHAT_NOTE_MESSAGE_MAX];
+    snprintf(msg, sizeof(msg), "%s%s" IMG_REMINDER, ctx ? ctx : "", ctx ? "\n\n" : "");
+    size_t n = muse_chat_note_head(sid, msg, head, sizeof(head));
     if (sid[0] || ctx) {
         ESP_LOGI(TAG, "voice note to chat %s%s%s", sid[0] ? sid : "main", ctx ? ", telling it: " : "",
                  ctx ? muse_gadget_mode_name((muse_gadget_mode_t)mode) : "");
@@ -1448,15 +1463,13 @@ static void send_chat(const char *text, const char *modality)
     /* The mode after the words, if this chat last heard another: the Muse titles a new chat by the words. */
     int mode = -1;
     const char *ctx = muse_gadget_mode_context(sid, &mode);
-    char *with = nullptr;
-    if (ctx) {
-        size_t n = strlen(text) + 2 + strlen(ctx) + 1;
-        with = static_cast<char *>(psram_alloc(n));
-        if (with) {
-            snprintf(with, n, "%s\n\n%s", text, ctx);
-        }
+    /* Then the reminder to push an image, after everything. */
+    size_t n = strlen(text) + 2 + (ctx ? strlen(ctx) + 2 : 0) + sizeof(IMG_REMINDER);
+    char *with = static_cast<char *>(psram_alloc(n));
+    if (with) {
+        snprintf(with, n, "%s\n\n%s%s" IMG_REMINDER, text, ctx ? ctx : "", ctx ? "\n\n" : "");
     }
-    message_to(sid, with ? mode : -1);
+    message_to(sid, with && ctx ? mode : -1);
     cJSON *body = cJSON_CreateObject();
     cJSON_AddStringToObject(body, "message", with ? with : text);
     heap_caps_free(with);
@@ -1668,8 +1681,8 @@ static void append_text(msg_t &m, const char *text)
 static void show_reply_start(const msg_t &m)
 {
     char line[EV_TEXT];
-    if (s_turn.img_hold) {
-        return;   /* with the speech, once the image is up */
+    if (!s_turn.speech_go) {
+        return;   /* with the speech (speech_wait), once any image is up */
     }
     if (s_turn.texts) {
         if (!muse_hatch_caption_at(s_turn.texts + (&m - s_turn.msgs) * TEXT_MAX, 0, line, sizeof(line))) {
@@ -1686,7 +1699,8 @@ static void show_reply_start(const msg_t &m)
 
 static void img_ask(const char *path, const char *label);   /* Turn: images, below */
 static bool img_expect(const char *path, const char *label);
-static void img_hold_start(void);
+static void img_hold_start(const char *why);
+static bool speech_wait(void);
 
 /* An image written into a done message's text, and no event showing one: Muse is asked for it as for those. */
 static void img_from_text(const char *final_text)
@@ -1805,7 +1819,7 @@ static void speak_early(int i)
         if (s_turn.pico && s_turn.tts_msg == i) {
             muse_tts_more(full, false);
         }
-    } else if (m.tts == TTS_NONE && s_turn.tts_msg < 0 && !s_turn.img_hold && muse_tts_wanted()) {
+    } else if (m.tts == TTS_NONE && s_turn.tts_msg < 0 && muse_tts_wanted() && !speech_wait()) {
         bool queued = false;
         for (int k = 0; k < s_turn.nmsgs; k++) {
             queued |= s_turn.msgs[k].tts == TTS_QUEUED;
@@ -1859,31 +1873,35 @@ static bool img_pushed(void)
 }
 
 /*
- * A voice reply's image is on its way: its speech and captions wait for it
- * (speech_held), "DOWNLOADING IMAGE..." up meanwhile and Muse thinking. Not
- * once the speech has started: a word cut off is worse than a picture late.
+ * A voice reply's image is on its way (or Muse says he's at work on one): its
+ * speech and captions wait for it (speech_held), "GETTING THE IMAGE..." up
+ * meanwhile with how far it's got, and Muse thinking. Not once the speech has
+ * started: a word cut off is worse than a picture late.
  */
-static void img_hold_start(void)
+static void img_hold_start(const char *why)
 {
+    (void)why;   /* the log's */
     if (s_turn.text || s_turn.phase != P_WAIT_REPLY || s_turn.img_held || img_pushed()) {
         return;
     }
     s_turn.img_held = true;
     if (s_turn.pcm_out) {
-        ESP_LOGI(TAG, "image on its way, but the reply's speech has started: not held");
+        ESP_LOGI(TAG, "image on its way (%s), but the reply's speech has started: not held", why);
         return;
     }
     s_turn.img_hold = true;
     s_turn.img_hold_us = now_us();
-    ESP_LOGI(TAG, "image on its way: the reply's speech waits for it (%d s at most)", (int)(IMG_HOLD_CAP_US / 1000000));
+    ESP_LOGI(TAG, "image on its way (%s): the reply's speech waits for it (%d s at most)", why,
+             (int)(IMG_HOLD_CAP_US / 1000000));
+    img_wait(true);
     emit(MUSE_HATCH_EV_IMAGE, IMG_CAPTION);
 }
 
 /*
  * Whether the speech still waits for the image. It goes on once the image
  * is up (shown, and IMG_RISE_US for Muse to take it out of his pocket), once
- * the reply has been all in for IMG_PUSH_WAIT_US with no push (it's asked for
- * after the turn instead, muse_present_ask), or after IMG_HOLD_CAP_US.
+ * the reply's all in with no image after all (img_none), or after
+ * IMG_HOLD_CAP_US; an image later than that still shows when it comes.
  */
 static bool speech_held(void)
 {
@@ -1899,16 +1917,46 @@ static bool speech_held(void)
     const char *why = nullptr;
     if (s_turn.img_shown_us) {
         why = t - s_turn.img_shown_us >= IMG_RISE_US ? "the image is up" : nullptr;
-    } else if (s_turn.img_over_us && t - s_turn.img_over_us >= IMG_PUSH_WAIT_US) {
-        why = "Muse didn't push it; it's asked for after the turn";
+    } else if (s_turn.img_none) {
+        why = "no image after all";
     } else if (t - s_turn.img_hold_us >= IMG_HOLD_CAP_US) {
-        why = "waited long enough";
+        why = "waited long enough; the image shows when it comes";
     }
     if (!why) {
         return true;
     }
     s_turn.img_hold = false;
+    s_turn.img_hold_end_us = t;
+    img_wait(false);
     ESP_LOGI(TAG, "speech goes on after %.1fs: %s", (t - s_turn.img_hold_us) / 1e6, why);
+    return false;
+}
+
+/*
+ * Whether a voice reply that's ready to speak still waits: for its image
+ * (speech_held), or, with none named yet, IMG_GRACE_US from when it was first
+ * ready, for an image event close behind it. Once it may go, its captions
+ * may show too (speech_go).
+ */
+static bool speech_wait(void)
+{
+    if (speech_held()) {
+        return true;
+    }
+    if (s_turn.text || s_turn.speech_go) {
+        return false;
+    }
+    if (!s_turn.img_held) {
+        int64_t t = now_us();
+        if (!s_turn.grace_us) {
+            s_turn.grace_us = t;
+            ESP_LOGI(TAG, "reply ready to speak: %d ms for an image to turn up first", (int)(IMG_GRACE_US / 1000));
+        }
+        if (t - s_turn.grace_us < IMG_GRACE_US) {
+            return true;
+        }
+    }
+    s_turn.speech_go = true;
     return false;
 }
 
@@ -1919,12 +1967,28 @@ static bool img_expect(const char *path, const char *label)
         ESP_LOGI(TAG, "image \"%s\": Muse pushed one this turn already", label);
         return false;
     }
-    img_ask(path, label);
-    if (s_turn.phase != P_WAIT_REPLY) {
-        img_turn_over();   /* just after the turn: its wait starts now */
+    img_ask(path, label);   /* straight away, beside the turn */
+    if (s_turn.phase == P_WAIT_REPLY) {
+        s_turn.img_coming = true;
     }
-    img_hold_start();
+    img_hold_start("named");
     return true;
+}
+
+/* Muse says what he's at work on (agent.status, task.status): whether it's an image. */
+static bool img_in_status(cJSON *payload)
+{
+    static const char *const KEYS[] = { "activity_text", "status_text", "text", "title", "label", "message" };
+    static const char *const WORDS[] = { "image", "picture", "photo" };
+    for (const char *key : KEYS) {
+        const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(payload, key));
+        for (const char *w : WORDS) {
+            if (v && strcasestr(v, w)) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /* Whether an image for chat `sid` (NULL: none named) is this turn's, or came just after it in its chat. */
@@ -2050,6 +2114,17 @@ static void on_event(cJSON *line)
     }
 
     if (!strcmp(event, "agent.status") || !strcmp(event, "task.status")) {
+        const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "session_id"));
+        if (!sid) {
+            sid = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(payload, "chat_context"), "chat_id"));
+        }
+        if (bg_chat(sid)) {
+            return;   /* Muse at work on the background request (pushing the image, say), not this turn */
+        }
+        if (!s_turn.img_held && img_in_status(payload)) {
+            const char *what = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_text"));
+            img_hold_start(what ? what : "Muse says so");
+        }
         const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_code"));
         const char *status = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "status"));
         bool was = s_turn.agent_busy;
@@ -2088,7 +2163,7 @@ static void on_event(cJSON *line)
             mark(M_TEXT);
             append_text(m, text);
             if (s_turn.md_img.path[0] && !s_turn.img_seen && !img_pushed()) {
-                img_hold_start();   /* asked for once its message is done (img_from_text) */
+                img_hold_start("in the text");   /* asked for once its message is done (img_from_text) */
             }
             show_reply_start(m);   /* ignored once the speech starts */
 #if CONFIG_MUSE_TTS_PICO
@@ -2134,7 +2209,14 @@ static void on_chat_ack(stream_t *s)
 
 static void start_tts(void)
 {
-    if (s_turn.tts_msg >= 0 || speech_held()) {
+    if (s_turn.tts_msg >= 0) {
+        return;
+    }
+    bool queued = false;
+    for (int i = 0; i < s_turn.nmsgs; i++) {
+        queued |= s_turn.msgs[i].tts == TTS_QUEUED;
+    }
+    if (!queued || speech_wait()) {
         return;
     }
     for (int i = 0; i < s_turn.nmsgs; i++) {
@@ -2352,7 +2434,8 @@ static void check_turn(void)
         return;
     }
     bool text = s_turn.text;
-    if (t - s_turn.start_us > (text ? TEXT_TURN_CAP_US : TURN_CAP_US)) {
+    int64_t held = s_turn.img_hold_us ? (s_turn.img_hold ? t : s_turn.img_hold_end_us) - s_turn.img_hold_us : 0;
+    if (t - s_turn.start_us - held > (text ? TEXT_TURN_CAP_US : TURN_CAP_US)) {
         ESP_LOGW(TAG, "turn hit the time cap");
         /* A voice turn that waited out the cap on a busy agent got no reply at all. */
         if (!text && !s_turn.nmsgs) {
@@ -2369,16 +2452,15 @@ static void check_turn(void)
         }
         return;
     }
-    if (s_turn.img_hold && !s_turn.img_over_us && t - s_turn.last_event_us >= SETTLE_US && !s_turn.agent_busy) {
+    if (s_turn.img_hold && !s_turn.img_coming && !s_turn.img_none && t - s_turn.last_event_us >= SETTLE_US
+        && !s_turn.agent_busy) {
         bool all_in = true;
         for (int i = 0; i < s_turn.nmsgs; i++) {
             all_in &= s_turn.msgs[i].done;
         }
         if (all_in) {
-            /* Muse's turn is over: a push it makes is on its way by now, or never comes. */
-            s_turn.img_over_us = t;
-            ESP_LOGI(TAG, "reply all in; the image has %d s more to come", (int)(IMG_PUSH_WAIT_US / 1000000));
-            img_turn_over();
+            s_turn.img_none = true;   /* Muse spoke of an image, but none was named: speech_held lets go */
+            ESP_LOGI(TAG, "reply all in, and no image named");
         }
     }
     for (int i = 0; i < s_turn.nmsgs; i++) {
@@ -2406,8 +2488,9 @@ static void check_turn(void)
  * chat, opened first, then the POST /chat/stream once it's taken. A chat the
  * Muse hasn't seen yet refuses the subscription (404) until its first
  * message, so then the message goes first and the subscription follows its
- * ack. Only the first assistant message replying to it counts. It never
- * starts while a turn runs, and a failure (or the connection going) only
+ * ack. Only the first assistant message replying to it counts. It doesn't
+ * start while a turn runs, unless it's asked to go beside one (an image the
+ * turn's speech waits for), and a failure (or the connection going) only
  * ends it: the turn, the picked chat's subscription and the connection are
  * left alone.
  */
@@ -2422,6 +2505,7 @@ struct bg_t {
     char *prompt;            /* until it's posted */
     int64_t sub_id, chat_id;
     bool posted, acked, sub_missing;
+    bool in_turn;            /* may start while a turn runs (muse_chat_bg_ask_now) */
     char user_id[80];        /* the message posted, from the ack */
     char reply_id[80];       /* the reply being kept */
     char *text;              /* BG_TEXT_MAX: the reply so far, then the answer */
@@ -2459,8 +2543,14 @@ static void bg_end(bool ok, const char *why)
     s_bg_state = ok ? MUSE_CHAT_BG_DONE : MUSE_CHAT_BG_FAILED;
 }
 
+/* Whether `sid` is the chat of the background request under way. */
+static bool bg_chat(const char *sid)
+{
+    return sid && s_bg.phase != BG_IDLE && !strcasecmp(sid, s_bg.sid);
+}
+
 /* CMD_BG: "<sid>\n<message>". One at a time. */
-static void bg_want(const char *cmd)
+static void bg_want(const char *cmd, bool in_turn = false)
 {
     const char *nl = strchr(cmd, '\n');
     if (s_bg.phase != BG_IDLE || !nl || nl - cmd != MUSE_CHAT_SID_MAX || !nl[1]) {
@@ -2485,6 +2575,7 @@ static void bg_want(const char *cmd)
     memcpy(s_bg.sid, cmd, MUSE_CHAT_SID_MAX);
     s_bg.sid[MUSE_CHAT_SID_MAX] = '\0';
     s_bg.phase = BG_WANTED;
+    s_bg.in_turn = in_turn;
     s_bg.start_us = now_us();
 }
 
@@ -2624,7 +2715,7 @@ static void bg_poll(void)
     }
     if (now_us() - s_bg.start_us > BG_TIMEOUT_US) {
         bg_end(false, "no reply in time");
-    } else if (s_bg.phase == BG_WANTED && s_turn.phase == P_IDLE) {
+    } else if (s_bg.phase == BG_WANTED && (s_turn.phase == P_IDLE || s_bg.in_turn)) {
         bg_start();
     } else if (s_bg.phase == BG_SUBSCRIBING) {
         stream_t *s = find_stream(s_bg.sub_id);
@@ -2696,10 +2787,6 @@ static void img_ask(const char *path, const char *label)
 #endif
 }
 
-#if CONFIG_MUSE_ENABLED
-static_assert(IMG_PUSH_WAIT_US == MUSE_PRESENT_PUSH_WAIT_US, "the speech and the request wait alike for a push");
-#endif
-
 static uint32_t img_seq(void)
 {
 #if CONFIG_MUSE_ENABLED
@@ -2709,10 +2796,21 @@ static uint32_t img_seq(void)
 #endif
 }
 
-static void img_turn_over(void)
+static void img_wait(bool on)
 {
 #if CONFIG_MUSE_ENABLED
-    muse_present_turn_over();
+    muse_present_wait(on);
+#else
+    (void)on;
+#endif
+}
+
+static int img_progress(void)
+{
+#if CONFIG_MUSE_ENABLED
+    return muse_present_progress();
+#else
+    return -1;
 #endif
 }
 
@@ -2952,7 +3050,7 @@ static void handle(const cmd_t &cmd)
     case CMD_WAKE:   /* only ends hatch_task's resting wait */
         break;
     case CMD_BG:
-        bg_want(cmd.text);
+        bg_want(cmd.text, cmd.gen != 0);
         free(cmd.text);
         break;
     }
@@ -3148,7 +3246,7 @@ extern "C" bool muse_chat_subscribe_session(void)
     return s_sub_with_sid;
 }
 
-extern "C" bool muse_chat_bg_ask(const char *sid, const char *message)
+static bool bg_ask(const char *sid, const char *message, bool in_turn)
 {
     if (!s_cmds || !sid || !message || !message[0] || s_bg_state == MUSE_CHAT_BG_BUSY) {
         return false;
@@ -3160,13 +3258,23 @@ extern "C" bool muse_chat_bg_ask(const char *sid, const char *message)
     }
     snprintf(text, n, "%s\n%s", sid, message);
     s_bg_state = MUSE_CHAT_BG_BUSY;
-    cmd_t cmd{ CMD_BG, 0, text };
+    cmd_t cmd{ CMD_BG, in_turn ? 1u : 0u, text };
     if (xQueueSend(s_cmds, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
         free(text);
         s_bg_state = MUSE_CHAT_BG_NONE;
         return false;
     }
     return true;
+}
+
+extern "C" bool muse_chat_bg_ask(const char *sid, const char *message)
+{
+    return bg_ask(sid, message, false);
+}
+
+extern "C" bool muse_chat_bg_ask_now(const char *sid, const char *message)
+{
+    return bg_ask(sid, message, true);
 }
 
 extern "C" muse_chat_bg_state_t muse_chat_bg_result(char *out, size_t cap)
@@ -3265,7 +3373,13 @@ extern "C" muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap)
 extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
 {
     if (s_turn.img_hold) {
-        strlcpy(out, IMG_CAPTION, cap);   /* the reply's words come with its speech */
+        /* The reply's words come with its speech. */
+        int pct = img_progress();
+        if (pct >= 0) {
+            snprintf(out, cap, IMG_CAPTION " %d%%", pct);
+        } else {
+            strlcpy(out, IMG_CAPTION, cap);
+        }
         return true;
     }
     /* The message being spoken: the last one whose speech has started. */
