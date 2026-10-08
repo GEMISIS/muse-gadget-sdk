@@ -110,6 +110,7 @@ typedef enum {
     MUSE_HATCH_EV_DONE,     /* reply complete; the audio stream is drained after this */
     MUSE_HATCH_EV_ERROR,    /* turn failed; text says why */
     MUSE_HATCH_EV_SENT,     /* the VM has acknowledged the note */
+    MUSE_HATCH_EV_IMAGE,    /* an image is on its way: the speech and its captions wait for it; text is the caption */
 } muse_hatch_ev_t;
 
 /* Non-blocking; copies the event's text. Events of cancelled turns are dropped. */

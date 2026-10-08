@@ -45,14 +45,30 @@ extern "C" {
 bool muse_present_bytes(uint8_t *data, size_t len, const char *label);
 
 /*
- * Asks Muse, in the background (muse_chat_bg_ask_for, in this gadget's own
- * chat), to push the workspace file at `path` with display.show_image: once
- * no turn runs and no other background request is under way, giving up after
- * two minutes. A newer image replaces one still waiting; one asked for in the
- * last ten minutes isn't asked for again. Nothing shows until the push is
- * all here. Any task.
+ * Asks Muse, in the background (muse_chat_bg_ask_for, in a chat of its own),
+ * to push the image at `path` (a workspace file, or an http(s) URL Muse
+ * downloads) with display.show_image, unless Muse pushes one by itself first:
+ * every mode's contract asks it to, in the same turn (muse_gadget_mode.c).
+ * So the request waits for the reply's turn to be over (muse_present_turn_over),
+ * then MUSE_PRESENT_PUSH_WAIT_US more; any image pushed meanwhile
+ * (muse_present_bytes) calls it off. Then it goes once no turn runs and no
+ * other background request is under way, giving up after two minutes. A
+ * newer image replaces one still waiting; one asked for in the last ten
+ * minutes isn't asked for again. Nothing shows until the push is all here.
+ * Any task.
  */
+#define MUSE_PRESENT_PUSH_WAIT_US (15 * 1000000LL)
 void muse_present_ask(const char *path, const char *label);
+
+/* The reply's turn is over (or there's none): an image muse_present_ask
+ * holds back is asked for MUSE_PRESENT_PUSH_WAIT_US from now, unless one is
+ * pushed meanwhile. Any task. */
+void muse_present_turn_over(void);
+
+/* Counts the pushed images handled: shown, or dropped as unshowable. Moves
+ * once the face has the image (muse_ui_present), which then takes it out of
+ * Muse's pocket. Any task. */
+uint32_t muse_present_seq(void);
 
 #ifdef __cplusplus
 }

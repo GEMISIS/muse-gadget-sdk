@@ -499,8 +499,11 @@ one inbound service frame (`SVC_FRAME_SCRATCH`; a bigger one ends the
 session), so take anything large in chunks the same way, and keep the
 description's chunk size within it (`tests/test_link_gadget_commands.py`
 checks). An image in a chat reply only names a file in Muse's workspace, which
-the VM won't serve to the gadget, so `muse_present_ask()` asks Muse in the
-background to push it.
+the VM won't serve to the gadget. Every gadget mode's contract
+(`muse_gadget_mode.c`) asks Muse to push an image it shows in the same turn,
+as a 200x200 JPEG under 12 KB in one chunk; if it doesn't, `muse_present_ask()`
+asks it in the background once the turn is over. A voice reply's speech waits
+for the image ("DOWNLOADING IMAGE..."), up to a cap.
 
 Muse sees the command once the board reconnects with the new firmware. Keep
 the management commands that `on_ws_command()` also handles (`device.list_vms`,

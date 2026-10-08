@@ -57,7 +57,8 @@ static const char *TAG = "muse_present";
 #define LABEL_MAX 48
 #define PATH_MAX_LEN 256                /* a workspace file's path, to ask for */
 #define ASK_POLL_MS 1000                /* how often a request waiting to go, or for its reply, is looked at */
-#define ASK_GIVE_UP_US (120 * 1000000LL)        /* waiting to ask */
+#define ASK_GIVE_UP_US (120 * 1000000LL)        /* waiting to ask, once it may */
+#define TURN_WAIT_US (5 * 60 * 1000000LL)       /* waiting for the turn to be over (muse_present_turn_over) */
 #define ASKED_AGAIN_US (10 * 60 * 1000000LL)    /* a path asked for isn't asked for again this soon */
 #define ASKED_KEPT 4
 
@@ -69,6 +70,7 @@ typedef struct {
 
 static QueueHandle_t s_jobs;   /* job_t *, or NULL to look at the asking */
 static atomic_int s_started;   /* 0 not yet, 1 starting, 2 running */
+static atomic_uint s_seq;      /* muse_present_seq */
 
 static void job_free(job_t *job)
 {
@@ -246,6 +248,7 @@ static portMUX_TYPE s_ask_lock = portMUX_INITIALIZER_UNLOCKED;
 EXT_RAM_BSS_ATTR static struct {
     bool want;
     int64_t since_us;
+    int64_t ready_us;           /* asked for from then on; INT64_MAX until the turn's over */
     char path[PATH_MAX_LEN];
     char label[LABEL_MAX];
 } s_want;
@@ -348,20 +351,26 @@ static void ask_tick(void)
     portENTER_CRITICAL(&s_ask_lock);
     bool want = s_want.want;
     since = s_want.since_us;
+    bool held = s_want.ready_us == INT64_MAX;
+    bool early = now < s_want.ready_us;
+    bool late = now - since > (held ? TURN_WAIT_US : ASK_GIVE_UP_US);
     if (want) {
         memcpy(path, s_want.path, sizeof(path));
         memcpy(label, s_want.label, sizeof(label));
     }
-    if (want && now - since > ASK_GIVE_UP_US) {
+    if (want && late) {
         s_want.want = false;
     }
     portEXIT_CRITICAL(&s_ask_lock);
     if (!want) {
         return;
     }
-    if (now - since > ASK_GIVE_UP_US) {
+    if (late) {
         ESP_LOGW(TAG, "\"%s\": couldn't ask Muse for it in time; given up", label);
         return;
+    }
+    if (early) {
+        return;   /* Muse may push it by itself yet */
     }
     if (!muse_hatch_ready()) {
         return;   /* out of reach for now */
@@ -370,8 +379,9 @@ static void ask_tick(void)
     uint32_t hash = path_hash(path);
     unquote(path);
     unquote(label);
-    /* Small: every byte goes as base64 Muse writes out, about 45 s per
-     * 16 KiB chunk, so a 240 px JPEG (one chunk) shows in under a minute. */
+    /* Small: every byte goes as base64 Muse writes out, about 35 s per
+     * 14K characters, so a 200 px JPEG under 12 KB (one chunk) shows in
+     * well under a minute. */
     int n = 0;
     if (s_ask_prev[0]) {
         n = snprintf(msg, sizeof(msg),
@@ -382,9 +392,9 @@ static void ask_tick(void)
     bool web = !strncmp(path, "http://", 7) || !strncmp(path, "https://", 8);
     snprintf(msg + n, sizeof(msg) - n,
              "%s the image at \"%s\" (\"%s\") %sto this gadget with display.show_image: first make a copy "
-             "scaled to 240x240 (keep the aspect, fit inside), saved as a baseline JPEG at about 70%% quality, "
-             "under 16 KiB, then send that copy in one chunk (offset 0, final=true), or in chunks of up to 16 KiB if it "
-             "won't fit. Don't create links. Reply with just: sent.",
+             "scaled to 200x200 (keep the aspect, fit inside), saved as a baseline JPEG at about 70%% quality, "
+             "under 12 KB, then send that copy in one chunk (offset 0, final=true). Don't create links. "
+             "Reply with just: sent.",
              web ? "Download" : "Send", path, label, web ? "and send it " : "");
     new_sid(s_ask_sid);
     if (!muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_IMAGE, s_ask_sid, msg)) {
@@ -431,6 +441,7 @@ static void present_task(void *arg)
             int64_t t0 = esp_timer_get_time();
             run(job);
             job_free(job);
+            atomic_fetch_add(&s_seq, 1);   /* the face has it now, if it could be shown */
             ESP_LOGI(TAG, "shown in %d ms; stack %u free", (int)ms_since(t0),
                      (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
@@ -468,6 +479,18 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
     job->data = data;
     job->len = len;
     strlcpy(job->label, label && label[0] ? label : "image", sizeof(job->label));
+    /* Muse pushed one by itself (the mode's contract asks it to): one still
+     * waiting to be asked for needn't be. One asked for already is this, likely. */
+    char called_off[LABEL_MAX] = "";
+    portENTER_CRITICAL(&s_ask_lock);
+    if (s_want.want) {
+        s_want.want = false;
+        memcpy(called_off, s_want.label, sizeof(called_off));
+    }
+    portEXIT_CRITICAL(&s_ask_lock);
+    if (called_off[0]) {
+        ESP_LOGI(TAG, "\"%s\": pushed by Muse itself; not asking for \"%s\"", job->label, called_off);
+    }
     if (!start() || xQueueSend(s_jobs, &job, 0) != pdTRUE) {
         ESP_LOGW(TAG, "\"%s\": busy with others, dropped", job->label);
         job_free(job);
@@ -489,6 +512,7 @@ void muse_present_ask(const char *path, const char *label)
     if (!asked) {
         s_want.want = true;
         s_want.since_us = now;
+        s_want.ready_us = INT64_MAX;   /* muse_present_turn_over */
         strlcpy(s_want.path, path, sizeof(s_want.path));
         strlcpy(s_want.label, label && label[0] ? label : "image", sizeof(s_want.label));
     }
@@ -501,4 +525,25 @@ void muse_present_ask(const char *path, const char *label)
     if (start()) {
         xQueueSend(s_jobs, &wake, 0);   /* if the queue's full, the task is busy and looks after it */
     }
+}
+
+void muse_present_turn_over(void)
+{
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_ask_lock);
+    bool waiting = s_want.want && s_want.ready_us == INT64_MAX;
+    if (waiting) {
+        s_want.ready_us = now + MUSE_PRESENT_PUSH_WAIT_US;
+        s_want.since_us = now;   /* the two minutes to ask in start now */
+    }
+    portEXIT_CRITICAL(&s_ask_lock);
+    if (waiting) {
+        ESP_LOGI(TAG, "turn over: asking for the image in %d s unless Muse pushes it first",
+                 (int)(MUSE_PRESENT_PUSH_WAIT_US / 1000000));
+    }
+}
+
+uint32_t muse_present_seq(void)
+{
+    return atomic_load(&s_seq);
 }

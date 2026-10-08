@@ -464,6 +464,14 @@ static bool hatch_reply(bool *delivered)
                     muse_state_set_caption("%s", text);
                 }
                 break;
+            case MUSE_HATCH_EV_IMAGE:
+                /* Muse thinking, "DOWNLOADING IMAGE..." up (muse_hatch_turn_caption
+                 * says it below) until the image is held up and he speaks. */
+                replied = *delivered = true;
+                if (!speaking) {
+                    muse_state_set_caption("%s", text);
+                }
+                break;
             case MUSE_HATCH_EV_DONE:
                 done = *delivered = true;
                 break;
