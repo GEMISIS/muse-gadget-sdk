@@ -80,7 +80,7 @@ static const char *TAG = "muse_ui";
 #define PHOTO_REACH_S 0.4f      /* Muse reaching into his pocket for it */
 #define PHOTO_RISE_S 0.6f       /* taking it out and holding it up, and back down */
 #define PHOTO_STOW_S 0.3f       /* his hand back out of the pocket */
-#define PHOTO_HOLD_S 60.0f      /* held up this long after the reply */
+#define PHOTO_HOLD_S 20.0f      /* held up this long, once it's up and the reply's done */
 #define PHOTO_BOB_PX 2
 #define PAW_PX 20
 #define ARM_PX 12           /* about his own arms, at the photo layout's 2 px cells */
@@ -1547,7 +1547,7 @@ static void photo_place(float rise, float now)
         lv_obj_set_style_radius(s_photo_card, radius, 0);   /* a style change: not every frame */
     }
     int paw = (int)lroundf(PAW_PX * (0.6f + 0.4f * rise));
-    /* His right hand brings it out; the left, down at his side, takes its other corner once it's up. */
+    /* His right hand brings it out; the left, down at his side, takes the edge once it's up. */
     float grab = (rise - 0.45f) / 0.3f;
     grab = ease_in_out(grab < 0 ? 0 : grab > 1 ? 1 : grab);
     int32_t rest_x, rest_y;
@@ -1555,7 +1555,9 @@ static void photo_place(float rise, float now)
     for (int a = 0; a < 2; a++) {
         int32_t sx, sy;
         grid_point(a ? 46.0f : 18.0f, 34.0f, &sx, &sy);   /* his shoulders */
-        int32_t ex = a ? x0 + w - 3 : x0 + 3, ey = y0 + h - 3;
+        /* Paws on the bottom edge, a little either side of him, as one holds
+         * up a sign: short arms, not stretched out to the corners. */
+        int32_t ex = (int32_t)lroundf(cx + (a ? 1 : -1) * w * 0.2f), ey = y0 + h - 3;
         if (!a) {
             ex = rest_x + (int32_t)lroundf((ex - rest_x) * grab);
             ey = rest_y + (int32_t)lroundf((ey - rest_y) * grab);
