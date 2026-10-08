@@ -31,7 +31,9 @@
 #include <string.h>
 
 #include "esp_attr.h"
+#include "esp_crt_bundle.h"
 #include "esp_heap_caps.h"
+#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -45,11 +47,14 @@
 #include "muse_mem.h"
 #include "muse_sd.h"
 #include "muse_settings.h"
+#include "muse_state.h"
 #include "muse_ui.h"
 
 static const char *TAG = "muse_present";
 
-#define TASK_STACK (12 * 1024)          /* in PSRAM: the decoder, and asking */
+#define TASK_STACK (20 * 1024)          /* in PSRAM: the decoder, asking, and a TLS fetch of a web image */
+#define WEB_MAX (768 * 1024)            /* a web image bigger than this goes to Muse to shrink */
+#define WEB_TIMEOUT_MS 6000
 #define TASK_PRIORITY 3                 /* under the UI (5), the chat session (5) and draw_url's (4) */
 #define JOBS 3                          /* the one being shown, the next, and a nudge to ask */
 #define JPEG_POOL_BYTES 3100            /* the ROM decoder's work pool, as its documentation asks */
@@ -174,17 +179,18 @@ static uint16_t *resize(const uint16_t *src, int sw, int sh, int dw, int dh)
     return dst;
 }
 
-static void show_jpeg(const job_t *job)
+/* Decodes and hands it to the face; false if it couldn't be. */
+static bool show_jpeg(const job_t *job)
 {
     int sw, sh, photo;
     if (!muse_ui_present_sizes(&sw, &sh, &photo)) {
         ESP_LOGW(TAG, "\"%s\": no screen to show it on", job->label);
-        return;
+        return false;
     }
     int64_t t0 = esp_timer_get_time();
     void *pool = heap_caps_malloc(JPEG_POOL_BYTES, MUSE_BIG_CAPS);
     if (!pool) {
-        return;
+        return false;
     }
     jpeg_t j = { .data = job->data, .len = job->len };
     JDEC jd;
@@ -217,7 +223,7 @@ static void show_jpeg(const job_t *job)
                  rc == JDR_FMT3 ? "unsupported JPEG: progressive, not baseline"
                  : rc == JDR_MEM1 ? "out of memory" : "not a valid JPEG", (int)rc);
         heap_caps_free(j.out);
-        return;
+        return false;
     }
     int64_t t1 = esp_timer_get_time();
     full = fw == j.w && fh == j.h ? j.out : resize(j.out, j.w, j.h, fw, fh);
@@ -229,7 +235,7 @@ static void show_jpeg(const job_t *job)
         ESP_LOGW(TAG, "\"%s\": out of memory", job->label);
         heap_caps_free(full);
         heap_caps_free(held);
-        return;
+        return false;
     }
     ESP_LOGI(TAG, "\"%s\": %ux%u JPEG, decoded at 1/%d in %d ms, sized to %dx%d and %dx%d in %d ms", job->label,
              (unsigned)jd.width, (unsigned)jd.height, 1 << scale, (int)((t1 - t0) / 1000), fw, fh, hw, hh,
@@ -238,7 +244,95 @@ static void show_jpeg(const job_t *job)
         ESP_LOGW(TAG, "\"%s\": the face didn't take it", job->label);
         heap_caps_free(full);
         heap_caps_free(held);
+        return false;
     }
+    return true;
+}
+
+/* ---- Fetching a web image ourselves --------------------------------------- */
+
+static bool run(job_t *job);
+
+typedef struct {
+    uint8_t *buf;
+    size_t len, cap;
+    bool too_big;
+} fetch_t;
+
+static esp_err_t fetch_event(esp_http_client_event_t *ev)
+{
+    fetch_t *f = ev->user_data;
+    if (ev->event_id != HTTP_EVENT_ON_DATA || f->too_big) {
+        return ESP_OK;
+    }
+    if (esp_http_client_get_status_code(ev->client) != 200) {
+        return ESP_OK;   /* a redirect's body, or an error page */
+    }
+    if (f->len + ev->data_len > f->cap) {
+        size_t cap = f->cap ? f->cap * 2 : 64 * 1024;
+        while (cap < f->len + ev->data_len) {
+            cap *= 2;
+        }
+        if (cap > WEB_MAX) {
+            f->too_big = true;
+            return ESP_OK;
+        }
+        uint8_t *grown = heap_caps_realloc(f->buf, cap, MUSE_BIG_CAPS);
+        if (!grown) {
+            f->too_big = true;
+            return ESP_OK;
+        }
+        f->buf = grown;
+        f->cap = cap;
+    }
+    memcpy(f->buf + f->len, ev->data, ev->data_len);
+    f->len += ev->data_len;
+    return ESP_OK;
+}
+
+/*
+ * A public web image (an https URL Muse wrote into a reply) fetched straight
+ * here: a second or two, not the ~20 s of Muse pushing a copy. No token or
+ * cookie goes with it. True if it was shown; else Muse is asked after all
+ * (too big, not a baseline JPEG, refused, out of reach).
+ */
+static bool show_from_web(const char *url, const char *label)
+{
+    int64_t t0 = esp_timer_get_time();
+    fetch_t f = { 0 };
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = WEB_TIMEOUT_MS,
+        .buffer_size = 2048,
+        .buffer_size_tx = 1024,
+        .max_redirection_count = 4,
+        .event_handler = fetch_event,
+        .user_data = &f,
+        .user_agent = "Mozilla/5.0 (MuseGadget)",
+    };
+    esp_http_client_handle_t http = esp_http_client_init(&cfg);
+    if (!http) {
+        return false;
+    }
+    esp_http_client_set_header(http, "Accept", "image/jpeg,image/*;q=0.8");
+    esp_err_t err = esp_http_client_perform(http);
+    int status = esp_http_client_get_status_code(http);
+    esp_http_client_cleanup(http);
+    bool jpeg = f.len > 3 && f.buf[0] == 0xFF && f.buf[1] == 0xD8;
+    if (err != ESP_OK || status != 200 || f.too_big || !jpeg) {
+        ESP_LOGW(TAG, "\"%s\": couldn't fetch it here (%s, HTTP %d, %u bytes%s%s) in %d ms: asking Muse", label,
+                 esp_err_to_name(err), status, (unsigned)f.len, f.too_big ? ", too big" : "",
+                 f.len && !jpeg ? ", not a JPEG" : "", (int)ms_since(t0));
+        heap_caps_free(f.buf);
+        return false;
+    }
+    ESP_LOGI(TAG, "\"%s\": fetched here: %u bytes in %d ms", label, (unsigned)f.len, (int)ms_since(t0));
+    job_t job = { .data = f.buf, .len = f.len };
+    strlcpy(job.label, label, sizeof(job.label));
+    bool shown = run(&job);
+    heap_caps_free(f.buf);
+    return shown;
 }
 
 /* ---- Asking for a reply's image ----------------------------------------- */
@@ -284,7 +378,8 @@ static void new_sid(char out[MUSE_CHAT_SID_MAX + 1])
  * answer the request, and only the first of the two is shown.
  */
 EXT_RAM_BSS_ATTR static bool s_guard, s_guard_shown;
-EXT_RAM_BSS_ATTR static size_t s_guard_len;   /* the size of the one shown this turn */
+EXT_RAM_BSS_ATTR static size_t s_guard_len;
+EXT_RAM_BSS_ATTR static bool s_web_tried;   /* the wanted web image was fetched here already (or tried) */   /* the size of the one shown this turn */
 
 /* Waiting for an image (muse_present_wait), and its bytes so far (with s_ask_lock). */
 EXT_RAM_BSS_ATTR static struct {
@@ -384,6 +479,20 @@ static void ask_tick(void)
         ESP_LOGW(TAG, "\"%s\": couldn't ask Muse for it in time; given up", label);
         return;
     }
+    bool web_image = !strncmp(path, "https://", 8) || !strncmp(path, "http://", 7);
+    if (web_image && !s_web_tried && muse_state_mode(NULL) != MUSE_MODE_LISTENING) {
+        s_web_tried = true;   /* once a want: a failure goes on to Muse */
+        if (show_from_web(path, label)) {
+            portENTER_CRITICAL(&s_ask_lock);
+            if (s_want.since_us == since) {
+                s_want.want = false;
+            }
+            s_guard_shown = s_guard;
+            portEXIT_CRITICAL(&s_ask_lock);
+            atomic_fetch_add(&s_seq, 1);   /* shown: the held speech goes on */
+            return;
+        }
+    }
     if (!muse_hatch_ready()) {
         return;   /* out of reach for now */
     }
@@ -430,19 +539,19 @@ static void ask_tick(void)
 
 /* ---- Task --------------------------------------------------------------- */
 
-static void run(job_t *job)
+static bool run(job_t *job)
 {
     const uint8_t *d = job->data;
     bool jpeg = job->len > 3 && d[0] == 0xFF && d[1] == 0xD8;
     bool png = job->len > 8 && !memcmp(d, "\x89PNG", 4);
     if (!jpeg) {
         ESP_LOGW(TAG, "\"%s\": %s: only JPEG is shown", job->label, png ? "a PNG" : "not an image");
-        return;
+        return false;
     }
     if (muse_sd_ready() && muse_sd_queue_image(job->data, job->len, "jpg")) {
         ESP_LOGI(TAG, "\"%s\": queued for the microSD card", job->label);
     }
-    show_jpeg(job);
+    return show_jpeg(job);
 }
 
 static void present_task(void *arg)
@@ -540,6 +649,7 @@ void muse_present_ask(const char *path, const char *label)
     if (!asked) {
         s_want.want = true;
         s_want.since_us = now;
+        s_web_tried = false;
         strlcpy(s_want.path, path, sizeof(s_want.path));
         strlcpy(s_want.label, label && label[0] ? label : "image", sizeof(s_want.label));
     }
