@@ -96,6 +96,12 @@ typedef enum {
 
 muse_present_phase_t muse_present_phase(float *progress);
 
+/* Muse is to push an image he was asked for (muse_present_ask: a workspace
+ * file, or a web image not fetched here), and none of it's come yet: he's
+ * writing it out, a minute or more (the face's cloud, waiting). A web image
+ * being fetched here isn't. Any task. */
+bool muse_present_pushing(void);
+
 /* A preview's been shown and Muse is still to push the sharper copy he was
  * asked for (muse_present_ask): the face keeps it up for that. Any task. */
 bool muse_present_sharper_pending(void);

@@ -929,6 +929,15 @@ muse_present_phase_t muse_present_phase(float *progress)
     return waiting ? MUSE_PRESENT_WAITING : MUSE_PRESENT_NONE;
 }
 
+bool muse_present_pushing(void)
+{
+    portENTER_CRITICAL(&s_ask_lock);
+    bool web = !strncmp(s_want.path, "https://", 8) || !strncmp(s_want.path, "http://", 7);
+    bool pushing = (s_guard && !s_guard_shown) || (s_want.want && !web);
+    portEXIT_CRITICAL(&s_ask_lock);
+    return pushing;
+}
+
 bool muse_present_sharper_pending(void)
 {
     portENTER_CRITICAL(&s_ask_lock);

@@ -675,10 +675,14 @@ static void chat_cancel(void)
  * another "face=" moves it on. "face=happy" goes back to idle with the happy
  * hop, as a finished turn does. The rest are what Muse is up to
  * (muse_ui_bench_pose), held until the next "face=": "phone", "listen_phone",
- * "packages", "unbox" and "assemble" thinking, "tea", "pajamas" and "brace"
- * idle. "download" plays an image's whole way in, made up: the phone, the
- * boxes over three seconds, unboxing, the picture put together and held (or,
- * with a photo put away lately, that one out of the pocket).
+ * "packages", "unbox", "assemble", "paint" and "toss" (a moment's painting,
+ * the canvas tossed up into the cloud, then waiting on it) thinking, "tea",
+ * "pajamas" and "brace" idle; "act:NAME" what Muse would be at for a
+ * muse_activity.h activity (act:search, act:mail, act:reminder_cancel...).
+ * "download" plays a made image's whole way in, made up: painting it, the
+ * toss, the cloud, the push all at once, the boxes, unboxing, the picture
+ * put together and held (or, with a photo put away lately, that one out of
+ * the pocket).
  */
 static void set_face(const char *name)
 {
@@ -702,11 +706,26 @@ static void set_face(const char *name)
         { "download", MUSE_UI_BENCH_DOWNLOAD, "thinking" },
         { "unbox", MUSE_UI_BENCH_UNBOX, "thinking" },
         { "assemble", MUSE_UI_BENCH_ASSEMBLE, "thinking" },
+        { "toss", MUSE_UI_BENCH_TOSS, "thinking" },
         { "tea", MUSE_UI_BENCH_TEA, "idle" },
         { "pajamas", MUSE_UI_BENCH_PAJAMAS, "idle" },
         { "brace", MUSE_UI_BENCH_BRACE, "idle" },
     };
     muse_state_poke();
+    if (!strncmp(name, "act:", 4) || !strcmp(name, "paint")) {
+        const char *what = !strcmp(name, "paint") ? "image" : name + 4;
+        for (int a = 0; a < MUSE_ACTIVITY_COUNT; a++) {
+            if (!strcmp(what, muse_activity_name((muse_activity_t)a))) {
+                muse_ui_bench_activity((muse_activity_t)a);
+                muse_state_set_mode(MUSE_MODE_IDLE);
+                muse_state_set_mode(MUSE_MODE_THINKING);
+                return;
+            }
+        }
+        printf("@face.error unknown act \"%s\"\n", what);
+        fflush(stdout);
+        return;
+    }
     muse_ui_bench_t pose = MUSE_UI_BENCH_NONE;
     for (size_t i = 0; i < sizeof(poses) / sizeof(poses[0]); i++) {
         if (!strcmp(name, poses[i].name)) {
@@ -733,7 +752,7 @@ static void set_face(const char *name)
         }
     }
     printf("@face.error unknown face \"%s\": boot idle listening thinking speaking error off happy"
-           " phone listen_phone packages tea pajamas brace\n", name);
+           " phone listen_phone packages download unbox assemble paint toss act:NAME tea pajamas brace\n", name);
     fflush(stdout);
 }
 
@@ -969,6 +988,17 @@ static bool console_command(char *line, bool whole)
         set_face(line + 5);
         return true;
     }
+    if (!strncmp(line, "activity=", 9)) {
+        /* As if Muse said he's at this (agent.status's activity_text): what it's taken for, and shown. */
+        muse_activity_t a = muse_activity_of(NULL, line + 9);
+        printf("@activity {\"activity\":\"%s\"}\n", muse_activity_name(a));
+        fflush(stdout);
+        muse_state_poke();
+        muse_ui_bench_activity(a);
+        muse_state_set_mode(MUSE_MODE_IDLE);
+        muse_state_set_mode(MUSE_MODE_THINKING);
+        return true;
+    }
     if (!strcmp(line, "chat_sid") || !strcmp(line, "chats") || !strncmp(line, "chat_sid=", 9)
         || !strncmp(line, "chat_sub=", 9) || !strncmp(line, "chat_new=", 9) || !strncmp(line, "chat_forget=", 12)) {
         chat_sid_command(line);
@@ -1008,7 +1038,8 @@ static bool console_command(char *line, bool whole)
  * up as a shake of the board does, "charge" cheers as plugging in does
  * (cheer_plugged), "brief" asks the Muse for the face's
  * "up next" line now and "brief?" prints it (muse_up_next.h), "face=" shows a face
- * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
+ * (see set_face), "activity=TEXT" shows Muse at what he'd be at if he said
+ * TEXT (muse_activity_of) and prints what it's taken for, "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and "chat_sid=", "chat_new=" and "chats" pick
  * the chat it goes to and list the named ones (see chat_sid_command).
  */
