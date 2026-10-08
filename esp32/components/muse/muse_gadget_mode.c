@@ -32,6 +32,7 @@
 #include "muse_dialog.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#include "muse_style.h"
 #include "muse_wifi.h"
 
 static const char *TAG = "muse_mode";
@@ -42,12 +43,7 @@ static const char *TAG = "muse_mode";
 #define NIGHT_BRIGHTNESS 20     /* at most */
 #define TOAST_S 10.0f
 
-#define COLOR_TEXT 0xf2efff
-#define COLOR_DIM 0x8b84a8
-#define COLOR_CARD 0x1a1530
-#define COLOR_ACCENT 0xa77dff
-#define COLOR_NIGHT 0x7d8cff
-#define COLOR_AWAY 0xffb45c
+#define COLOR_AWAY MUSE_COLOR_WARN   /* On-the-go's */
 
 static const char *const NAMES[MUSE_GADGET_MODE_COUNT] = {
     [MUSE_GADGET_DESK] = "Desk",
@@ -485,22 +481,18 @@ void muse_gadget_mode_build_toast(lv_obj_t *layer, int w)
     lv_obj_align(s_toast, LV_ALIGN_BOTTOM_MID, 0, -64);
     lv_obj_set_flex_flow(s_toast, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_toast, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(s_toast, 12, 0);
+    muse_style_card(s_toast);   /* a dialog's card (muse_dialog.h) */
     lv_obj_set_style_pad_row(s_toast, 4, 0);
-    lv_obj_set_style_radius(s_toast, 20, 0);
-    lv_obj_set_style_bg_opa(s_toast, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s_toast, lv_color_hex(COLOR_CARD), 0);
-    lv_obj_set_style_border_color(s_toast, lv_color_hex(COLOR_AWAY), 0);
-    lv_obj_set_style_border_width(s_toast, 2, 0);
+    lv_obj_set_style_bg_color(s_toast, lv_color_hex(MUSE_COLOR_CARD_PRESSED), LV_STATE_PRESSED);
     lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(s_toast, on_toast, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *l = lv_label_create(s_toast);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(l, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(l, MUSE_FONT_NOTE, 0);
+    lv_obj_set_style_text_color(l, lv_color_hex(MUSE_COLOR_TEXT), 0);
     lv_label_set_text(l, "Not on your home Wi-Fi");
     l = lv_label_create(s_toast);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(l, MUSE_FONT_NOTE, 0);
     lv_obj_set_style_text_color(l, lv_color_hex(COLOR_AWAY), 0);
     lv_label_set_text(l, LV_SYMBOL_GPS "  Tap for On-the-go mode");
     s_shown_suggest = s_suggest_seq;
@@ -516,8 +508,8 @@ void muse_gadget_mode_ui_tick(float now)
             [MUSE_GADGET_ON_THE_GO] = LV_SYMBOL_GPS " ON-THE-GO",
         };
         static const uint32_t COLORS[MUSE_GADGET_MODE_COUNT] = {
-            [MUSE_GADGET_DESK] = COLOR_DIM,
-            [MUSE_GADGET_NIGHT] = COLOR_NIGHT,
+            [MUSE_GADGET_DESK] = MUSE_COLOR_DIM,
+            [MUSE_GADGET_NIGHT] = MUSE_COLOR_NIGHT,
             [MUSE_GADGET_ON_THE_GO] = COLOR_AWAY,
         };
         lv_label_set_text(s_chip, CHIPS[mode]);
