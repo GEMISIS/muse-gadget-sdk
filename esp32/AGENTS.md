@@ -161,7 +161,9 @@ which fails on its USB bridge (see "Flash it"). Build the Watcher with
 `idf.py`, flash it with `tools/muse/board.sh flash watcher`, then
 `idf.py … -p PORT monitor` as usual; reading from the bridge works. Muse builds use `partitions_muse.csv` and need 16 MB of flash or
 more, except the StickS3, StickC Plus2 and Cardputer ADV, which have 8 MB and use
-`partitions_muse_8mb.csv`.
+`partitions_muse_8mb.csv`. The ESP32-S3-Touch-AMOLED-2.16 speaks replies on
+the device (`CONFIG_MUSE_TTS_PICO`) and uses `partitions_muse_tts.csv`, which
+adds partitions for the voice that flashing writes alongside the app.
 
 All boards share `managed_components/` and `dependencies.lock` in this
 directory. If the component manager fails after you switch between a board
@@ -363,10 +365,11 @@ The default avatar is in `avatar/`: its renderer (`muse_pixel.c`) and
 its animation (`jollybot.gif`, and `happy_anim.c/.h` made from it by
 `tools/gen_happy_anim.py`).
 
-Third-party code keeps its upstream license and header: `minimp3.h` (CC0) and
-`main/pixel_font.c` (BSD-2-Clause, Adafruit). Don't restyle them or replace
-their headers with the Apache one; `components/minimp3/README.md` says how to
-update minimp3.
+Third-party code keeps its upstream license and header: `minimp3.h` (CC0),
+`main/pixel_font.c` (BSD-2-Clause, Adafruit) and SVOX Pico in
+`components/picotts/` (Apache-2.0, SVOX and DiUS). Don't restyle them or
+replace their headers with the Apache one; `components/minimp3/README.md` and
+`components/picotts/README.md` say how to update them.
 
 The Apache License doesn't cover the Jollybot avatar in `avatar/`. Its files
 carry only a Meta copyright line; don't add the Apache header to them.

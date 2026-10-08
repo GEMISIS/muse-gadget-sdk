@@ -1,0 +1,31 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Name,    Type, SubType, Offset,   Size,    Flags
+# partitions_muse.csv plus SVOX Pico's en-US voice (CONFIG_MUSE_TTS_PICO), for
+# boards that speak replies on the device. Everything up to prod_bak is where
+# partitions_muse.csv has it, so NVS, OTA and the product data don't move. The
+# voice gets partitions of its own, read in place, so app images and OTA stay
+# their usual size; idf.py flash writes it, OTA never touches it. tts_ta and
+# tts_sg have room for any of Pico's languages (the largest are 650 KB and
+# 833 KB).
+nvs,       data, nvs,     0x11000,  0xC000,
+otadata,   data, ota,     0x1D000,  0x2000,
+phy_init,  data, phy,     0x1F000,  0x1000,
+ota_0,     app,  ota_0,   0x20000,  4M,
+ota_1,     app,  ota_1,   0x420000, 4M,
+prod_data, data, 0x40,    0x820000, 0x1000,
+prod_bak,  data, 0x41,    0x821000, 0x1000,
+tts_ta,    data, 0x50,    0x830000, 0xC0000,
+tts_sg,    data, 0x51,    0x8F0000, 0x100000,
