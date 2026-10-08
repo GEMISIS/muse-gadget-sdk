@@ -1845,24 +1845,50 @@ static void reconnect_delay(uint32_t delay_ms) {
 // Process one inbound RX body-chunk message from the server. The Noise layer
 // gives us reassembled service frames; inside is a stream-1 BodyChunk whose
 // data is one or more u32-LE prefixed JSON messages.
+//
+// A message can span body chunks (the server splits one bigger than a frame,
+// such as a display.show_image chunk): what's left of one is kept in
+// s_rx_carry and the next chunk is added to it.
 static void process_inbound_body_chunk(
     ConstByteSpan data,
     noise_ctrl_session_generation_t session_generation) {
+#define RX_CARRY_MAX (64 * 1024 + 4)   // a whole message of up to a service frame (SVC_FRAME_SCRATCH)
+    static uint8_t *s_rx_carry;
+    static size_t s_rx_carry_len;
+    static noise_ctrl_session_generation_t s_rx_carry_gen;
     const uint8_t *p = data.data();
     size_t remaining = data.size();
+    if (s_rx_carry_len && s_rx_carry_gen != session_generation) {
+        s_rx_carry_len = 0;   // a part from an earlier session
+    }
+    if (s_rx_carry_len) {
+        if (s_rx_carry_len + remaining > RX_CARRY_MAX) {
+            ESP_LOGW(TAG, "inbound message too big to put back together (%u + %u bytes): dropped",
+                     (unsigned)s_rx_carry_len, (unsigned)remaining);
+            s_rx_carry_len = 0;
+            return;
+        }
+        memcpy(s_rx_carry + s_rx_carry_len, p, remaining);
+        s_rx_carry_len += remaining;
+        p = s_rx_carry;
+        remaining = s_rx_carry_len;
+    }
 
     while (remaining >= 4) {
         uint32_t msg_len = static_cast<uint32_t>(p[0])
                          | (static_cast<uint32_t>(p[1]) << 8)
                          | (static_cast<uint32_t>(p[2]) << 16)
                          | (static_cast<uint32_t>(p[3]) << 24);
+        if (msg_len > RX_CARRY_MAX - 4) {
+            ESP_LOGW(TAG, "inbound message of %u bytes is too big: dropped the rest", (unsigned)msg_len);
+            s_rx_carry_len = 0;
+            return;
+        }
+        if (msg_len > remaining - 4) {
+            break;   // the rest comes in the next chunk
+        }
         p += 4;
         remaining -= 4;
-        if (msg_len > remaining) {
-            ESP_LOGW(TAG, "truncated inbound message: want %u, have %u",
-                     (unsigned)msg_len, (unsigned)remaining);
-            break;
-        }
         if (msg_len > 0) {
             // Detect the link.register reply (id matches our request) so the
             // caller can open the tunnel stream only once the server has
@@ -1905,6 +1931,20 @@ static void process_inbound_body_chunk(
         p += msg_len;
         remaining -= msg_len;
     }
+    // A message's first part, or a prefix's: kept for the next chunk.
+    if (remaining) {
+        if (!s_rx_carry) {
+            s_rx_carry = static_cast<uint8_t *>(heap_caps_malloc(RX_CARRY_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        }
+        if (!s_rx_carry) {
+            ESP_LOGW(TAG, "no room to keep a split inbound message: dropped");
+            s_rx_carry_len = 0;
+            return;
+        }
+        memmove(s_rx_carry, p, remaining);   // p may already be inside it
+        s_rx_carry_gen = session_generation;
+    }
+    s_rx_carry_len = remaining;
 }
 
 // The session loop's pause after a turn with nothing to do: a tick while
