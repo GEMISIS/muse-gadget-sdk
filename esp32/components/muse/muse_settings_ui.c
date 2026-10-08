@@ -108,7 +108,7 @@ static const char *const SLEEP_NAMES[] = { "Never", "30 seconds", "1 minute", "2
 static lv_obj_t *s_sleep_checks[SLEEP_COUNT];
 
 /* Mode */
-static lv_obj_t *s_mode_checks[MUSE_GADGET_MODE_COUNT], *s_mode_home, *s_mode_note;
+static lv_obj_t *s_mode_checks[MUSE_GADGET_MODE_COUNT], *s_mode_home, *s_mode_away, *s_mode_note;
 
 /* Battery page. */
 static lv_obj_t *s_batt_status, *s_batt_level, *s_batt_drain, *s_batt_full, *s_batt_off, *s_batt_slept, *s_batt_wakes,
@@ -1132,6 +1132,20 @@ static void on_clock_24h_sw(lv_event_t *e)
     muse_home_extras_set_24h(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+static void on_mode_away(lv_event_t *e)
+{
+    (void)e;
+    set_text(s_mode_note, muse_gadget_mode_set_away() ? "Saved: joining it switches to On-the-go."
+                                                      : "Join a Wi-Fi network first.");
+}
+
+static void on_mode_away_clear(lv_event_t *e)
+{
+    (void)e;
+    muse_gadget_mode_clear_away();
+    set_text(s_mode_note, "Cleared.");
+}
+
 static void build_mode_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -1145,7 +1159,11 @@ static void build_mode_page(lv_obj_t *tile)
                "A mode picked here holds until the next switch.");
     s_mode_home = info_row(list, "Home Wi-Fi");
     button(list, LV_SYMBOL_WIFI "  Set current as home", COLOR_ACCENT, on_mode_home, NULL);
-    s_mode_note = note(list, "Away from home Wi-Fi, Muse offers On-the-go.");
+    s_mode_away = info_row(list, "On-the-go Wi-Fi");
+    button(list, LV_SYMBOL_GPS "  Set current as on-the-go", COLOR_ACCENT, on_mode_away, NULL);
+    button(list, LV_SYMBOL_CLOSE "  Clear on-the-go Wi-Fi", COLOR_ACCENT, on_mode_away_clear, NULL);
+    s_mode_note = note(list, "On the on-the-go Wi-Fi (your phone's hotspot, say), Muse switches to "
+                             "On-the-go by itself. Without one, other networks away from home offer it.");
 #if CONFIG_MUSE_GADGET_HOME_EXTRAS
     switch_row(list, "24-hour clock", muse_home_extras_24h(), on_clock_24h_sw);
     note(list, "Off shows the 12-hour clock, as 9:30 PM.");
@@ -1161,6 +1179,8 @@ static void tick_mode(void)
     char home[MUSE_SSID_MAX + 1];
     muse_settings_home_ssid(home);
     set_text(s_mode_home, home[0] ? home : "Not set");
+    muse_settings_away_ssid(home);
+    set_text(s_mode_away, home[0] ? home : "Not set");
 }
 
 /* ---------- Battery ---------- */

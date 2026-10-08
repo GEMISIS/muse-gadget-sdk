@@ -139,6 +139,16 @@ static muse_gadget_mode_t scheduled(const struct tm *tm)
     return tm->tm_hour >= NIGHT_FROM_H || tm->tm_hour < NIGHT_TO_H ? MUSE_GADGET_NIGHT : MUSE_GADGET_DESK;
 }
 
+/* On the On-the-go network (muse_gadget_mode_set_away()) now. */
+static bool on_away_network(void)
+{
+    char away[MUSE_SSID_MAX + 1];
+    muse_settings_away_ssid(away);
+    muse_wifi_status_t w;
+    muse_wifi_status(&w);
+    return away[0] && w.state == MUSE_WIFI_CONNECTED && !strcmp(w.ssid, away);
+}
+
 /* The schedule's next switch after `now`: the coming 05:00 or 21:00. */
 static uint32_t next_boundary(time_t now)
 {
@@ -187,6 +197,22 @@ void muse_gadget_mode_pick(muse_gadget_mode_t mode)
     xSemaphoreGive(s_lock);
 }
 
+bool muse_gadget_mode_set_away(void)
+{
+    muse_wifi_status_t w;
+    muse_wifi_status(&w);
+    if (w.state != MUSE_WIFI_CONNECTED || !w.ssid[0]) {
+        return false;
+    }
+    muse_settings_set_away_ssid(w.ssid);
+    return true;
+}
+
+void muse_gadget_mode_clear_away(void)
+{
+    muse_settings_set_away_ssid("");
+}
+
 bool muse_gadget_mode_set_home(void)
 {
     muse_wifi_status_t w;
@@ -202,12 +228,22 @@ static void check_schedule(void)
 {
     time_t now;
     struct tm tm;
-    if (!clock_valid(&now, &tm)) {
+    bool away = on_away_network();
+    bool timed = clock_valid(&now, &tm);
+    if (!timed && !away) {
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     uint32_t until;
     bool hold = muse_settings_mode_override(&until);
+    if (!timed) {
+        /* The hotspot is known even before the clock is. */
+        if (!hold) {
+            apply(MUSE_GADGET_ON_THE_GO, "on-the-go network");
+        }
+        xSemaphoreGive(s_lock);
+        return;
+    }
     if (hold && !until) {
         /* Picked before the clock was set: hold until the next boundary from now. */
         muse_settings_set_mode_override(true, next_boundary(now));
@@ -217,21 +253,38 @@ static void check_schedule(void)
         hold = false;
     }
     if (!hold) {
-        apply(scheduled(&tm), "schedule");
+        apply(away ? MUSE_GADGET_ON_THE_GO : scheduled(&tm), away ? "on-the-go network" : "schedule");
     }
     xSemaphoreGive(s_lock);
 }
 
-/* Away from the home network: offer On-the-go, once per network joined. */
+/*
+ * Joining or leaving the On-the-go network switches straight away, ending a
+ * mode picked by hand; another network away from home just offers it, once
+ * per network joined.
+ */
 static void check_network(void)
 {
     static char offered[MUSE_SSID_MAX + 1];
-    char home[MUSE_SSID_MAX + 1];
+    static int was_away = -1;
+    int away = on_away_network();
+    if (away != was_away) {
+        if (was_away >= 0) {
+            ESP_LOGI(TAG, "%s the on-the-go network", away ? "joined" : "left");
+            xSemaphoreTake(s_lock, portMAX_DELAY);
+            muse_settings_set_mode_override(false, 0);
+            xSemaphoreGive(s_lock);
+        }
+        was_away = away;
+        check_schedule();
+    }
+    char home[MUSE_SSID_MAX + 1], away_ssid[MUSE_SSID_MAX + 1];
     muse_settings_home_ssid(home);
+    muse_settings_away_ssid(away_ssid);
     muse_wifi_status_t w;
     muse_wifi_status(&w);
-    if (!home[0] || w.state != MUSE_WIFI_CONNECTED || !w.ssid[0]) {
-        return;
+    if (away_ssid[0] || !home[0] || w.state != MUSE_WIFI_CONNECTED || !w.ssid[0]) {
+        return;   /* with an On-the-go network set, that's the signal instead */
     }
     if (!strcmp(w.ssid, home)) {
         offered[0] = '\0';   /* home again: leaving offers it again */

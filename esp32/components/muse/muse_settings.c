@@ -43,6 +43,7 @@ static struct {
     bool mode_override;
     uint32_t override_until;
     char home_ssid[MUSE_SSID_MAX + 1];
+    char away_ssid[MUSE_SSID_MAX + 1];
     char ssid[MUSE_SSID_MAX + 1];
     char pass[MUSE_PASS_MAX + 1];
     char host[MUSE_HOST_MAX + 1];
@@ -137,6 +138,7 @@ esp_err_t muse_settings_init(void)
     }
     nvs_get_u32(s_nvs, "gmode_until", &s.override_until);
     load_str("home_ssid", s.home_ssid, sizeof(s.home_ssid));
+    load_str("away_ssid", s.away_ssid, sizeof(s.away_ssid));
     load_str("ssid", s.ssid, sizeof(s.ssid));
     load_str("pass", s.pass, sizeof(s.pass));
     load_str("host", s.host, sizeof(s.host));
@@ -182,6 +184,11 @@ bool muse_settings_mode_override(uint32_t *until)
 void muse_settings_home_ssid(char out[MUSE_SSID_MAX + 1])
 {
     LOCKED(strlcpy(out, s.home_ssid, MUSE_SSID_MAX + 1));
+}
+
+void muse_settings_away_ssid(char out[MUSE_SSID_MAX + 1])
+{
+    LOCKED(strlcpy(out, s.away_ssid, MUSE_SSID_MAX + 1));
 }
 
 /* Home Link owns the saved networks (this is the first); the local copy is only a fallback. */
@@ -296,6 +303,16 @@ void muse_settings_set_home_ssid(const char *ssid)
         save_str("home_ssid", s.home_ssid);
     });
     ESP_LOGI(TAG, "home network: %s", s.home_ssid[0] ? s.home_ssid : "(none)");
+    notify(MUSE_SETTING_GADGET_MODE);
+}
+
+void muse_settings_set_away_ssid(const char *ssid)
+{
+    LOCKED({
+        strlcpy(s.away_ssid, ssid ? ssid : "", sizeof(s.away_ssid));
+        save_str("away_ssid", s.away_ssid);
+    });
+    ESP_LOGI(TAG, "on-the-go network: %s", s.away_ssid[0] ? s.away_ssid : "(none)");
     notify(MUSE_SETTING_GADGET_MODE);
 }
 

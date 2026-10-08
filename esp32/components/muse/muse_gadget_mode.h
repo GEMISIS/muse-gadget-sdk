@@ -59,6 +59,11 @@ bool muse_gadget_mode_parse(const char *name, muse_gadget_mode_t *out);
 const char *muse_gadget_mode_name(muse_gadget_mode_t mode);
 /* Saves the network joined now as home; false if there isn't one. */
 bool muse_gadget_mode_set_home(void);
+/* Saves the network joined now as the On-the-go one: joining it switches to
+ * On-the-go, leaving it goes back to the schedule. False if there isn't one. */
+bool muse_gadget_mode_set_away(void);
+/* Forgets the On-the-go network. */
+void muse_gadget_mode_clear_away(void);
 
 /* Whether replies may be spoken: not in Night or On-the-go. */
 bool muse_gadget_tts_allowed(void);
