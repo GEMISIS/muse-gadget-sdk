@@ -15,9 +15,8 @@
  */
 
 /*
- * Upside down or not (muse_orient.h), from the gravity the IMU saw when the
- * board last lay still for 1.5 s (muse_imu_gravity), so a hand turning it
- * over changes nothing until it's put down.
+ * Upside down or not (muse_orient.h), from the IMU's smoothed gravity
+ * (muse_imu_gravity), once the board has read the other way up for HOLD_S.
  */
 #include "muse_orient.h"
 
@@ -37,23 +36,22 @@ static const char *TAG = "orient";
  * 04_Immersive_block example (waveshareteam/ESP32-S3-Touch-AMOLED-2.16,
  * examples/esp-idf), which runs the BSP's screen orientation, as Muse does,
  * and rolls its balls down the screen by +accelY (and right by -accelX): so
- * +Y reads +1 g with the top edge up. Unconfirmed on hardware. The log line
- * on each change gives the reading to check it by: stood upright, the axis
- * named here should read about +1 g (or -1 g if FLIP_SIGN should be -1). If
- * it's x that does, set FLIP_AXIS to 0.
+ * +Y reads +1 g with the top edge up. Confirmed on the board: propped up the
+ * right way, it read y=+0.76 g (z=+0.71 g, leaning back).
  */
 #define FLIP_AXIS 1             /* 0 x, 1 y */
 #define FLIP_SIGN 1             /* +1 or -1 */
-#define FACE_AXIS 2             /* z: out of the screen, so lying flat */
 
-/* Turns once that axis reads more than this, either way, and more than the
- * face axis; in between (tilted, lying flat) it stays as it is. */
-#define TURN_G 0.6f
+/* Turns once that axis reads more than this the other way, and more than the
+ * screen's other axis; tilted on its side or lying flat, it stays as it is. */
+#define TURN_G 0.35f
 #define CHECK_S 0.25f
+#define HOLD_S 1.0f             /* turned the other way this long before the screen follows */
 
 static bool s_flipped;
 static float s_next;
 static int s_mode = -1;
+static float s_turned_at = -1;   /* when the board started reading the other way up */
 
 bool muse_orient_flipped(float now)
 {
@@ -69,9 +67,19 @@ bool muse_orient_flipped(float now)
     if (mode != MUSE_GADGET_NIGHT && mode != MUSE_GADGET_ON_THE_GO) {
         flipped = false;   /* Desk: always upright */
     } else if (known) {
+        /* Up or down within the screen's plane, however far it leans back:
+         * propped on a stand, gravity splits about evenly with the face axis. */
         float up = FLIP_SIGN * g[FLIP_AXIS];
-        if (fabsf(up) > TURN_G && fabsf(up) > fabsf(g[FACE_AXIS])) {
-            flipped = up < 0;
+        float side = g[1 - FLIP_AXIS];
+        if (fabsf(up) > TURN_G && fabsf(up) > fabsf(side) && (up < 0) != s_flipped) {
+            if (s_turned_at < 0) {
+                s_turned_at = now;
+            }
+            if (now - s_turned_at >= HOLD_S) {
+                flipped = up < 0;
+            }
+        } else {
+            s_turned_at = -1;
         }
     }
     if (flipped != s_flipped || (int)mode != s_mode) {

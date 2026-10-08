@@ -128,6 +128,8 @@ static float s_rest[3];             /* where it last rested */
 static bool s_rest_valid;
 /* Gravity while it last rested, for other tasks (muse_imu_gravity): unlike
  * s_rest, never moved by a wake. */
+#define GRAVITY_JOLT_G 0.3f     /* more off 1 g than this is movement, not gravity */
+#define GRAVITY_ALPHA 0.1f      /* per sample: at 25 Hz awake, about half a second */
 static portMUX_TYPE s_gravity_lock = portMUX_INITIALIZER_UNLOCKED;
 static float s_gravity[3];
 static bool s_gravity_valid;
@@ -380,15 +382,21 @@ static void motion(const float a[3], bool asleep, int64_t now)
                 s_rest[i] = a[i];
             }
             s_rest_valid = true;
-            taskENTER_CRITICAL(&s_gravity_lock);
-            for (int i = 0; i < 3; i++) {
-                s_gravity[i] = a[i];
-            }
-            s_gravity_valid = true;
-            taskEXIT_CRITICAL(&s_gravity_lock);
         }
     } else {
         s_still_since = 0;
+    }
+
+    /* Which way is down, smoothed over about half a second, for muse_imu_gravity():
+     * held in a hand it's never still enough to count as resting, so this
+     * follows gravity all the time, skipping only jolts. */
+    if (jolt < GRAVITY_JOLT_G) {
+        taskENTER_CRITICAL(&s_gravity_lock);
+        for (int i = 0; i < 3; i++) {
+            s_gravity[i] = s_gravity_valid ? s_gravity[i] + GRAVITY_ALPHA * (a[i] - s_gravity[i]) : a[i];
+        }
+        s_gravity_valid = true;
+        taskEXIT_CRITICAL(&s_gravity_lock);
     }
 
     if (asleep && !s_was_asleep) {
