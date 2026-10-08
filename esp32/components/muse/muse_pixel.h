@@ -32,6 +32,13 @@
 #define MUSE_PX_W 64
 #define MUSE_PX_H 64
 
+typedef enum {
+    MUSE_ACT_NONE,
+    MUSE_ACT_PHONE_TALK,
+    MUSE_ACT_PHONE_LISTEN,
+    MUSE_ACT_PACKAGES,
+} muse_act_t;
+
 typedef struct {
     muse_mode_t mode;
     float t;         /* seconds since boot */
@@ -77,6 +84,24 @@ typedef struct {
     /* No Wi-Fi: a little signal-with-a-slash badge on the floor at Muse's
      * right (the battery's is at his left). A renderer may leave it alone. */
     bool offline;
+    /* What he's busy with in a turn, instead of words on the screen (muse_ui.c
+     * picks it; act_t is seconds in it). PHONE_TALK: the note's going up, so
+     * he's talking into a phone. PHONE_LISTEN: waiting on the answer, phone
+     * to his ear. PACKAGES: an image is downloading, and he's hauling boxes,
+     * act_progress (0..1, or -1 when unknown) as how many have arrived. A
+     * renderer may leave them alone. */
+    muse_act_t act;
+    float act_t;
+    float act_progress;
+    /* Idle, time of day (muse_ui.c, from the clock): a cup of tea in the
+     * morning, pajamas and a nightcap in the evening and on the Night face.
+     * A renderer may leave them alone. */
+    bool tea;
+    bool pajamas;
+    /* 0..1: the board's being shaken hard right now (muse_imu): he plants his
+     * feet, arms out, and stands his ground. `dizzy` is the wobble after. A
+     * renderer may leave it alone. */
+    float brace;
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */
