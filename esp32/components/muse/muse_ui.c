@@ -604,8 +604,19 @@ static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
     if (photo_shown()) {
-        /* Holding a photo up: a tap on him puts it away (a tap on it shows it full size). */
+        /* Holding a photo up: a tap on him puts it away. */
         photo_put_away((float)esp_timer_get_time() / 1e6f, "tapped Muse");
+        return;
+    }
+    if (s_offline && muse_state_mode(NULL) == MUSE_MODE_IDLE) {
+        /* No Wi-Fi (his badge says so): a tap tries again, turning it on if it was off. */
+        ESP_LOGI(TAG, "tapped while offline: reconnecting");
+        if (!muse_settings_wifi_on()) {
+            muse_settings_set_wifi_on(true);   /* the setting's listener connects */
+        } else {
+            muse_wifi_apply();
+        }
+        muse_state_set_caption("RECONNECTING...");
         return;
     }
     muse_state_make_happy();
@@ -996,9 +1007,14 @@ static void build_answer(lv_obj_t *face, int ring_in)
     lv_obj_remove_flag(s_reply_lbl, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
 
+#if !CONFIG_MUSE_BOARD_WAVESHARE_S3_216
     if (muse_board->touch) {
         build_speaker(face, spk_x, spk_y);
     }
+#else
+    (void)spk_x;
+    (void)spk_y;   /* no speaker button: volume down twice mutes (muse_input.c) */
+#endif
 
     /* Out of the way while a page is up: the mode name, where Muse was. */
     lv_obj_update_layout(face);

@@ -243,7 +243,7 @@ static void show_volume(float now, bool asleep)
             if (muse_settings_speaker_on()) {
                 snprintf(text, sizeof(text), LV_SYMBOL_VOLUME_MAX "  %d%%", pct);
             } else {
-                snprintf(text, sizeof(text), LV_SYMBOL_MUTE "  %d%%  (speaker off)", pct);
+                snprintf(text, sizeof(text), LV_SYMBOL_MUTE "  Muted");
             }
             lv_label_set_text(s_volume_lbl, text);
             lv_bar_set_value(s_volume_bar, pct, LV_ANIM_OFF);
