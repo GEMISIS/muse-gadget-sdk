@@ -77,7 +77,11 @@ static const char *TAG = "muse_ui";
 #define SPEAKER_PX 64
 #define SPEAKER_GROW_PX 8       /* how much the speaker button swells while held */
 #define SPEAKER_HOLD_MS 400     /* LVGL's long press */
+#if CONFIG_MUSE_GADGET_HOME_EXTRAS
+#define NIGHT_CELL_PX (s_canvas_px / MUSE_PX_W)   /* in bed, as big as ever: one size for Muse */
+#else
 #define NIGHT_CELL_PX 3         /* Muse's grid cells in bed on the Night face */
+#endif
 #define PHOTO_BORDER 6          /* a reply's image, held up: its white border */
 #define PHOTO_HEAD_ROW 10       /* the top of Muse's head in the grid, with a bob, to tuck under it */
 #define PHOTO_REACH_S 0.4f      /* Muse reaching into his pocket for it */
@@ -113,8 +117,8 @@ static const char *TAG = "muse_ui";
  */
 #if CONFIG_MUSE_GADGET_HOME_EXTRAS
 #define CORNERS 1
-#define STATE_Y 70          /* under the clock (muse_home_extras.c's CLOCK_Y, FONT_CLOCK) */
-#define NAME_Y 96
+#define STATE_Y 86          /* under the clock (muse_home_extras.c's CLOCK_Y, FONT_CLOCK) */
+#define NAME_Y 110
 #else
 #define CORNERS 0
 #define STATE_Y 40
@@ -813,7 +817,7 @@ static void set_answer(int which)
         lv_obj_set_style_text_align(s_reply_lbl, l->align, 0);
     }
     int px = l ? l->px : s_canvas_px, y = l ? l->y : s_big_y;
-    if (s_night && which != ANSWER_READ && which != ANSWER_PHOTO) {
+    if (s_night && which != ANSWER_PHOTO && (CORNERS || which != ANSWER_READ)) {
         /* In bed it sits up where it is (muse_pixel.c) rather than growing. */
         px = MUSE_PX_W * NIGHT_CELL_PX;
         y = l ? s_night_heard_y : s_night_y;
@@ -959,7 +963,7 @@ static void build_answer(lv_obj_t *face, int ring_in)
     int pitch = lv_font_get_line_height(font) + CAPTION_LINE_SPACE;
 
     answer_layout_t *l = &s_answers[ANSWER_HEARD];
-    int cell = s_canvas_px / MUSE_PX_W - 1;
+    int cell = s_canvas_px / MUSE_PX_W - (CORNERS ? 0 : 1);   /* the face's readouts: one size, moved up */
     cell = cell > MINI_CELL_PX ? cell : MINI_CELL_PX;
     l->px = MUSE_PX_W * cell;
     l->y = s_big_y;
@@ -981,15 +985,24 @@ static void build_answer(lv_obj_t *face, int ring_in)
     s_night_heard_y = s_night_y - (night_bottom + 6 > l->top ? night_bottom + 6 - l->top : 0);
 
     l = &s_answers[ANSWER_READ];
+    if (CORNERS) {
+        /* With no state line over him, Muse keeps his size for a reply that's
+         * read too: the heard one's place, a page under him. */
+        *l = s_answers[ANSWER_HEARD];
+        l->align = LV_TEXT_ALIGN_LEFT;
+    }
     int status_bottom = 20 + s_dy + 16 - s_h / 2;
-    l->px = MUSE_PX_W * MINI_CELL_PX;
-    l->y = status_bottom + 2 + l->px / 2;   /* its sparkles clear of the status line */
-    l->align = LV_TEXT_ALIGN_LEFT;
-    art_bottom = l->y + l->px / 2 - ART_BLANK_ROWS * MINI_CELL_PX;
-    int top = (art_bottom > spk_y + spk_r ? art_bottom : spk_y + spk_r) + 8;
-    set_reply_box(l, 16, 2, top, cw, pitch);
+    int top = 0;
+    if (!CORNERS) {
+        l->px = MUSE_PX_W * MINI_CELL_PX;
+        l->y = status_bottom + 2 + l->px / 2;   /* its sparkles clear of the status line */
+        l->align = LV_TEXT_ALIGN_LEFT;
+        art_bottom = l->y + l->px / 2 - ART_BLANK_ROWS * MINI_CELL_PX;
+        top = (art_bottom > spk_y + spk_r ? art_bottom : spk_y + spk_r) + 8;
+        set_reply_box(l, 16, 2, top, cw, pitch);
+    }
     /* The widest page isn't the biggest: a round screen narrows towards the bottom. */
-    for (int c = 12; c <= 24 && fits_across(c * cw, top, ring_in); c++) {
+    for (int c = 12; !CORNERS && c <= 24 && fits_across(c * cw, top, ring_in); c++) {
         int n = (reply_bottom(c * cw, ring_in) - top + CAPTION_LINE_SPACE) / pitch;
         /* A third of the caption spare for characters wider than a byte. */
         while ((c + 1) * n > MUSE_CAPTION_MAX * 2 / 3) {
@@ -1020,10 +1033,14 @@ static void build_answer(lv_obj_t *face, int ring_in)
 
     /* Out of the way while a page is up: the mode name, where Muse was. */
     lv_obj_update_layout(face);
-    s_answers[ANSWER_READ].hides[0] = s_state_lbl;
-    s_answers[ANSWER_READ].hides[1] = s_name_lbl;   /* the reply takes the top too */
-    s_answers[ANSWER_READ].hides[2] = muse_home_extras_clock();   /* in the name's row; NULL without it */
-    add_hides(&s_answers[ANSWER_READ], s_answers[ANSWER_READ].hides[2] ? 3 : 2);
+    if (CORNERS) {
+        add_hides(&s_answers[ANSWER_READ], 0);   /* the heard one's place: the top's left alone */
+    } else {
+        s_answers[ANSWER_READ].hides[0] = s_state_lbl;
+        s_answers[ANSWER_READ].hides[1] = s_name_lbl;   /* the reply takes the top too */
+        s_answers[ANSWER_READ].hides[2] = muse_home_extras_clock();   /* in the name's row; NULL without it */
+        add_hides(&s_answers[ANSWER_READ], s_answers[ANSWER_READ].hides[2] ? 3 : 2);
+    }
     add_hides(&s_answers[ANSWER_HEARD], 0);
     build_photo_layout(ring_in, cw, pitch);
 }
@@ -2245,7 +2262,7 @@ static void update_status(muse_mode_t mode, float now)
 
 /*
  * The Night face, in the full layout of a board that has it: on the way in
- * and out, the clock changes size and Muse moves to or from its bed (or, in
+ * and out, Muse moves to or from its bed (or, in
  * the middle of a reply, to where that reply's layout has it at night).
  */
 static void update_night(void)
