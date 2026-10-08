@@ -1146,10 +1146,23 @@ static lv_obj_t *make_arm(lv_obj_t *face, int width, uint32_t color, lv_point_pr
 
 static void photo_full_show(void);
 
-/* While he holds a photo, a tap anywhere on the face puts it away. */
+/* While he holds a photo, a tap on it shows it full size, and a tap anywhere
+ * else on the face puts it away. */
 static void on_photo_clicked(lv_event_t *e)
 {
     (void)e;
+    lv_point_t pt;
+    lv_area_t card;
+    lv_indev_t *indev = lv_indev_active();
+    if (indev && s_photo_card && !lv_obj_has_flag(s_photo_card, LV_OBJ_FLAG_HIDDEN)) {
+        lv_indev_get_point(indev, &pt);
+        lv_obj_get_coords(s_photo_card, &card);
+        lv_area_increase(&card, 12, 12);   /* a fingertip's slack */
+        if (lv_area_is_point_on(&card, &pt, 0)) {
+            photo_full_show();
+            return;
+        }
+    }
     photo_put_away((float)esp_timer_get_time() / 1e6f, "tapped");
 }
 

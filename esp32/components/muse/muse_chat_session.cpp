@@ -2527,7 +2527,7 @@ static void check_turn(void)
  * left alone.
  */
 #define BG_TEXT_MAX 256                    /* the reply kept: the first of it */
-#define BG_TIMEOUT_US (120 * 1000000LL)    /* asked -> reply done */
+#define BG_TIMEOUT_US (240 * 1000000LL)    /* asked -> reply done: an image push, and a retry of a damaged one, fit */
 
 enum bg_phase_t : uint8_t { BG_IDLE, BG_WANTED, BG_SUBSCRIBING, BG_WAITING };
 
