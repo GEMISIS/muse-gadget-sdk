@@ -56,6 +56,26 @@ enum {
     C_BOLTD,
     C_BATT,      /* the battery (pose->battery): its badge, or the bolt on the belly; set per frame */
     C_OFFLINE,   /* no Wi-Fi (pose->offline): its badge */
+    C_HALO1,     /* the glow behind Muse, faint ... */
+    C_HALO2,
+    C_HALO3,     /* ... less faint */
+    C_PHONE,     /* pose->act: the phone's back, */
+    C_PHONEL,
+    C_BUBBLE,    /* the typing bubble, */
+    C_BUBBLED,
+    C_BOX,       /* and the boxes */
+    C_BOXL,
+    C_BOXD,
+    C_TAPE,
+    C_MUG,       /* pose->tea */
+    C_MUGD,
+    C_TEA,
+    C_STEAM,
+    C_STEAMD,
+    C_PJ,        /* pose->pajamas */
+    C_PJL,
+    C_PJD,
+    C_PJS,       /* the stripes */
     C_COUNT,
 };
 
@@ -112,6 +132,23 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_BOLTL] = 0xfff6b8,
     [C_BOLTD] = 0x9a6410,
     [C_OFFLINE] = 0xff8a5c,
+    [C_PHONE] = 0x2c2f38,
+    [C_PHONEL] = 0x5d6372,
+    [C_BUBBLE] = 0xe5e5ea,
+    [C_BUBBLED] = 0x8e8e93,
+    [C_BOX] = 0xcf9a5f,
+    [C_BOXL] = 0xe8bd85,
+    [C_BOXD] = 0xa5703c,
+    [C_TAPE] = 0xf3e2b8,
+    [C_MUG] = 0xf7f4ee,
+    [C_MUGD] = 0xc8c0b2,
+    [C_TEA] = 0x9a5a32,
+    [C_STEAM] = 0xe4e1ec,
+    [C_STEAMD] = 0x8a879a,
+    [C_PJ] = 0xa9b8f2,
+    [C_PJL] = 0xcbd5fb,
+    [C_PJD] = 0x7f8fdb,
+    [C_PJS] = 0x6a7ad0,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -237,6 +274,9 @@ static void update_palette(const scheme_t *target, float dt)
     pal[C_RIM] = mix(pal[C_BL], acc, 0.45f);
     pal[C_AURA1] = scale_rgb(acc, 0.16f);
     pal[C_AURA2] = scale_rgb(acc, 0.34f);
+    pal[C_HALO1] = scale_rgb(acc, 0.045f);
+    pal[C_HALO2] = scale_rgb(acc, 0.08f);
+    pal[C_HALO3] = scale_rgb(acc, 0.12f);
     pal[C_SPK] = mix(acc, pal[C_WHITE], 0.45f);
     pal[C_BATT] = s_batt;
 
@@ -321,6 +361,8 @@ typedef struct {
 
 static eyes_t s_eyes = { .next_blink = 1.5f, .blink_start = -10, .next_gaze = 1.0f };
 static float s_tired;   /* pose->tired, eased; 0 but idle */
+static bool s_look;     /* busy with something (pose->act, tea, brace): looking at s_look_x, s_look_y */
+static float s_look_x, s_look_y;
 
 static float eyes_update(const muse_pose_t *p, float dt)
 {
@@ -360,6 +402,10 @@ static float eyes_update(const muse_pose_t *p, float dt)
     default:
         tgy += 0.5f * s_tired;   /* tired: looking down */
         break;
+    }
+    if (s_look) {
+        tgx = s_look_x;
+        tgy = s_look_y;
     }
     if (p->reach > 0.3f) {
         tgx = 0.6f;    /* a glance down at the pocket */
@@ -404,12 +450,17 @@ static void draw_aura(float cx, float cy, float radius, float strength)
             if (d2 >= r2) {
                 continue;
             }
+            /* A soft glow in three faint steps, squared so it hugs the body;
+             * dithered only in a thin seam between steps, so it reads smooth
+             * rather than as a field of dots. */
             int32_t i = ((ONE - s_sqrt[(d2 * to_idx) >> 16]) * str) >> Q;
-            int32_t b = bayer_q(x, y);
-            if (i > QF(0.55f) + ((b * QF(0.35f)) >> Q)) {
-                px(x, y, C_AURA2);
-            } else if (i > (b * QF(0.9f)) >> Q) {
-                px(x, y, C_AURA1);
+            int32_t lv = ((i * i) >> Q) * 6 + ((bayer_q(x, y) - ONE / 2) >> 3);
+            if (lv > QF(1.2f)) {
+                px(x, y, C_HALO3);
+            } else if (lv > QF(0.6f)) {
+                px(x, y, C_HALO2);
+            } else if (lv > QF(0.25f)) {
+                px(x, y, C_HALO1);
             }
         }
     }
@@ -427,7 +478,8 @@ static void draw_rings(float cx, float cy, float t, float level, float speed)
             float a = i * TAU / n;
             int x = iround(cx + cosf(a) * r);
             int y = iround(cy + sinf(a) * r * 0.92f);
-            if (get_px(x, y) == C_BG || get_px(x, y) == C_AURA1) {
+            uint8_t under = get_px(x, y);
+            if (under == C_BG || (under >= C_HALO1 && under <= C_HALO3)) {
                 if (bayer(x, y) < fade) {
                     px(x, y, fade > 0.6f ? C_ACC : C_AURA2);
                 }
@@ -736,6 +788,7 @@ typedef enum {
     MOUTH_FLAT,
     MOUTH_WOBBLE,   /* dizzy: a zigzag, its phase flipped by `open` */
     MOUTH_YAWN,     /* tired: a tall O */
+    MOUTH_GRIT,     /* bracing: teeth set */
 } mouth_t;
 
 static void draw_mouth(int x, int y, mouth_t m, float open)
@@ -786,6 +839,11 @@ static void draw_mouth(int x, int y, mouth_t m, float open)
     case MOUTH_YAWN: {
         static const char *const S[] = { ".##.", "#oo#", "#oo#", "#oo#", ".##." };
         stamp(S, 5, x - 2, y - 1, C_MOUTH, C_TONGUE);
+        break;
+    }
+    case MOUTH_GRIT: {
+        static const char *const S[] = { "#####", "#ooo#", "#####" };
+        stamp(S, 3, x - 2, y, C_MOUTH, C_WHITE);
         break;
     }
     }
@@ -1241,6 +1299,376 @@ static void draw_zs(float x, float y, float t)
 }
 
 /* ---------------------------------------------------------------------------
+ * Props: the phone and the boxes (pose->act), the mug (pose->tea), and the
+ * nightcap and pajamas (pose->pajamas)
+ * ------------------------------------------------------------------------- */
+
+/* stamp() with a colour per character: keys[i] draws cols[i], '.' nothing. */
+static void stamp_c(const char *const *rows, int nrows, int x0, int y0, const char *keys, const uint8_t *cols)
+{
+    for (int r = 0; r < nrows; r++) {
+        for (int c = 0; rows[r][c]; c++) {
+            const char *k = strchr(keys, rows[r][c]);
+            if (rows[r][c] != '.' && k) {
+                px(x0 + c, y0 + r, cols[k - keys]);
+            }
+        }
+    }
+}
+
+#define ARM_REACH 12.0f
+
+/* An arm from the shoulder (sx, sy) out to its paw at (hx, hy), or as far as it goes. */
+static limb_t arm_to(float sx, float sy, float hx, float hy)
+{
+    float dx = hx - sx, dy = hy - sy, d = sqrtf(dx * dx + dy * dy);
+    if (d < 0.01f) {
+        dx = 0;
+        dy = d = 1;
+    }
+    dx /= d;
+    dy /= d;
+    if (d > ARM_REACH) {
+        hx = sx + dx * ARM_REACH;
+        hy = sy + dy * ARM_REACH;
+    }
+    return (limb_t){ hx - dx * 4.0f, hy - dy * 4.0f, atan2f(-dx, dy) };
+}
+
+static limb_t limb_mix(limb_t a, limb_t b, float k)
+{
+    /* An ellipse turned half round is the same: take the short way. */
+    while (b.angle - a.angle > 1.5708f) {
+        b.angle -= 3.1416f;
+    }
+    while (b.angle - a.angle < -1.5708f) {
+        b.angle += 3.1416f;
+    }
+    return (limb_t){ a.x + (b.x - a.x) * k, a.y + (b.y - a.y) * k, a.angle + (b.angle - a.angle) * k };
+}
+
+/* Out past 1 and back: a pop into place, for k 0..1. */
+static float ease_pop(float k)
+{
+    k = clampf(k, 0, 1) - 1;
+    return 1 + k * k * (2.7f * k + 1.7f);
+}
+
+/* A paw round something held, drawn over it, centred on (x, y). */
+static void draw_paw(int x, int y)
+{
+    static const char *const PAW[] = { ".##.", "#oo#", "#oo#", ".##." };
+    stamp(PAW, 4, x - 2, y - 2, C_OUT, C_BL);
+    px(x - 1, y - 1, C_BH);
+}
+
+/* The paw at the end of an arm_to() arm: the end away from the shoulder (sx, sy). */
+static void paw_of(const limb_t *l, float sx, float sy, int *x, int *y)
+{
+    float dx = -sinf(l->angle) * 4.0f, dy = cosf(l->angle) * 4.0f;
+    float ax = l->x + dx - sx, ay = l->y + dy - sy, bx = l->x - dx - sx, by = l->y - dy - sy;
+    float k = ax * ax + ay * ay >= bx * bx + by * by ? 1.0f : -1.0f;
+    *x = iround(l->x + k * dx);
+    *y = iround(l->y + k * dy);
+}
+
+#define PHONE_W 7
+#define PHONE_H 10
+
+/*
+ * The phone, its top left at (x, y). Face on, its screen lit, with the
+ * voice's waveform bouncing (level 0..1); else its back, held to the ear.
+ */
+static void draw_phone(int x, int y, bool screen, float t, float level)
+{
+    for (int r = 0; r < PHONE_H; r++) {
+        for (int c = 0; c < PHONE_W; c++) {
+            bool ex = c == 0 || c == PHONE_W - 1, ey = r == 0 || r == PHONE_H - 1;
+            if (ex && ey) {
+                continue;   /* round corners */
+            }
+            uint8_t col = C_OUT;
+            if (!ex && !ey) {
+                col = screen ? (r == 1 ? C_G0 : bayer(x + c, y + r) < (r - 1) / 7.0f ? C_G3 : C_G2)
+                             : c == 1 ? C_PHONEL : C_PHONE;
+            }
+            px(x + c, y + r, col);
+        }
+    }
+    if (screen) {
+        for (int i = 0; i < 3; i++) {
+            float a = 0.5f + 0.5f * sinf(t * 13.0f + i * 2.1f);
+            int h = 1 + 2 * iround(a * clampf(level, 0, 1) * 2.0f);   /* 1, 3 or 5, about the middle */
+            for (int k = 0; k < h; k++) {
+                px(x + 1 + i * 2, y + 5 - h / 2 + k, C_WHITE);
+            }
+        }
+    } else {
+        px(x + 1, y + 1, C_OUT2);   /* the camera */
+        px(x + 2, y + 1, C_PHONEL);
+    }
+}
+
+/* The note going up: arcs off the top of the phone at (x, y), and motes rising off them. */
+static void draw_send(float x, float y, float t)
+{
+    for (int k = 0; k < 2; k++) {
+        float ph = fracf(t * 1.6f + k * 0.5f);
+        float r = 2.5f + ph * 5.5f;
+        int n = 2 + (int)(r * 1.5f);
+        for (int i = 0; i <= n; i++) {
+            float a = -1.1f + (i / (float)n - 0.5f) * 1.5f;   /* up and to the right */
+            int ax = iround(x + cosf(a) * r), ay = iround(y + sinf(a) * r);
+            if (ph < 0.55f || bayer(ax, ay) < (1.0f - ph) * 2.0f) {
+                px(ax, ay, ph < 0.3f ? C_G0 : ph < 0.65f ? C_ACC : C_AURA2);
+            }
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        float ph = fracf(t * 0.7f + i / 3.0f);
+        int mx = iround(x + 4.0f + ph * 5.0f + sinf(ph * 8.0f + i * 2.0f) * 1.5f);
+        int my = iround(y - 4.0f - ph * (y - 2.0f));
+        draw_sparkle(mx, my, ph < 0.6f ? 0.6f : 0.3f, true);
+    }
+}
+
+/* Them talking: a typing bubble, its three dots pulsing in turn; top left at (x, y). */
+static void draw_typing(int x, int y, float t)
+{
+    static const char *const BUBBLE[] = {
+        "..#######..",
+        ".#########.",
+        "###########",
+        "###########",
+        ".#########.",
+        "##.#######.",
+        "#..........",
+    };
+    stamp(BUBBLE, 7, x, y, C_BUBBLE, C_BUBBLE);
+    int active = (int)(fracf(t * 1.8f) * 3.0f);
+    for (int i = 0; i < 3; i++) {
+        uint8_t c = i == active ? C_PHONE : C_BUBBLED;
+        int dx = x + 2 + i * 3, dy = y + 2 - (i == active);
+        px(dx, dy, c);
+        px(dx + 1, dy, c);
+        px(dx, dy + 1, c);
+        px(dx + 1, dy + 1, c);
+    }
+}
+
+#define BOX_W 11
+#define BOX_H 9
+
+/* A cardboard box, its top left at (x, y), taped down the middle. */
+static void draw_box(int x, int y)
+{
+    for (int r = 0; r < BOX_H; r++) {
+        for (int c = 0; c < BOX_W; c++) {
+            bool ex = c == 0 || c == BOX_W - 1, ey = r == 0 || r == BOX_H - 1;
+            uint8_t col = ex || ey ? C_OUT
+                        : c == BOX_W / 2 && r <= 4 ? C_TAPE
+                        : r <= 2 ? C_BOXL
+                        : r == 3 ? C_BOXD   /* the lid's edge */
+                        : c == BOX_W - 2 || r == BOX_H - 2 ? C_BOXD : C_BOX;
+            px(x + c, y + r, col);
+        }
+    }
+}
+
+/*
+ * Hauling boxes (MUSE_ACT_PACKAGES): each comes flying in from the top
+ * right, he catches it at his chest, then lifts it across onto the stack
+ * at his right, one box for each fifth of act_progress. Not knowing how far
+ * along, he stacks them up, then tosses the rest over his shoulder.
+ */
+#define PK_MAX 5
+#define PK_DUR 1.2f             /* one box's trip, s */
+#define PK_CATCH 0.36f          /* through it: caught, */
+#define PK_LIFT 0.52f           /* lifted across, */
+#define PK_LAND 0.84f           /* and down on the stack */
+
+static struct {
+    float start;    /* act_t the box in the air set off, or -1 */
+    float last;     /* act_t last frame */
+    int shown;      /* on the stack */
+    bool landed;
+    bool toss;      /* the stack's full: over the shoulder with it */
+} s_pk = { .start = -1 };
+
+/* The top left of the stack's box n, from 0 at the bottom. */
+static void pk_slot(int n, float *x, float *y)
+{
+    static const int8_t JIG[PK_MAX] = { 0, -1, 1, 0, -1 };
+    *x = 51.0f + JIG[n];
+    *y = 58.0f - BOX_H - n * (BOX_H - 1);
+}
+
+/* Steps the boxes on to act_t `at`; the one in the air is pk_u 0..1 through its trip, or -1. */
+static float pk_update(float at, float progress, bool first)
+{
+    if (first || at < s_pk.last) {
+        s_pk.start = -1;
+        s_pk.shown = 0;
+    }
+    s_pk.last = at;
+    bool known = progress >= 0;
+    int want = known ? 1 + (int)(clampf(progress, 0, 1) * (PK_MAX - 1) + 0.001f) : PK_MAX;
+    if (s_pk.start >= 0) {
+        float u = (at - s_pk.start) / PK_DUR;
+        if (u >= PK_LAND && !s_pk.landed) {
+            s_pk.landed = true;
+            s_pk.shown += !s_pk.toss;
+        }
+        if (u >= 1) {
+            s_pk.start = -1;
+        }
+    }
+    if (s_pk.start < 0 && at > 0.15f && (s_pk.shown < want || !known)) {
+        s_pk.start = at;
+        s_pk.landed = false;
+        s_pk.toss = s_pk.shown >= PK_MAX;
+    }
+    return s_pk.start >= 0 ? (at - s_pk.start) / PK_DUR : -1.0f;
+}
+
+#define MUG_W 10
+#define MUG_H 8
+
+/* The mug, its top left at (x, y), its handle on the left; the tea showing, or not (at his lips). */
+static void draw_mug(int x, int y, bool tea)
+{
+    static const char *const MUG[] = {
+        "...######.",
+        "..#tttttt#",
+        "###wmmmmd#",
+        "#.#wmmmmd#",
+        "#.#aaaaaa#",
+        "###wmmmmd#",
+        "..#wmmmmd#",
+        "...######.",
+    };
+    const uint8_t cols[] = { C_OUT, tea ? C_TEA : C_MUGD, C_WHITE, C_MUG, C_MUGD, C_ACC };
+    stamp_c(MUG, MUG_H, x, y, "#twmda", cols);
+}
+
+/* Steam curling up off the tea, from (x, y): two wisps, `amount` 0..1. */
+static void draw_steam(float x, float y, float t, float amount)
+{
+    for (int w = 0; w < 2; w++) {
+        float wx = x + (w ? 2.5f : -0.5f);
+        for (int r = 0; r < 10; r++) {
+            float ph = r * 0.7f - t * 3.0f + w * 2.3f;
+            int sx = iround(wx + sinf(ph) * 1.1f + r * 0.15f);
+            int sy = iround(y - 1 - r);
+            float fade = (1.0f - r / 11.0f) * amount;
+            /* Puffs, with gaps between, drifting up. */
+            if (fracf(r * 0.11f - t * 0.55f + w * 0.4f) < 0.65f && bayer(sx, sy) < fade * 1.8f) {
+                px(sx, sy, r < 5 ? C_STEAM : C_STEAMD);
+            }
+        }
+    }
+}
+
+/* Half the hood's width on a row (as draw_avatar's field has it, without tufts). */
+static float hood_half(const avatar_t *j, float y)
+{
+    float v = clampf((y - j->cy) / j->b, -1, 1);
+    float u = powf(1.0f - powf(fabsf(v), v < 0 ? 2.7f : 3.6f), 1.0f / (v < 0 ? 2.7f : 3.6f));
+    return u * j->a * (1 + 0.07f * v);
+}
+
+/*
+ * The nightcap: a soft cone over the top of the hood, its tip flopped over
+ * to the left (lower as `droop` 0..1 goes up), clear of what goes on at his
+ * right (thought dots, z's, the phone), with a pom-pom on the end, swinging;
+ * a white brim round it.
+ */
+static void draw_nightcap(const avatar_t *j, float t, float droop)
+{
+    static uint8_t cap[W * H];
+    memset(cap, 0, sizeof(cap));
+    float top = j->cy - j->b;
+    int brim = iround(top + 2.5f);
+    float sway = sinf(t * 1.6f) * 0.8f;
+    float p0x = j->cx, p0y = top + 4.0f;
+    float p1x = j->cx - 1.0f, p1y = top - 11.0f;
+    float p2x = j->cx - 14.0f + sway, p2y = top - 3.0f + droop * 6.0f;
+    for (int i = 0; i <= 24; i++) {
+        float s = i / 24.0f, m = 1 - s;
+        float qx = m * m * p0x + 2 * m * s * p1x + s * s * p2x;
+        float qy = m * m * p0y + 2 * m * s * p1y + s * s * p2y;
+        float r = 8.6f * powf(m, 1.3f) + 0.9f;
+        for (int y = (int)(qy - r - 1); y <= (int)(qy + r + 1); y++) {
+            for (int x = (int)(qx - r - 1); x <= (int)(qx + r + 1); x++) {
+                float dx = x + 0.5f - qx, dy = y + 0.5f - qy;
+                if ((unsigned)x < W && (unsigned)y < H && dx * dx + dy * dy <= r * r && (y < brim || s > 0.55f)) {
+                    cap[y * W + x] = 1;
+                }
+            }
+        }
+    }
+    static const int8_t N4[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            if (!cap[y * W + x]) {
+                continue;
+            }
+            bool edge = false;
+            for (int k = 0; k < 4 && !edge; k++) {
+                int xx = x + N4[k][0], yy = y + N4[k][1];
+                edge = (unsigned)xx >= W || (unsigned)yy >= H || !cap[yy * W + xx];
+            }
+            /* Lit from the upper left, like the fur. */
+            float l = (x + 0.5f - j->cx) / 14.0f + (y + 0.5f - (top - 6.0f)) / 12.0f;
+            float b = bayer(x, y);
+            px(x, y, edge ? C_OUT : b < l - 0.25f ? C_PJD : b > l + 0.75f ? C_PJL : C_PJ);
+        }
+    }
+    /* The brim, following the hood's curve. */
+    for (int r = 0; r < 4; r++) {
+        int y = brim + r;
+        float hw = hood_half(j, y + 0.5f) + 1.0f;
+        int x0 = iround(j->cx - hw), x1 = iround(j->cx + hw) - 1;
+        for (int x = x0; x <= x1; x++) {
+            bool edge = r == 0 || r == 3 || x == x0 || x == x1;
+            px(x, y, edge ? C_OUT : r == 2 || bayer(x, y) < 0.2f ? C_PILLOWD : C_PILLOW);
+        }
+    }
+    /* The pom-pom, hanging off the tip. */
+    static const char *const POM[] = { ".###.", "#ooo#", "#ooo#", "#ooo#", ".###." };
+    int pmx = iround(p2x - 1.0f + sway * 0.5f), pmy = iround(p2y + 2.0f);
+    stamp(POM, 5, pmx - 2, pmy - 2, C_OUT, C_WHITE);
+    px(pmx + 1, pmy + 1, C_PILLOWD);
+    px(pmx, pmy + 1, C_PILLOWD);
+}
+
+/* Pajamas: the body below the face, and the arms, in striped flannel, buttoned. */
+static void draw_pajamas(const avatar_t *j)
+{
+    int ox = iround(j->cx);
+    int y0 = iround(j->fy + j->fb) + 1;
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            uint8_t m = s_mask[y * W + x], c = s_fb[y * W + x];
+            if (!(m == M_ARM || (m == M_BODY && y >= y0)) || c == C_OUT) {
+                continue;
+            }
+            uint8_t pj = c == C_BH || c == C_BL ? C_PJL : c == C_BD || c == C_OUT2 ? C_PJD : C_PJ;
+            if (m == M_BODY && ((x - ox) & 3) == 2 && pj != C_PJD) {
+                pj = C_PJS;
+            }
+            px(x, y, pj);
+        }
+    }
+    for (int k = 0; k < 3; k++) {
+        int by = y0 + 3 + k * 5;
+        if ((unsigned)by < H && s_mask[by * W + ox - 1] == M_BODY) {
+            px(ox - 1, by, C_WHITE);
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * Frame
  * ------------------------------------------------------------------------- */
 
@@ -1314,16 +1742,77 @@ void muse_pixel_render(const muse_pose_t *p)
     }
     update_palette(&SCHEMES[mode], dt);
 
+    /* Busy in a turn (pose->act), else braced against a shake (pose->brace),
+     * else a cup of tea (pose->tea); none asleep, or showing a photo. */
+    bool asleep = p->bed && p->sleepy;
+    bool can_busy = mode != MUSE_MODE_BOOT && mode != MUSE_MODE_ERROR && mode != MUSE_MODE_OFF && !p->holding
+                    && p->reach <= 0.0f && !asleep;
+    muse_act_t act = can_busy ? p->act : MUSE_ACT_NONE;
+    float at = p->act_t > 0 ? p->act_t : 0.0f;
+    float brace = can_busy && act == MUSE_ACT_NONE ? clampf(p->brace, 0, 1) : 0.0f;
+    bool tea = can_busy && act == MUSE_ACT_NONE && brace < 0.05f && p->tea && mode == MUSE_MODE_IDLE;
+    bool phone = act == MUSE_ACT_PHONE_TALK || act == MUSE_ACT_PHONE_LISTEN;
+    float pull = phone ? ease_pop(at / 0.3f) : 0.0f;   /* the phone out, and up */
+
+    /* Talking into it: chatter in bursts, and now and then a laugh. */
+    float chat = 0;
+    bool laugh = false;
+    if (act == MUSE_ACT_PHONE_TALK) {
+        float burst = fracf(at * 0.45f) < 0.8f ? 1.0f : 0.15f;
+        chat = fabsf(sinf(t * 10.0f)) * (0.35f + 0.65f * fabsf(sinf(t * 2.3f + 0.5f))) * burst;
+        laugh = at > 1.0f && fracf(at * 0.3f) > 0.86f;
+    }
+    /* On the phone, listening: they talk (the typing bubble), he nods along
+     * ("mm-hm"), then looks about, tapping a foot. */
+    float lp = fmodf(at, 4.6f), mmhm = 0, tap = 0;
+    bool typing = false;
+    if (act == MUSE_ACT_PHONE_LISTEN && at > 0.4f) {
+        typing = lp < 2.0f;
+        if (lp >= 2.1f && lp < 3.0f) {
+            mmhm = fabsf(sinf((lp - 2.1f) / 0.45f * 3.1416f));
+        }
+        if (lp >= 3.0f && lp < 4.5f) {
+            tap = fmaxf(0, sinf((lp - 3.0f) * 3.1416f * 2.0f));
+        }
+    }
+    /* Tea: a sip every 8 s (0..1 up to the lips and back), then a contented sigh. */
+    float tp = fmodf(t, 8.0f), sip = 0;
+    bool sigh = false;
+    if (tea) {
+        sip = tp < 0.6f ? tp / 0.6f : tp < 2.0f ? 1.0f : tp < 2.6f ? 1.0f - (tp - 2.0f) / 0.6f : 0.0f;
+        sip = sip * sip * (3 - 2 * sip);
+        sigh = tp >= 2.6f && tp < 3.5f;
+    }
+
+    s_look = true;
+    if (act == MUSE_ACT_PHONE_TALK) {
+        s_look_x = 0.3f;
+        s_look_y = 0.1f;
+    } else if (act == MUSE_ACT_PHONE_LISTEN) {
+        s_look_x = typing ? 0.9f : mmhm > 0 ? 0.0f : lp < 3.8f ? -0.9f : 0.4f;
+        s_look_y = typing ? -0.9f : mmhm > 0 ? 0.6f : lp < 3.8f ? 0.2f : -0.4f;
+    } else if (act == MUSE_ACT_PACKAGES) {
+        /* s_look_x, s_look_y: set last frame, on the box. */
+    } else if (brace > 0.3f) {
+        s_look_x = 0;
+        s_look_y = 0;
+    } else if (tea && tp > 3.5f && tp < 6.0f) {
+        s_look_x = 0.1f;
+        s_look_y = 0.9f;   /* down into the mug */
+    } else {
+        s_look = false;
+    }
+
     /* Tired (pose->tired): idle, up, and not cheering, reeling or showing
      * something. Slow to tire, quick to perk up. */
     bool can_tire = mode == MUSE_MODE_IDLE && !p->bed && !p->holding && p->reach <= 0.0f && p->happy <= 0.0f
-                    && p->plugged <= 0.0f && p->dizzy <= 0.0f;
+                    && p->plugged <= 0.0f && p->dizzy <= 0.0f && brace <= 0.0f;
     float tired_to = can_tire ? clampf(p->tired, 0, 1) : 0.0f;
     s_tired += (tired_to - s_tired) * (1.0f - expf(-dt * (tired_to > s_tired ? 1.5f : 6.0f)));
     float tired = s_tired;
     /* A yawn every so often (0..1..0), and at the most, nodding off between. */
     float yawn = 0, nod = 0;
-    if (can_tire && tired > 0.35f) {
+    if (can_tire && tired > 0.35f && !tea) {
         float period = tired > 0.9f ? 9.0f : 13.0f;
         float ph = fmodf(p->t, period);
         if (ph < 2.4f) {
@@ -1343,7 +1832,7 @@ void muse_pixel_render(const muse_pose_t *p)
 
     /* In bed: lying back asleep (0) or sat up (1), eased between. */
     static float s_rise;
-    bool bed = p->bed, asleep = bed && p->sleepy;
+    bool bed = p->bed;
     s_rise += ((asleep ? 0.0f : 1.0f) - s_rise) * (1.0f - expf(-dt * 5.0f));
     float lie = bed ? 1.0f - s_rise : 0.0f;
 
@@ -1385,7 +1874,28 @@ void muse_pixel_render(const muse_pose_t *p)
     bool cheer = happy > 0 || plug > 0.1f;
     /* Dizzy: reeling from side to side, slowing as it comes round. */
     float dizzy = mode == MUSE_MODE_ERROR || mode == MUSE_MODE_OFF ? 0.0f : clampf(p->dizzy, 0, 1);
-    lean += sinf(t * 11.0f) * 2.2f * dizzy;
+    lean += sinf(t * 11.0f) * 2.2f * dizzy * (1.0f - brace);
+    if (act == MUSE_ACT_PHONE_TALK) {
+        bob = sinf(t * 7.0f) * 0.9f - chat * 0.6f;   /* bouncing as he chatters */
+        lean = sinf(t * 1.7f) * 0.8f;
+    } else if (act == MUSE_ACT_PHONE_LISTEN) {
+        bob = sinf(t * 2.0f) * 0.5f;
+        lean = 0.6f;   /* leaning into the phone */
+    } else if (act == MUSE_ACT_PACKAGES) {
+        bob = sinf(t * 4.0f) * 0.5f;
+        lean = 0;
+    }
+    /* Braced: crouched, swaying against it. */
+    bob *= 1.0f - brace;
+    lean += (sinf(t * 6.5f) * 1.3f - lean) * brace;
+
+    /* Hauling boxes: the one in the air, if any. */
+    static muse_act_t s_last_act;
+    float pk_u = act == MUSE_ACT_PACKAGES ? pk_update(at, p->act_progress, s_last_act != MUSE_ACT_PACKAGES) : -1.0f;
+    s_last_act = act;
+    if (pk_u >= PK_CATCH && pk_u < PK_LIFT) {
+        hop -= sinf((pk_u - PK_CATCH) / (PK_LIFT - PK_CATCH) * 3.1416f) * 1.2f;   /* the catch, a dip */
+    }
 
     /* Boot: the avatar pops up from a squash, then opens their eyes. */
     float boot = mode == MUSE_MODE_BOOT ? clampf(p->mode_t / 1.4f, 0, 1) : 1.0f;
@@ -1396,6 +1906,8 @@ void muse_pixel_render(const muse_pose_t *p)
     avatar_t j;
     j.a = 16.0f * (1 + breathe) * (2.0f - squash) + level * 0.8f + 0.6f * tired;
     j.b = 23.0f * (1 - breathe) * squash * (1.0f - 0.05f * tired + 0.05f * yawn);   /* a slouch; a stretch to yawn */
+    j.a *= 1.0f + 0.05f * brace;   /* braced: knees bent, lower and wider */
+    j.b *= 1.0f - 0.07f * brace;
     j.cx = 32.0f + lean;
     j.cy = 56.5f - j.b + bob * 0.5f - hop;   /* feet stay near the ground */
     if (bed) {
@@ -1407,6 +1919,7 @@ void muse_pixel_render(const muse_pose_t *p)
     j.fy = j.cy - j.b * 0.30f + bob * 0.3f;
     j.fy += clampf(p->reach, 0, 1) * 1.2f;   /* face down, at the pocket */
     j.fy += 0.8f * tired + 1.5f * nod;        /* head hanging; dropping as he nods off */
+    j.fy += 1.4f * mmhm;                      /* nodding along */
 
     /* ---- background layers ---- */
     float aura_r = 29.0f + level * 4.0f + sinf(t * 1.5f) * 1.0f;
@@ -1416,13 +1929,13 @@ void muse_pixel_render(const muse_pose_t *p)
         draw_headboard();
         draw_pillow(32.0f, 12.0f);
     }
-    if (mode == MUSE_MODE_LISTENING) {
+    if (mode == MUSE_MODE_LISTENING && !act) {
         draw_rings(j.cx, j.fy + 2, t, level, 0.9f);
-    } else if (mode == MUSE_MODE_SPEAKING) {
+    } else if (mode == MUSE_MODE_SPEAKING && !act) {
         draw_rings(j.cx, j.fy + 2, t, level, 0.6f);
     }
     if (!bed) {
-        draw_shadow(j.cx, 58.5f, 13.0f - hop * 0.8f);
+        draw_shadow(j.cx, 58.5f, 13.0f - hop * 0.8f + 3.0f * brace);
     }
 
     float spk_speed = mode == MUSE_MODE_THINKING ? 2.8f : mode == MUSE_MODE_LISTENING ? 1.2f
@@ -1442,6 +1955,14 @@ void muse_pixel_render(const muse_pose_t *p)
     float step = mode == MUSE_MODE_SPEAKING ? sinf(t * 5.0f) * 0.6f : 0.0f;
     feet[0] = (limb_t){ j.cx - 7.0f, base - 0.5f + (cheer ? hop * 0.3f : step), -0.15f };
     feet[1] = (limb_t){ j.cx + 7.0f, base - 0.5f + (cheer ? hop * 0.3f : -step), 0.15f };
+    feet[0].y -= 1.8f * tap;   /* tapping along */
+    feet[0].angle -= 0.35f * tap;
+    for (int f = 0; f < 2; f++) {
+        /* Braced: planted wide, where he stood, toes out. */
+        float side = f ? 1.0f : -1.0f;
+        feet[f].x += (32.0f + side * 11.5f - feet[f].x) * brace;
+        feet[f].angle += side * 0.3f * brace;
+    }
 
     limb_t arms[2];
     float adx = j.a + 0.3f;
@@ -1493,7 +2014,91 @@ void muse_pixel_render(const muse_pose_t *p)
         arms[1].y += (in.y - arms[1].y) * reach;
         arms[1].angle += (in.angle - arms[1].angle) * reach;
     }
+    /* Busy: the act's arms (or the mug's, or bracing) over the mode's. */
+    float shy = j.cy - 2.0f, slx = j.cx - 12.0f, srx = j.cx + 12.0f;
+    float sh_x[2] = { slx, srx }, sh_y[2] = { shy, shy };   /* where each arm reaches from */
+    float phone_x = 0, phone_y = 0;    /* its top left */
+    float box_x = 0, box_y = 0;        /* the box in the air */
+    bool box_air = false, box_held = false;
+    float mug_x = 0, mug_y = 0;
+    float grip_x = PHONE_W / 2.0f, grip_y = PHONE_H - 0.5f;   /* the paw on the phone, from its top left */
+    if (phone) {
+        /* Up from his side (pull): to the right cheek to talk into it, his
+         * other paw going as he talks; or to the ear, at the side of the hood. */
+        bool talk = act == MUSE_ACT_PHONE_TALK;
+        float hx = talk ? j.fx + 7.0f + grip_x : j.cx + j.a - 4.0f + grip_x;
+        float hy = talk ? j.fy - 2.5f + grip_y : j.fy - 6.0f + grip_y;
+        float rx = j.cx + adx + 1.0f, ry = ay + 5.0f;   /* the paw at rest */
+        sh_x[1] = srx + (talk ? 4.0f : 5.0f) * pull;
+        sh_y[1] = shy + (talk ? 9.0f : 10.0f) * pull;
+        arms[1] = arm_to(sh_x[1], sh_y[1], rx + (hx - rx) * pull, ry + (hy - ry) * pull);
+        if (talk) {
+            float g = sinf(t * 4.2f) * (0.3f + 0.7f * chat);
+            arms[0] = arm_to(slx, shy, j.cx - 19.0f, j.cy + 1.0f - 5.0f * g);
+        }
+    } else if (act == MUSE_ACT_PACKAGES) {
+        float cbx = j.cx - BOX_W / 2.0f, cby = j.fy + j.fb + 0.5f;   /* a box held at his chest */
+        limb_t ready_l = arm_to(slx, shy, j.cx - 15.0f, j.cy - 6.0f - bob);
+        limb_t ready_r = arm_to(srx, shy, j.cx + 15.0f, j.cy - 7.0f - bob);
+        arms[0] = ready_l;
+        arms[1] = ready_r;
+        if (pk_u >= 0 && pk_u < PK_CATCH) {
+            float k = pk_u / PK_CATCH;
+            /* Tossed in from the top right, down to chest height before it's past his face. */
+            box_x = 66.0f + (cbx - 66.0f) * k;
+            box_y = 4.0f + (cby - 4.0f) * (1 - (1 - k) * (1 - k));
+            box_air = true;
+        } else if (pk_u >= PK_CATCH && (pk_u < PK_LAND || s_pk.toss)) {
+            float k = clampf((pk_u - PK_LIFT) / ((s_pk.toss ? 1.0f : PK_LAND) - PK_LIFT), 0, 1), e = k * k * (3 - 2 * k);
+            float ex = 1 - (1 - k) * (1 - k) * (1 - k), ey = k * k;
+            float sx, sy;
+            if (s_pk.toss) {
+                /* Over his shoulder, up and out of sight. */
+                sx = 46.0f;
+                sy = -BOX_H - 4.0f;
+            } else {
+                /* Across first, then up or down onto the stack: clear of his face. */
+                pk_slot(s_pk.shown, &sx, &sy);
+            }
+            box_x = cbx + (sx - cbx) * ex;
+            box_y = cby + (sy - cby) * ey - sinf(k * 3.1416f) * 2.0f;
+            box_air = box_held = true;
+            /* Held at both sides; then the right paw lifts it across. */
+            arms[0] = limb_mix(arm_to(slx, shy, box_x - 0.5f, box_y + 4.0f), ready_l, e);
+            arms[1] = arm_to(srx, shy, box_x + (BOX_W - 0.5f) * (1 - e) + 1.0f * e, box_y + 4.0f + 1.5f * e);
+        } else if (pk_u >= PK_LAND) {
+            float k = clampf((pk_u - PK_LAND) / (1 - PK_LAND), 0, 1);
+            float sx, sy;
+            pk_slot(s_pk.shown > 0 ? s_pk.shown - 1 : 0, &sx, &sy);
+            arms[1] = limb_mix(arm_to(srx, shy, sx + 1.0f, sy + 5.5f), ready_r, k * k);
+        }
+        if (box_air) {
+            s_look_x = clampf((box_x + BOX_W / 2.0f - j.fx) / 9.0f, -1, 1);
+            s_look_y = clampf((box_y + BOX_H / 2.0f - j.fy) / 9.0f, -1, 1);
+        } else {
+            s_look_x = 0.8f;   /* up at where they come from */
+            s_look_y = -0.8f;
+        }
+    } else if (tea) {
+        /* The mug by the handle, out at his side where the steam shows; up to his lips for a sip. */
+        float rx = j.cx + 15.0f, ry = j.cy - 1.0f;
+        float lx = j.fx - 3.0f, ly = j.fy + 2.5f;
+        mug_x = rx + (lx - rx) * sip;
+        mug_y = ry + (ly - ry) * sip;
+        sh_x[1] = j.cx + 9.0f;
+        sh_y[1] = j.cy + 9.0f;
+        arms[1] = arm_to(sh_x[1], sh_y[1], mug_x + 1.0f, mug_y + 4.0f);
+    }
+    if (brace > 0) {
+        /* Arms out for balance, see-sawing against the sway. */
+        float bal = sinf(t * 6.5f) * 2.5f;
+        arms[0] = limb_mix(arms[0], arm_to(slx, shy, j.cx - 25.0f, j.cy - 5.0f + bal), brace);
+        arms[1] = limb_mix(arms[1], arm_to(srx, shy, j.cx + 25.0f, j.cy - 5.0f - bal), brace);
+    }
     draw_avatar(&j, arms, feet, !p->holding);
+    if (p->pajamas) {
+        draw_pajamas(&j);
+    }
     if (reach > 0 || p->holding) {
         draw_pocket(iround(j.cx + 10.0f), iround(j.cy + 12.0f));
     } else if (p->battery && p->belly && !bed && s_size >= 2 * W) {
@@ -1554,10 +2159,49 @@ void muse_pixel_render(const muse_pose_t *p)
         style = EYES_HAPPY;
         mouth = MOUTH_GRIN;
     }
-    if (dizzy > 0.05f) {
+    /* The brows: 0 none, 1 one up (thinking), 2 both up, 3 knit. */
+    int brows = mode == MUSE_MODE_THINKING ? 1 : mode == MUSE_MODE_LISTENING ? 2 : 0;
+    if (happy > 0.2f) {
+        /* Patted: the happy face, whatever he's busy with. */
+    } else if (act == MUSE_ACT_PHONE_TALK) {
+        style = laugh ? EYES_HAPPY : EYES_NORMAL;
+        mouth = laugh ? MOUTH_GRIN : MOUTH_TALK;
+        mouth_open = chat + 0.4f * level;
+        open = 1.0f - blink;
+        brows = chat > 0.6f ? 2 : 0;
+    } else if (act == MUSE_ACT_PHONE_LISTEN) {
+        style = EYES_NORMAL;
+        open = mmhm > 0.5f ? 0.0f : 1.0f - blink;   /* eyes shut on each nod */
+        mouth = mmhm > 0 ? MOUTH_FLAT : MOUTH_SMILE;
+        brows = typing ? 2 : 0;
+    } else if (act == MUSE_ACT_PACKAGES) {
+        style = box_air && !box_held ? EYES_WIDE : EYES_NORMAL;
+        mouth = box_air && !box_held ? MOUTH_O : MOUTH_SMILE;
+        open = 1.0f - blink;
+        brows = box_air && !box_held ? 2 : 0;
+        if (pk_u >= PK_CATCH && pk_u < PK_LIFT + 0.08f) {
+            style = EYES_HAPPY;   /* got it */
+            mouth = MOUTH_GRIN;
+        }
+    } else if (tea) {
+        if (sip > 0.6f) {
+            open = 0;   /* a sip, eyes shut */
+        } else if (sigh) {
+            style = EYES_HAPPY;
+            mouth = MOUTH_SMILE;
+        }
+    }
+    if (dizzy > 0.05f && brace < 0.3f) {
         style = fracf(t * 6.0f) < 0.5f ? EYES_SWIRL_A : EYES_SWIRL_B;
         mouth = MOUTH_WOBBLE;
         mouth_open = fracf(t * 4.0f) < 0.5f ? 0.0f : 1.0f;
+    }
+    if (brace >= 0.3f) {
+        /* Standing his ground: brows knit, eyes narrowed, teeth set. */
+        style = EYES_NORMAL;
+        open = 0.7f * (1.0f - blink);
+        mouth = MOUTH_GRIT;
+        brows = 3;
     }
     if (asleep && s_rise < 0.5f) {
         style = EYES_NORMAL;
@@ -1577,35 +2221,93 @@ void muse_pixel_render(const muse_pose_t *p)
 
     /* Tiny brows for the expressive states. */
     int bl = iround(j.fx - eye_dx), br = iround(j.fx + eye_dx), by = iround(eye_y) - 4;
-    if (mode == MUSE_MODE_THINKING) {
+    if (brows == 1) {
         px(bl - 1, by + 1, C_BROW); px(bl, by + 1, C_BROW);
         px(br - 1, by, C_BROW); px(br, by - 1, C_BROW);
-    } else if (mode == MUSE_MODE_LISTENING) {
+    } else if (brows == 2) {
         px(bl - 1, by - 1, C_BROW); px(bl, by - 1, C_BROW);
         px(br - 1, by - 1, C_BROW); px(br, by - 1, C_BROW);
+    } else if (brows == 3) {
+        px(bl - 2, by, C_BROW); px(bl - 1, by, C_BROW); px(bl, by + 1, C_BROW); px(bl + 1, by + 1, C_BROW);
+        px(br + 1, by, C_BROW); px(br, by, C_BROW); px(br - 1, by + 1, C_BROW); px(br - 2, by + 1, C_BROW);
     }
 
-    float blush = 0.55f + happy * 0.45f + (mode == MUSE_MODE_SPEAKING ? 0.15f : 0.0f) + (p->holding ? 0.2f : 0.0f) + plug * 0.3f;
+    float blush = 0.55f + happy * 0.45f + (mode == MUSE_MODE_SPEAKING ? 0.15f : 0.0f) + (p->holding ? 0.2f : 0.0f) + plug * 0.3f
+                  + (act == MUSE_ACT_PHONE_TALK ? 0.15f : 0.0f) + (sip > 0.6f || sigh ? 0.3f : 0.0f) + 0.2f * brace;
     blush *= 1.0f - 0.5f * tired;   /* tired: pale */
     draw_blush(iround(j.fx - j.fa * 0.72f), iround(eye_y + 2), blush);
     draw_blush(iround(j.fx + j.fa * 0.72f), iround(eye_y + 2), blush);
 
     draw_mouth(iround(j.fx), iround(eye_y + 3), mouth, mouth_open);
+    if (p->pajamas) {
+        draw_nightcap(&j, t, asleep ? 1.0f : 0.35f);
+    }
 
     if (bed) {
         float breath = asleep ? sinf(t * breathe_rate + 1.0f) * 0.6f : 0.0f;
         draw_quilt(j.cx, j.a, QUILT_TOP + breath);
     }
 
+    /* ---- what he's holding ---- */
+    if (phone) {
+        /* In the paw, coming up from his side with it. */
+        int hx, hy;
+        paw_of(&arms[1], sh_x[1], sh_y[1], &hx, &hy);
+        phone_x = hx - grip_x;
+        phone_y = hy - grip_y;
+        draw_phone(iround(phone_x), iround(phone_y), act == MUSE_ACT_PHONE_TALK, t, 0.3f + chat);
+        draw_paw(hx, hy);
+    }
+    if (act == MUSE_ACT_PACKAGES) {
+        for (int i = 0; i < s_pk.shown && i < PK_MAX; i++) {
+            float sx, sy;
+            pk_slot(i, &sx, &sy);
+            draw_box(iround(sx), iround(sy));
+        }
+        if (pk_u >= PK_LAND && pk_u < PK_LAND + 0.1f && !s_pk.toss && s_pk.shown > 0) {
+            float sx, sy;
+            pk_slot(s_pk.shown - 1, &sx, &sy);
+            draw_sparkle(iround(sx - 1), iround(sy + 1), 0.9f, true);   /* down it goes */
+            draw_sparkle(iround(sx + BOX_W), iround(sy + 2), 0.5f, true);
+        }
+        if (box_air) {
+            draw_box(iround(box_x), iround(box_y));
+        }
+        if (box_held) {
+            for (int a = 0; a < 2; a++) {
+                int hx, hy;
+                paw_of(&arms[a], sh_x[a], sh_y[a], &hx, &hy);
+                if (a == 1 || pk_u < PK_LIFT + 0.1f) {
+                    draw_paw(hx, hy);
+                }
+            }
+        }
+    }
+    if (tea) {
+        draw_mug(iround(mug_x), iround(mug_y), sip < 0.5f);
+        int hx, hy;
+        paw_of(&arms[1], sh_x[1], sh_y[1], &hx, &hy);
+        draw_paw(hx, hy);
+        if (sip < 0.3f) {
+            draw_steam(mug_x + 5.0f, mug_y, t, sigh ? 1.0f : 0.8f * (1.0f - sip / 0.3f));
+        }
+    }
+
     /* ---- foreground ---- */
     draw_sparkles(p, j.cx, j.cy, true, spk_speed, spk_count);
 
     float top = j.cy - j.b;
-    if (mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_SPEAKING) {
+    if ((mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_SPEAKING) && !act) {
         draw_waves(j.cx, j.fy + 2, j.a, level, t);
     }
-    if (mode == MUSE_MODE_THINKING) {
+    if (mode == MUSE_MODE_THINKING && !act) {
         draw_thought_dots(j.cx + 14, top + 2, t);
+    }
+    if (act == MUSE_ACT_PHONE_TALK && at > 0.3f) {
+        draw_send(phone_x + 3.0f, phone_y - 1.0f, t);
+    }
+    if (typing) {
+        draw_typing(iround(phone_x + 5.0f), iround(phone_y - 8.0f), t);
     }
     if (happy > 0) {
         draw_hearts(j.cx, top + 1, t, happy);
@@ -1616,13 +2318,13 @@ void muse_pixel_render(const muse_pose_t *p)
     if (plug > 0.05f) {
         draw_bolt(j.cx + 19.0f, top + hop - 3.0f, t, plug);   /* not hopping with Muse: it'd leave the top */
     }
-    if (dizzy > 0.05f) {
+    if (dizzy > 0.05f && brace < 0.3f) {
         draw_stars(j.cx, top, t, dizzy);
     }
-    if (dizzy >= 1.0f) {
-        /* Still shaking: grit coming down, and an alarmed "!". */
+    if (dizzy >= 1.0f || brace > 0.3f) {
+        /* Still shaking: grit coming down, and an alarmed "!" (unless braced). */
         draw_dust(t, 0.85f);
-        if (fracf(t * 2.0f) < 0.6f) {
+        if (fracf(t * 2.0f) < 0.6f && brace < 0.3f) {
             draw_alert(iround(j.cx + 18), iround(top + 1));
         }
     }
