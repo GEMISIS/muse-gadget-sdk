@@ -151,7 +151,7 @@ static const char *TAG = "muse_chat_session";
 #define IMG_RISE_US (1100 * 1000LL)        /* shown: out of the pocket and held up (muse_ui.c's PHOTO_REACH_S + PHOTO_RISE_S) */
 #define IMG_CAPTION "GETTING THE IMAGE..."
 /* After the words of every message (and any mode contract): Muse forgets the contract's standing order. */
-#define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: a 120px baseline JPEG preview, then 240px.)"
+#define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: a 96px baseline JPEG preview, then 240px.)"
 /*
  * The VM's streaming dictation has no ASR behind it right now, so each press
  * goes to the chat as a voice note, the way the phone app sends them, and the
