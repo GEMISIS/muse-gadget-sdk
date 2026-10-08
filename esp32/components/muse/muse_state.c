@@ -34,6 +34,7 @@
 
 static volatile muse_mode_t s_mode = MUSE_MODE_BOOT;
 static volatile int64_t s_mode_since_us;
+static volatile muse_turn_t s_turn;
 static volatile float s_level;
 static volatile float s_progress;
 static volatile int64_t s_last_poke_us;
@@ -77,7 +78,18 @@ void muse_state_set_mode(muse_mode_t mode)
         return;
     }
     s_mode_since_us = esp_timer_get_time();
+    s_turn = MUSE_TURN_SENDING;
     s_mode = mode;
+}
+
+void muse_state_set_turn(muse_turn_t turn)
+{
+    s_turn = turn;
+}
+
+muse_turn_t muse_state_turn(void)
+{
+    return s_turn;
 }
 
 muse_mode_t muse_state_mode(float *secs_in_mode)

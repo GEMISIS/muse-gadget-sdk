@@ -49,7 +49,7 @@
 static const char *TAG = "up_next";
 
 #define PROMPT                                                                                                     \
-    "In one short line (max ~40 characters), what should I prepare for next today? Use my calendar and plans if " \
+    "In one short line (40 characters max), what should I prepare for next today? Use my calendar and plans if "  \
     "you know them. Reply with just the line, no preamble."
 /* After PROMPT when a line's showing: kept, word for word, unless it needs to change. */
 #define KEEP " Right now I show: \"%s\". If that's still right, reply with just the word SAME instead."
