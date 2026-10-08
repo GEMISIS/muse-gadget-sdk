@@ -24,6 +24,7 @@
  */
 #include "muse_up_next.h"
 
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -71,6 +72,10 @@ static bool s_asking;
 static int64_t s_awake_since;
 static int s_morning_day = -1;    /* year * 1000 + day of the year of the last morning ask */
 static volatile bool s_force;     /* ">brief" */
+static volatile bool s_related;   /* this turn touched the line (muse_up_next_turn_text) */
+static volatile int64_t s_due_us; /* asked again then, the turn having touched it; 0 for none */
+#define AFTER_TURN_US (15LL * 1000000)     /* a turn about the line: asked again this long after it */
+#define AFTER_TURN_MIN_US (120LL * 1000000) /* but not more often than this */
 
 /* Extras task only: the chat this ask is in, and the last answered one's, to delete. */
 static char s_sid[MUSE_CHAT_SID_MAX + 1];
@@ -234,6 +239,12 @@ void muse_up_next_tick(void)
         return;
     }
     const char *why = s_force ? "asked for" : NULL;
+    if (!why && s_due_us && now >= s_due_us) {
+        s_due_us = 0;
+        if (!s_asked_us || now - s_asked_us >= AFTER_TURN_MIN_US) {
+            why = "a turn was about it";
+        }
+    }
     if (!why && now >= FIRST_AFTER_US && (!s_asked_us || now - s_asked_us >= EVERY_US)) {
         why = s_asked_us ? "hourly" : "first since boot";
     }
@@ -270,6 +281,64 @@ bool muse_up_next_line(char *out, size_t cap)
     strlcpy(out, fresh ? s_line : "", cap);
     portEXIT_CRITICAL(&s_lock);
     return fresh && out[0];
+}
+
+/* Words of note: four letters or more, past a few that go with anything. */
+static bool notable(const char *w, size_t n)
+{
+    static const char *const COMMON[] = { "with", "your", "from", "that", "this", "have", "will", "about",
+                                          "today", "tomorrow", "tonight", "next", "prepare", "should", "just",
+                                          "time", "into", "make", "sure", "before", "after", "what" };
+    if (n < 4) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(COMMON) / sizeof(COMMON[0]); i++) {
+        if (strlen(COMMON[i]) == n && !strncasecmp(w, COMMON[i], n)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Whether `text` has a word of note from the line (any case). */
+static bool shares_word(const char *line, const char *text)
+{
+    for (const char *p = line; *p;) {
+        while (*p && !isalnum((unsigned char)*p)) {
+            p++;
+        }
+        const char *w = p;
+        while (isalnum((unsigned char)*p)) {
+            p++;
+        }
+        size_t n = (size_t)(p - w);
+        if (!notable(w, n)) {
+            continue;
+        }
+        for (const char *t = text; *t; t++) {
+            if ((t == text || !isalnum((unsigned char)t[-1])) && !strncasecmp(t, w, n)
+                && !isalnum((unsigned char)t[n])) {
+                return true;   /* the whole word, not part of a longer one */
+            }
+        }
+    }
+    return false;
+}
+
+void muse_up_next_turn_text(const char *text)
+{
+    char line[UP_NEXT_MAX];
+    if (!s_related && text && text[0] && muse_up_next_line(line, sizeof(line)) && shares_word(line, text)) {
+        s_related = true;
+    }
+}
+
+void muse_up_next_turn_done(void)
+{
+    if (s_related) {
+        s_related = false;
+        s_due_us = esp_timer_get_time() + AFTER_TURN_US;
+    }
 }
 
 bool muse_up_next_full(char *out, size_t cap)
