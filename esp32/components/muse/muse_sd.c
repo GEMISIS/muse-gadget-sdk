@@ -281,6 +281,57 @@ void muse_sd_tee_end(muse_sd_tee_t *t, bool ok, const char *ext, int w, int h)
     heap_caps_free(t);
 }
 
+/* ---- Whole images, saved by the extras task -------------------------------- */
+
+static portMUX_TYPE s_queued_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t *s_queued;
+static size_t s_queued_len;
+static char s_queued_ext[4];
+
+bool muse_sd_queue_image(const void *data, size_t len, const char *ext)
+{
+    if (!s_ready || !data || !len) {
+        return false;
+    }
+    uint8_t *copy = heap_caps_malloc(len, MUSE_BIG_CAPS);
+    if (!copy) {
+        return false;
+    }
+    memcpy(copy, data, len);
+    bool taken = false;
+    portENTER_CRITICAL(&s_queued_lock);
+    if (!s_queued) {
+        s_queued = copy;
+        s_queued_len = len;
+        strlcpy(s_queued_ext, ext, sizeof(s_queued_ext));
+        taken = true;
+    }
+    portEXIT_CRITICAL(&s_queued_lock);
+    if (!taken) {
+        heap_caps_free(copy);
+    }
+    return taken;
+}
+
+void muse_sd_image_write(void)
+{
+    portENTER_CRITICAL(&s_queued_lock);
+    uint8_t *data = s_queued;
+    size_t len = s_queued_len;
+    char ext[sizeof(s_queued_ext)];
+    strlcpy(ext, s_queued_ext, sizeof(ext));
+    s_queued = NULL;
+    portEXIT_CRITICAL(&s_queued_lock);
+    if (!data) {
+        return;
+    }
+    /* The tee does the rest: the setting, the temporary file, the name. */
+    muse_sd_tee_t *t = muse_sd_tee_begin();
+    muse_sd_tee_write(t, data, len);
+    muse_sd_tee_end(t, true, ext, 0, 0);
+    heap_caps_free(data);
+}
+
 /* ---- Caption log ---------------------------------------------------------- */
 
 #if CONFIG_MUSE_GADGET_CAPTION_LOG

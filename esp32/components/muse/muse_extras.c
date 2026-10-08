@@ -111,6 +111,7 @@ static void extras_task(void *arg)
             }
 #endif
             muse_sd_caption_write();
+            muse_sd_image_write();   /* a chat reply's image (muse_present.c) */
 #if CONFIG_MUSE_GADGET_UP_NEXT
             muse_up_next_tick();
 #endif
