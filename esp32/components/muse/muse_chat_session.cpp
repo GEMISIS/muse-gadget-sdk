@@ -1765,6 +1765,11 @@ static void on_event(cJSON *line)
         cJSON *session = cJSON_GetObjectItem(payload, "session");
         const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(session, "session_id"));
         const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(session, "title"));
+        const char *change = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "change"));
+        if (sid && change && strcmp(change, "activity") != 0) {
+            ESP_LOGI(TAG, "chat %s: %s%s", sid, change,
+                     cJSON_IsTrue(cJSON_GetObjectItem(session, "archived")) ? " (archived)" : "");
+        }
         bool started = false;
         if (sid && title && title[0] && muse_settings_chat_retitle(sid, title, &started)) {
             /* A chat started by voice is titled after the audio file, in
