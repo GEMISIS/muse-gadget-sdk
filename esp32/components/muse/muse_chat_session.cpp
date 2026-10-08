@@ -180,12 +180,12 @@ static const char *TAG = "muse_chat_session";
 /* ---- Voice task <-> session task ---- */
 
 enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE,
-                           CMD_BG };
+                           CMD_BG, CMD_TYPED };
 
 struct cmd_t {
     cmd_type_t type;
     uint32_t gen;
-    char *text;              /* CMD_TEXT, CMD_BG: malloc'd, freed by the session task */
+    char *text;              /* CMD_TEXT, CMD_BG, CMD_TYPED: malloc'd, freed by the session task */
 };
 
 struct ev_t {
@@ -1095,8 +1095,14 @@ static void free_rec(void)
     s_turn.rec = nullptr;
 }
 
+/* Session task only: words for the next voice turn to send instead of the mic's
+ * (muse_hatch_typed_voice), and this turn's, once taken. */
+static char *s_typed_next, *s_typed;
+
 static void turn_finish(void)
 {
+    free(s_typed);
+    s_typed = nullptr;
     turn_reset_streams();
     free_rec();
     s_turn.phase = P_IDLE;
@@ -1199,6 +1205,13 @@ static bool dictate_begin(void)
 static void turn_begin(uint32_t gen)
 {
     if (!turn_start(gen, false)) {
+        return;
+    }
+    if (s_typed_next) {
+        s_typed = s_typed_next;   /* sent on the release, the mic's audio dropped */
+        s_typed_next = nullptr;
+        ESP_LOGI(TAG, "voice turn with typed words: %u bytes", (unsigned)strlen(s_typed));
+        s_turn.phase = P_LISTEN;
         return;
     }
     if (VOICE_NOTE) {
@@ -1540,6 +1553,24 @@ static void post_chat(const char *text)
         mark(M_SENT);
         free_rec();   /* the words went: no voice note needed */
     }
+}
+
+/* A voice turn with typed words: the mic's audio goes nowhere, and the words go on the release. */
+static bool record_typed(void)
+{
+    int16_t drop[256];
+    while (xStreamBufferReceive(s_in, drop, sizeof(drop), 0)) {
+    }
+    if (s_turn.end_requested) {
+        mark(M_RELEASE);
+        s_turn.end_sent = true;
+        emit(MUSE_HATCH_EV_HEARD, s_typed);
+        send_chat(s_typed, "text");
+        if (s_turn.phase == P_WAIT_REPLY) {
+            mark(M_SENT);
+        }
+    }
+    return true;
 }
 
 /* A typed turn: the text goes straight to the chat. */
@@ -3142,6 +3173,10 @@ static void handle(const cmd_t &cmd)
         bg_want(cmd.text, cmd.gen != 0);
         free(cmd.text);
         break;
+    case CMD_TYPED:
+        free(s_typed_next);
+        s_typed_next = cmd.text;
+        break;
     }
 }
 
@@ -3213,7 +3248,9 @@ static void hatch_task(void *arg)
             continue;
         }
         bool sent = true;
-        if (s_turn.dictating && (s_turn.phase == P_LISTEN || s_turn.phase == P_WAIT_FINAL)) {
+        if (s_typed && s_turn.phase == P_LISTEN) {
+            sent = record_typed();
+        } else if (s_turn.dictating && (s_turn.phase == P_LISTEN || s_turn.phase == P_WAIT_FINAL)) {
             sent = record_dictated();
         } else if (s_turn.phase == P_LISTEN) {
             sent = VOICE_NOTE ? record_note() : pump_mic();
@@ -3447,6 +3484,14 @@ extern "C" void muse_hatch_text_turn(char *text)
         free(text);
     } else if (xQueueSend(s_cmds, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE) {
         muse_hatch_console("error", "BUSY", nullptr);
+        free(text);
+    }
+}
+
+extern "C" void muse_hatch_typed_voice(char *text)
+{
+    cmd_t cmd{ CMD_TYPED, 0, text };
+    if (!s_cmds || xQueueSend(s_cmds, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE) {
         free(text);
     }
 }

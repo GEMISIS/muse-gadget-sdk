@@ -150,6 +150,14 @@ size_t muse_hatch_turn_audio_wait(const int16_t *pcm, size_t frames, int wait_ms
 void muse_hatch_text_turn(char *text);
 void muse_hatch_text_cancel(void);
 
+/*
+ * Typed words for the next talk press to send in place of what the mic hears
+ * (the bench's ">say="): the turn is a voice turn in every other way, on the
+ * face, captioned and spoken. Takes `text` (malloc'd) and frees it; a newer
+ * one replaces it.
+ */
+void muse_hatch_typed_voice(char *text);
+
 /* ---- Background requests (CONFIG_MUSE_HATCH only) ---- */
 
 typedef enum {
