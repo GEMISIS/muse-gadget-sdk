@@ -20,6 +20,7 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "cJSON.h"
@@ -74,6 +75,11 @@ static void muse_gadget_mode_pick(muse_gadget_mode_t mode) {
     s_picks++;
 }
 
+static const char *muse_gadget_mode_key(muse_gadget_mode_t mode) {
+    static const char *const keys[] = {"desk", "night", "on_the_go"};
+    return mode < MUSE_GADGET_MODE_COUNT ? keys[mode] : NULL;
+}
+
 // ---- Fakes for muse_settings.h ----
 
 typedef int esp_err_t;
@@ -90,9 +96,11 @@ typedef int esp_err_t;
 typedef struct {
     char name[MUSE_CHAT_NAME_MAX + 1];
     char sid[MUSE_CHAT_SID_MAX + 1];
+    int8_t told_mode;
 } muse_chat_entry_t;
 
 static char s_chat_sid[MUSE_CHAT_SID_MAX + 1];
+static int s_main_told = -1;
 static int s_chat_sets, s_chat_adds;
 static muse_chat_entry_t s_chats[MUSE_CHATS_MAX];
 static int s_chats_n;
@@ -133,6 +141,18 @@ static bool muse_settings_chat_find(const char *name, char sid_out[MUSE_CHAT_SID
     return false;
 }
 
+static int muse_settings_chat_told(const char *sid) {
+    if (!sid[0]) {
+        return s_main_told;
+    }
+    for (int i = 0; i < s_chats_n; i++) {
+        if (!strcmp(s_chats[i].sid, sid)) {
+            return s_chats[i].told_mode;
+        }
+    }
+    return -1;
+}
+
 static bool muse_settings_chat_untitled(const char *sid) {
     (void)sid;
     return false;
@@ -156,6 +176,7 @@ static esp_err_t muse_settings_chat_add(const char *name, char sid_out[MUSE_CHAT
         return ESP_ERR_NO_MEM;
     }
     muse_chat_entry_t *c = &s_chats[s_chats_n++];
+    c->told_mode = -1;
     strcpy(c->name, name);
     snprintf(c->sid, sizeof(c->sid), "00000000-0000-4000-8000-%012d", s_chats_n);
     strcpy(sid_out, c->sid);
@@ -380,11 +401,19 @@ static void test_list_chats(void) {
     cJSON *current = cJSON_GetObjectItem(payload, "current");
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(current, "chat")), "main"));
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(current, "session_id")), ""));
+    assert(cJSON_IsNull(cJSON_GetObjectItem(current, "told_mode")));   // never told one
     assert(cJSON_GetArraySize(cJSON_GetObjectItem(payload, "chats")) == 0);
+    cJSON_Delete(result);
+    s_main_told = MUSE_GADGET_NIGHT;
+    result = gadget_list_chats_command(NULL);
+    current = cJSON_GetObjectItem(cJSON_GetObjectItem(result, "payload"), "current");
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(current, "told_mode")), "night"));
     cJSON_Delete(result);
 
     cJSON_Delete(expect_chat("{\"name\":\"Work\"}", "named", "00000000-0000-4000-8000-000000000001"));
     cJSON_Delete(expect_chat("{\"name\":\"Home\"}", "named", "00000000-0000-4000-8000-000000000002"));
+    s_chats[0].told_mode = MUSE_GADGET_ON_THE_GO;
+    s_chats[1].told_mode = MUSE_GADGET_DESK;
     result = gadget_list_chats_command(NULL);
     expect_ok(result);
     payload = cJSON_GetObjectItem(result, "payload");
@@ -397,6 +426,8 @@ static void test_list_chats(void) {
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(first, "name")), "Work"));
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(first, "session_id")),
                    "00000000-0000-4000-8000-000000000001"));
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(first, "told_mode")), "on_the_go"));
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(current, "told_mode")), "desk"));
     cJSON_Delete(result);
 }
 

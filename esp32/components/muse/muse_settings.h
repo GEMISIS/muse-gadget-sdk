@@ -100,6 +100,7 @@ bool muse_settings_chat_sid_valid(const char *sid);
 typedef struct {
     char name[MUSE_CHAT_NAME_MAX + 1];
     char sid[MUSE_CHAT_SID_MAX + 1];
+    int8_t told_mode;   /* the gadget mode it last heard (muse_gadget_mode_t), -1 for none */
 } muse_chat_entry_t;
 
 /* The named chats, oldest first; returns how many (up to max). */
@@ -137,8 +138,19 @@ bool muse_settings_chat_untitled(const char *sid);
  * any task may call it; muse_settings_chats_flush() writes it to flash.
  * False if sid is neither. */
 bool muse_settings_chat_retitle(const char *sid, const char *title, bool *started);
-/* Writes retitled chats to flash; from a task whose stack is internal RAM. */
+/* Writes retitled chats, and the modes chats were told, to flash; from a task
+ * whose stack is internal RAM. */
 void muse_settings_chats_flush(void);
+/*
+ * The gadget mode (muse_gadget_mode_t) a chat last heard, -1 if none: each
+ * chat is told the mode once, in the first message it gets after a change
+ * (muse_gadget_mode_context). Kept for the main chat, the gadget's and the
+ * named ones (a new chat's carries over once it's titled); a chat picked by
+ * its id alone keeps it in RAM only. Setting it is quick and safe from any
+ * task; muse_settings_chats_flush() writes it to flash.
+ */
+int muse_settings_chat_told(const char *sid);
+void muse_settings_chat_set_told(const char *sid, int mode);
 
 /* Every chat to pick from, for a chat picker. */
 typedef enum {
@@ -153,6 +165,7 @@ typedef struct {
     muse_chat_kind_t kind;
     char name[MUSE_CHAT_NAME_MAX + 1];   /* "Main chat", "Gadget chat", the chat's own, or "Other chat" */
     char sid[MUSE_CHAT_SID_MAX + 1];
+    int8_t told_mode;                    /* muse_settings_chat_told; -1 for none, or "New chat" unpicked */
 } muse_chat_item_t;
 
 /* Main, Gadget, the named chats oldest first, and a custom one while picked. */

@@ -56,8 +56,7 @@ static void on_setting(muse_setting_t what)
         muse_hatch_config_changed();
         break;
     case MUSE_SETTING_CHAT:
-        muse_chat_changed();
-        muse_gadget_mode_resend();   /* the new chat hasn't been told the mode */
+        muse_chat_changed();   /* its next message tells it the mode, if it needs telling */
         break;
     default:
         break;   /* brightness, sleep and the speaker are polled where they're used */
@@ -97,7 +96,7 @@ void muse_app_run(const muse_board_t *board)
     }
 
     muse_hatch_start();
-    muse_gadget_mode_start();   /* after the chat session it tells the Muse through */
+    muse_gadget_mode_start();
     /* Home Link owns the radios; these just hand it the saved settings. */
     muse_wifi_apply();
     muse_ble_apply();

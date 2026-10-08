@@ -854,7 +854,7 @@ void muse_hatch_turn_begin(void)
     /* The note's head, built in the chunk buffer before any audio needs it. */
     char sid[MUSE_CHAT_SID_MAX + 1];
     muse_settings_chat_sid(sid);
-    size_t head = muse_chat_note_head(sid, (char *)s_turn.chunk, CHUNK_BYTES);
+    size_t head = muse_chat_note_head(sid, "", (char *)s_turn.chunk, CHUNK_BYTES);
     if (!head || !request(RX_NOTE, "POST", "/chat/stream", true, false)
         || !muse_link_req_send(s_stream[RX_NOTE], s_turn.chunk, head, false, SEND_WAIT_MS)) {
         fail("CAN'T REACH MUSE");
