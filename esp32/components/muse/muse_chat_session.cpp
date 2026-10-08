@@ -2509,6 +2509,7 @@ struct bg_t {
     char user_id[80];        /* the message posted, from the ack */
     char reply_id[80];       /* the reply being kept */
     char *text;              /* BG_TEXT_MAX: the reply so far, then the answer */
+    bool told_waiting;       /* logged why it hasn't started */
     int64_t start_us;
 };
 
@@ -2553,12 +2554,27 @@ static bool bg_chat(const char *sid)
 static void bg_want(const char *cmd, bool in_turn = false)
 {
     const char *nl = strchr(cmd, '\n');
-    if (s_bg.phase != BG_IDLE || !nl || nl - cmd != MUSE_CHAT_SID_MAX || !nl[1]) {
-        ESP_LOGW(TAG, "background request refused (%s)", s_bg.phase != BG_IDLE ? "one is running" : "malformed");
-        if (s_bg.phase == BG_IDLE) {
-            s_bg_state = MUSE_CHAT_BG_FAILED;
-        }
+    if (!nl || nl - cmd != MUSE_CHAT_SID_MAX || !nl[1]) {
+        ESP_LOGW(TAG, "background request refused (malformed)");
+        s_bg_state = MUSE_CHAT_BG_FAILED;
         return;
+    }
+    if (s_bg.phase != BG_IDLE) {
+        /*
+         * Only one asker at a time (muse_chat_bg_ask_for), and it waits for its
+         * request's end: one still here lost its asker (it gave up waiting). It
+         * goes, rather than the new one being refused with no answer ever coming
+         * (its asker would wait on BUSY for good).
+         */
+        ESP_LOGW(TAG, "background request to chat %s (%s) had no asker left: replaced", s_bg.sid,
+                 s_bg.phase == BG_WANTED ? "not started" : "under way");
+        int64_t sub = s_bg.sub_id, chat = s_bg.chat_id;
+        s_bg.phase = BG_IDLE;
+        s_bg.sub_id = s_bg.chat_id = 0;
+        heap_caps_free(s_bg.prompt);
+        s_bg.prompt = nullptr;
+        bg_reset(sub);
+        bg_reset(chat);
     }
     if (!s_bg.text) {
         s_bg.text = static_cast<char *>(psram_alloc(BG_TEXT_MAX));
@@ -2576,7 +2592,9 @@ static void bg_want(const char *cmd, bool in_turn = false)
     s_bg.sid[MUSE_CHAT_SID_MAX] = '\0';
     s_bg.phase = BG_WANTED;
     s_bg.in_turn = in_turn;
+    s_bg.told_waiting = false;
     s_bg.start_us = now_us();
+    ESP_LOGI(TAG, "background request wanted%s", in_turn ? ", beside any turn" : "");
 }
 
 static bool bg_subscribe(void)
@@ -2717,6 +2735,9 @@ static void bg_poll(void)
         bg_end(false, "no reply in time");
     } else if (s_bg.phase == BG_WANTED && (s_turn.phase == P_IDLE || s_bg.in_turn)) {
         bg_start();
+    } else if (s_bg.phase == BG_WANTED && !s_bg.told_waiting && now_us() - s_bg.start_us > 5 * 1000000LL) {
+        s_bg.told_waiting = true;
+        ESP_LOGI(TAG, "background request waiting for the turn to end");
     } else if (s_bg.phase == BG_SUBSCRIBING) {
         stream_t *s = find_stream(s_bg.sub_id);
         if (s && s->status > 0 && s->status < 400) {
@@ -3073,13 +3094,17 @@ static void hatch_task(void *arg)
             }
         }
         if (!s_connected) {
+            if (s_turn.phase != P_IDLE) {
+                /* Nothing more can come for it, and its hold (speech_held) would never be looked at. */
+                turn_fail("LOST CONNECTION TO MUSE");
+            }
             if (s_bg.phase == BG_WANTED) {
                 /* A background request connects for itself (after an idle close,
                  * say), once and only awake; failing that, it waits out its time. */
                 if (now_us() - s_bg.start_us > BG_TIMEOUT_US) {
                     bg_end(false, "couldn't connect");
-                } else if (!s_resting && s_turn.phase == P_IDLE && muse_wifi_connected() && muse_hatch_configured()
-                           && !ensure_connected()) {
+                } else if ((!s_resting || s_bg.in_turn) && s_turn.phase == P_IDLE && muse_wifi_connected()
+                           && muse_hatch_configured() && !ensure_connected()) {
                     bg_end(false, "can't reach Muse");
                 }
                 if (s_connected) {
@@ -3275,6 +3300,11 @@ extern "C" bool muse_chat_bg_ask(const char *sid, const char *message)
 extern "C" bool muse_chat_bg_ask_now(const char *sid, const char *message)
 {
     return bg_ask(sid, message, true);
+}
+
+extern "C" void muse_chat_bg_forget(void)
+{
+    s_bg_state = MUSE_CHAT_BG_NONE;
 }
 
 extern "C" muse_chat_bg_state_t muse_chat_bg_result(char *out, size_t cap)

@@ -174,6 +174,9 @@ bool muse_chat_bg_ask_now(const char *sid, const char *message);
 /* The request's state; once DONE or FAILED, taking it (with the reply's
  * first 255 bytes in out for DONE) puts it back to NONE. Any task. */
 muse_chat_bg_state_t muse_chat_bg_result(char *out, size_t cap);
+/* Forgets the request's state (back to NONE) without ending it: the next one
+ * replaces it. For muse_chat_bg_abandon. Any task. */
+void muse_chat_bg_forget(void);
 
 /*
  * Who a background request is for. Each asker goes through the two below
@@ -194,6 +197,8 @@ bool muse_chat_bg_ask_for(muse_chat_bg_for_t who, const char *sid, const char *m
 /* muse_chat_bg_result for `who`: NONE unless the request is its own. Taking
  * DONE or FAILED frees it for the next asker. Any task. */
 muse_chat_bg_state_t muse_chat_bg_result_for(muse_chat_bg_for_t who, char *out, size_t cap);
+/* `who` gives up waiting on its request: the next asker's replaces it. Any task. */
+void muse_chat_bg_abandon(muse_chat_bg_for_t who);
 
 /*
  * Prints one "@chat" line per call (more if `text` is long): the type, then the
