@@ -44,3 +44,12 @@ cJSON *gadget_set_chat_command(const cJSON *params);
 // told_mode}], and the current one as set_chat returns it. Muse itself can't
 // list its chats.
 cJSON *gadget_list_chats_command(const cJSON *params);
+
+// display.show_image {data_b64, offset?, final?, label?, mime?, size?}: one
+// chunk of a JPEG Muse pushes to show on the screen (CONFIG_MUSE_HATCH), in
+// order from offset 0, kept in PSRAM up to MUSE_PRESENT_MAX. The last chunk
+// (final: true) hands it to muse_present.h, where Muse takes it out of his
+// pocket and holds it up; the same image again within two minutes isn't
+// shown twice. Returns {received, complete, shown?}, or an error that says
+// which offset comes next.
+cJSON *gadget_show_image_command(const cJSON *params);

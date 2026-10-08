@@ -5,8 +5,8 @@ gadget mode a message carries (muse_gadget_mode.c's contracts, appended by
 send_chat for a chat that last heard another mode, told once the Muse acks),
 the background requests (bg_t): their own streams, their reply kept and
 never emitted, waiting out a turn, and a new chat's 404 subscription, and a
-reply's image (delta.presentation): fetched on the connection, its turn's
-text untouched."""
+reply's image (delta.presentation): Muse asked to push its workspace file,
+its turn's text untouched."""
 import os
 from pathlib import Path
 import shlex
@@ -116,15 +116,8 @@ static stream_t streams[4];
 static int64_t next_id = 100;
 static char bg_sub_body[256], bg_chat_body[1024];
 static int bg_subs, bg_posts, resets, disconnects;
-static int img_gets;
-static char img_path[512];
-static int64_t open_stream(kind_t kind, const char *verb, const char *path, const char *, const char *, const char *body,
+static int64_t open_stream(kind_t kind, const char *, const char *path, const char *, const char *, const char *body,
                            bool end_body) {
-    if (kind == K_IMG) {   /* a reply's image: a GET of its path, no body */
-        assert(!strcmp(verb, "GET") && !body && end_body);
-        strlcpy(img_path, path, sizeof(img_path));
-        return 50 + ++img_gets;
-    }
     assert(body && end_body);
     if (kind == K_CHAT) {
         strlcpy(posted, body, sizeof(posted));
@@ -167,8 +160,14 @@ static void disconnect(const char *) { disconnects++; }
 bool muse_hatch_configured() { return true; }
 static void resampler_init(resampler_t *, int, int) {}
 ''' + reset + message_to + send_chat + handlers + background + r'''
-static int fallbacks;
-static void img_fallback(const char *) { fallbacks++; }
+/* Asking Muse to push a reply's image (muse_present_ask). */
+static int asks;
+static char ask_path[512], ask_label[64];
+static void img_ask(const char *path, const char *label) {
+    asks++;
+    strlcpy(ask_path, path, sizeof(ask_path));
+    strlcpy(ask_label, label, sizeof(ask_label));
+}
 static void begin(bool typed = false) {
     assert(turn_start(s_turn.gen + 1, typed));
     s_turn.phase = P_WAIT_REPLY;
@@ -425,17 +424,20 @@ static void background() {
 }
 /* ---- A reply's image ---- */
 #define GADGET_SID "1f0c2b8e-6a4d-4c1e-9b7a-3d5e8f2a6c10"
-static void present(const char *sid, const char *id, const char *kind = "image", bool url = true) {
+enum { F_URL = 1, F_IMAGE_PATH = 2, F_SANDBOX = 4, F_ALL = 7 };
+static void present(const char *sid, const char *id, const char *kind = "image", int fields = F_ALL) {
     char line[2048];
     snprintf(line, sizeof(line), R"J({"event":"delta.presentation","seq":0,"type":"event","payload":{
         "agent_id":"a","chat_context":{"chat_id":"%s"},
         "data":{"fallback_text":"![red panda](sandbox://workspace/muse-gadget-216/images/red-panda-480.jpg)",
-                "images":[{"byte_len":65983,"label":"red panda","mime":"image/jpeg","missing":false,
-                           "path":"sandbox://workspace/muse-gadget-216/images/red-panda-480.jpg"%s}]},
-        "display_text":"red panda","id":"%s","image_path":"workspace/muse-gadget-216/images/red panda.jpg",
+                "images":[{"byte_len":65983,"label":"red panda","mime":"image/jpeg","missing":false%s%s}]},
+        "display_text":"red panda","id":"%s"%s,
         "is_thread":true,"kind":"%s","message_id":"m1","reply_to_text":"red panda","session_id":"%s"}})J",
-             sid, url ? R"(,"variants":{"original":"https://b58af2c5.metaaivm.com/media/raw/workspace/muse-gadget-216/images/red-panda-480.jpg"})" : "",
-             id, kind, sid);
+             sid,
+             fields & F_SANDBOX ? R"(,"path":"sandbox://workspace/muse-gadget-216/images/red-panda-480.jpg")" : "",
+             fields & F_URL ? R"(,"variants":{"original":"https://b58af2c5.metaaivm.com/media/raw/workspace/muse-gadget-216/images/red-panda-url.jpg"})" : "",
+             id, fields & F_IMAGE_PATH ? R"(,"image_path":"workspace/muse-gadget-216/images/red panda.jpg")" : "",
+             kind, sid);
     cJSON *root = cJSON_Parse(line);
     assert(root);
     on_event(root);
@@ -447,35 +449,37 @@ static void images() {
     event("delta.message_start", "reply", "note");
     event("delta.text_append", "reply", "", "Here's a red panda. ");
     present(GADGET_SID, "widget-1");
-    /* Fetched on the connection: the path of its URL. */
-    assert(img_gets == 1 && !strcmp(img_path, "/media/raw/workspace/muse-gadget-216/images/red-panda-480.jpg"));
-    assert(s_img.id == 51 && s_img.byte_len == 65983 && !strcmp(s_img.label, "red panda"));
-    assert(!strncmp(s_img.url, "https://b58af2c5.metaaivm.com/media/raw/", 40));
+    /* Muse is asked to push it, by its workspace file: nothing is fetched, no URL used. */
+    assert(asks == 1 && !strcmp(ask_path, "workspace/muse-gadget-216/images/red panda.jpg"));
+    assert(!strcmp(ask_label, "red panda") && !strcmp(s_img_last, "widget-1"));
     /* The reply goes on as ever. */
     event("delta.text_append", "reply", "", "It should be showing on the gadget now.");
     event("delta.message_done", "reply");
     assert(s_turn.nmsgs == 1 && s_turn.msgs[0].done);
     assert(s_turn.msgs[0].len == strlen("Here's a red panda. It should be showing on the gadget now."));
-    assert(captions == 2 && !console_events && !fallbacks);
+    assert(captions == 2 && !console_events);
     /* The same one again, another chat's, or one that isn't an image: nothing. */
     present(GADGET_SID, "widget-1");
     present("6d757365-0000-4000-8000-000000000000", "widget-2");
     present(GADGET_SID, "widget-3", "card");
-    assert(img_gets == 1 && resets == 0);
-    /* Just after the turn, in its chat: a newer image, which replaces the first's GET. */
+    assert(asks == 1 && resets == 0);
+    /* Just after the turn, in its chat: a newer image. Without image_path, the sandbox:// path names it. */
     s_turn.phase = P_IDLE;
-    present(GADGET_SID, "widget-4", "image", false);
-    assert(img_gets == 2 && resets == 1 && s_img.id == 52 && !s_img.url[0]);
-    /* No URL: the workspace file under /media/raw/, escaped. */
-    assert(!strcmp(img_path, "/media/raw/workspace/muse-gadget-216/images/red%20panda.jpg"));
+    present(GADGET_SID, "widget-4", "image", F_URL | F_SANDBOX);
+    assert(asks == 2 && !strcmp(ask_path, "workspace/muse-gadget-216/images/red-panda-480.jpg"));
+    /* Without either, its URL's path after /media/raw/; with nothing, it isn't asked for. */
+    present(GADGET_SID, "widget-5", "image", F_URL);
+    assert(asks == 3 && !strcmp(ask_path, "workspace/muse-gadget-216/images/red-panda-url.jpg"));
+    present(GADGET_SID, "widget-6", "image", 0);
+    assert(asks == 3);
     /* Long after it: not this turn's. */
     s_turn.last_event_us = now_us() - PRESENT_LATE_US - 1;
-    present(GADGET_SID, "widget-5");
-    assert(img_gets == 2);
+    present(GADGET_SID, "widget-7");
+    assert(asks == 3);
     /* A typed turn in the main chat says so on the console; the image names its chat. */
     begin(true);
-    present(GADGET_SID, "widget-6");
-    assert(img_gets == 3 && console_events == 1 && !captions);
+    present(GADGET_SID, "widget-8");
+    assert(asks == 4 && console_events == 1 && !captions && !resets);
 }
 int main(int argc, char **argv) {
     assert(argc == 2);
@@ -527,5 +531,5 @@ int main(int argc, char **argv) {
     def test_background_request_keeps_its_reply_and_never_emits(self):
         self.run_case(4)
 
-    def test_reply_image_is_fetched_on_the_connection_beside_its_text(self):
+    def test_reply_image_is_asked_for_by_its_file_beside_its_text(self):
         self.run_case(5)
