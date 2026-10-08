@@ -33,12 +33,18 @@ extern "C" {
 void muse_home_extras_build(lv_obj_t *face);
 /* Every frame while the screen is on; `now` in seconds. */
 void muse_home_extras_tick(float now);
+/* 24-hour clock (21:30) or 12-hour (9:30 PM, the default), kept in NVS.
+ * The setter writes flash: call it from the LVGL task. */
+bool muse_home_extras_24h(void);
+void muse_home_extras_set_24h(bool on);
 /* The clock label, for muse_ui.c to hide while a reply takes the top. */
 lv_obj_t *muse_home_extras_clock(void);
 #else
 static inline void muse_home_extras_build(lv_obj_t *face) { (void)face; }
 static inline void muse_home_extras_tick(float now) { (void)now; }
 static inline lv_obj_t *muse_home_extras_clock(void) { return NULL; }
+static inline bool muse_home_extras_24h(void) { return false; }
+static inline void muse_home_extras_set_24h(bool on) { (void)on; }
 #endif
 
 #ifdef __cplusplus

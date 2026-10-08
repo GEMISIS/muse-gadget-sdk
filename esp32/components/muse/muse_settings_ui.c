@@ -30,6 +30,7 @@
 #include "muse_board.h"
 #include "muse_chat.h"
 #include "muse_gadget_mode.h"
+#include "muse_home_extras.h"
 #include "muse_input.h"
 #include "muse_keypad.h"
 #include "muse_link.h"
@@ -1126,6 +1127,11 @@ static void on_mode_home(lv_event_t *e)
     set_text(s_mode_note, muse_gadget_mode_set_home() ? "Saved." : "Join a Wi-Fi network first.");
 }
 
+static void on_clock_24h_sw(lv_event_t *e)
+{
+    muse_home_extras_set_24h(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
 static void build_mode_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -1140,6 +1146,10 @@ static void build_mode_page(lv_obj_t *tile)
     s_mode_home = info_row(list, "Home Wi-Fi");
     button(list, LV_SYMBOL_WIFI "  Set current as home", COLOR_ACCENT, on_mode_home, NULL);
     s_mode_note = note(list, "Away from home Wi-Fi, Muse offers On-the-go.");
+#if CONFIG_MUSE_GADGET_HOME_EXTRAS
+    switch_row(list, "24-hour clock", muse_home_extras_24h(), on_clock_24h_sw);
+    note(list, "Off shows the 12-hour clock, as 9:30 PM.");
+#endif
 }
 
 static void tick_mode(void)

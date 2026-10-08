@@ -49,6 +49,7 @@ static lv_obj_t *s_batt;
 static lv_obj_t *s_steps;
 static lv_obj_t *s_bar;
 static float s_next;
+static bool s_24h;
 
 static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, lv_align_t align,
                        int x, int y)
@@ -80,6 +81,19 @@ void muse_home_extras_build(lv_obj_t *face)
     lv_obj_add_flag(s_bar, LV_OBJ_FLAG_HIDDEN);
 #endif
     s_next = 0;
+    s_24h = muse_extras_get_i32("clock_24h", 0) != 0;
+}
+
+bool muse_home_extras_24h(void)
+{
+    return s_24h;
+}
+
+void muse_home_extras_set_24h(bool on)
+{
+    s_24h = on;
+    muse_extras_set_i32("clock_24h", on);
+    s_next = 0;   /* redraw on the next frame */
 }
 
 lv_obj_t *muse_home_extras_clock(void)
@@ -102,8 +116,10 @@ void muse_home_extras_tick(float now)
     s_next = now + 1.0f;
 
     char buf[24];
-    if (!muse_time_format(buf, sizeof(buf), "%H:%M")) {
+    if (!muse_time_format(buf, sizeof(buf), s_24h ? "%H:%M" : "%I:%M %p")) {
         strlcpy(buf, "--:--", sizeof(buf));
+    } else if (!s_24h && buf[0] == '0') {
+        memmove(buf, buf + 1, strlen(buf));   /* 9:30 PM, not 09:30 PM */
     }
     set_text(s_clock, buf);
 
