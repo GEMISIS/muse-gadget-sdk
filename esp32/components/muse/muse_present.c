@@ -468,6 +468,11 @@ static void new_sid(char out[MUSE_CHAT_SID_MAX + 1])
  */
 EXT_RAM_BSS_ATTR static bool s_guard, s_guard_shown;
 EXT_RAM_BSS_ATTR static size_t s_guard_len;   /* the size of the one shown this turn */
+/* The last pushed image shown, for a sharper copy of it that comes after its
+ * request ended (Muse's answer can be late): with s_ask_lock. */
+EXT_RAM_BSS_ATTR static int64_t s_shown_us;
+EXT_RAM_BSS_ATTR static size_t s_shown_len;
+#define LATE_SHARPER_US (300LL * 1000000)
 EXT_RAM_BSS_ATTR static bool s_web_tried;   /* the wanted web image was fetched here already (or tried) */
 
 /* Waiting for an image (muse_present_wait), and its bytes so far (with s_ask_lock). */
@@ -490,6 +495,15 @@ EXT_RAM_BSS_ATTR static struct {
 EXT_RAM_BSS_ATTR static int s_decoding;
 EXT_RAM_BSS_ATTR static bool s_sharper_got;   /* the request's sharper copy came, and was handed on */
 EXT_RAM_BSS_ATTR static uint32_t s_up_seq;    /* muse_present_up_seq */
+
+/* A push of `len` bytes is the sharper copy of the last one shown, come after
+ * its request ended: bigger, soon after, and no other image wanted since
+ * (with s_ask_lock). It goes quietly in his pocket, not through the boxes. */
+static bool late_sharper(size_t len)
+{
+    return !s_guard && !s_want.want && !s_wait.since_us && s_shown_us
+           && esp_timer_get_time() - s_shown_us < LATE_SHARPER_US && len > s_shown_len;
+}
 
 static void fetching(bool on, size_t received, size_t size)
 {
@@ -773,10 +787,14 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
     /* A second push in the turn is shown only if it's bigger: the sharp copy
      * after the preview. The same again, or a smaller one, isn't. */
     bool twice = s_guard && s_guard_shown && job->len <= s_guard_len;
-    job->sharper = s_guard && s_guard_shown && !twice;
+    job->sharper = (s_guard && s_guard_shown && !twice) || late_sharper(job->len);
     if (s_guard && !twice) {
         s_guard_shown = true;
         s_guard_len = job->len;
+    }
+    if (!twice) {
+        s_shown_us = esp_timer_get_time();
+        s_shown_len = job->len;
     }
     s_dl.on = false;   /* all here */
     if (!twice && !job->sharper) {
@@ -858,10 +876,11 @@ void muse_present_wait(bool on)
 void muse_present_chunk(size_t received, size_t size)
 {
     portENTER_CRITICAL(&s_ask_lock);
+    bool late = late_sharper(size);
     s_wait.received = received;
     s_wait.size = size;
     /* Not the sharper copy after the one shown, nor a test push in one chunk. */
-    if (!(s_guard && s_guard_shown) && !(size == received && received < TEST_BYTES)) {
+    if (!(s_guard && s_guard_shown) && !late && !(size == received && received < TEST_BYTES)) {
         s_dl.on = true;
         s_dl.last_us = esp_timer_get_time();
         s_dl.received = received;
