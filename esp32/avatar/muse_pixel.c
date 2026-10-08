@@ -1476,31 +1476,40 @@ static void draw_box(int x, int y)
 }
 
 /*
- * Hauling boxes (MUSE_ACT_PACKAGES): each comes flying in from the top
- * right, he catches it at his chest, then lifts it across onto the stack
- * at his right, one box for each fifth of act_progress. Not knowing how far
- * along, he stacks them up, then tosses the rest over his shoulder.
+ * Downloading (MUSE_ACT_PACKAGES): a cloud at the top right with a down
+ * arrow bobbing in it, and a progress bar on the floor under him. Boxes
+ * drop out of the cloud; he reaches up, catches each one and sets it down on
+ * the stack under the cloud, one box for each quarter of act_progress. Not
+ * knowing how far along (-1), the bar shimmers, and a full stack goes poof
+ * and he starts again.
  */
-#define PK_MAX 5
+#define PK_MAX 4
 #define PK_DUR 1.2f             /* one box's trip, s */
 #define PK_CATCH 0.36f          /* through it: caught, */
-#define PK_LIFT 0.52f           /* lifted across, */
-#define PK_LAND 0.84f           /* and down on the stack */
+#define PK_HOLD 0.5f            /* held a moment, */
+#define PK_LAND 0.84f           /* and set down on the stack */
+#define PK_POOF 0.4f            /* the full stack going, s */
+#define PK_RISE 3.0f            /* Muse and the stack stand this much higher, over the bar */
+#define CLOUD_X 44              /* the cloud's top left */
+#define CLOUD_Y 1
+#define CLOUD_W 18
+#define CLOUD_H 8
 
 static struct {
     float start;    /* act_t the box in the air set off, or -1 */
     float last;     /* act_t last frame */
+    float poof;     /* act_t the full stack started going, or -1 */
+    float rise;     /* 0..1, eased: up off the floor for the bar */
     int shown;      /* on the stack */
     bool landed;
-    bool toss;      /* the stack's full: over the shoulder with it */
-} s_pk = { .start = -1 };
+} s_pk = { .start = -1, .poof = -1 };
 
 /* The top left of the stack's box n, from 0 at the bottom. */
 static void pk_slot(int n, float *x, float *y)
 {
-    static const int8_t JIG[PK_MAX] = { 0, -1, 1, 0, -1 };
-    *x = 51.0f + JIG[n];
-    *y = 58.0f - BOX_H - n * (BOX_H - 1);
+    static const int8_t JIG[PK_MAX] = { 0, -1, 1, 0 };
+    *x = CLOUD_X + (CLOUD_W - BOX_W) / 2 + JIG[n];
+    *y = 58.0f - PK_RISE * s_pk.rise - BOX_H - n * (BOX_H - 1);
 }
 
 /* Steps the boxes on to act_t `at`; the one in the air is pk_u 0..1 through its trip, or -1. */
@@ -1508,6 +1517,7 @@ static float pk_update(float at, float progress, bool first)
 {
     if (first || at < s_pk.last) {
         s_pk.start = -1;
+        s_pk.poof = -1;
         s_pk.shown = 0;
     }
     s_pk.last = at;
@@ -1517,18 +1527,94 @@ static float pk_update(float at, float progress, bool first)
         float u = (at - s_pk.start) / PK_DUR;
         if (u >= PK_LAND && !s_pk.landed) {
             s_pk.landed = true;
-            s_pk.shown += !s_pk.toss;
+            s_pk.shown++;
         }
         if (u >= 1) {
             s_pk.start = -1;
         }
     }
-    if (s_pk.start < 0 && at > 0.15f && (s_pk.shown < want || !known)) {
+    if (!known && s_pk.start < 0 && s_pk.shown >= PK_MAX) {
+        if (s_pk.poof < 0) {
+            s_pk.poof = at;
+        } else if (at - s_pk.poof >= PK_POOF) {
+            s_pk.poof = -1;
+            s_pk.shown = 0;
+        }
+    }
+    if (s_pk.start < 0 && s_pk.poof < 0 && at > 0.15f && s_pk.shown < want) {
         s_pk.start = at;
         s_pk.landed = false;
-        s_pk.toss = s_pk.shown >= PK_MAX;
     }
     return s_pk.start >= 0 ? (at - s_pk.start) / PK_DUR : -1.0f;
+}
+
+/* The cloud the boxes come out of, and a bold down arrow through it, bobbing, in the accent colour. */
+static void draw_cloud(float t)
+{
+    static const char *const CLOUD[] = {
+        "......######......",
+        "....##wwwwww##....",
+        "...#wwwwoooooo#...",
+        ".###wwoooooooo###.",
+        "#oooooooooooooooo#",
+        "#oooooooooooooooo#",
+        "#ssssssssssssssss#",
+        ".################.",
+    };
+    const uint8_t cols[] = { C_BUBBLED, C_WHITE, C_BUBBLE, C_BUBBLED };
+    stamp_c(CLOUD, 8, CLOUD_X, CLOUD_Y, "#wos", cols);
+    static const char *const ARROW[] = {
+        "..###..",
+        "..###..",
+        "..###..",
+        "#######",
+        ".#####.",
+        "..###..",
+        "...#...",
+    };
+    int ax = CLOUD_X + CLOUD_W / 2 - 3, ay = CLOUD_Y + 2 + iround(1.0f - cosf(t * 6.0f));   /* bobbing down */
+    static const int8_t AROUND[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+    for (int k = 0; k < 4; k++) {
+        stamp(ARROW, 7, ax + AROUND[k][0], ay + AROUND[k][1], C_OUT, C_OUT);
+    }
+    stamp(ARROW, 7, ax, ay, C_ACC, C_ACC);
+    px(ax + 2, ay, C_G0);   /* a glint */
+    px(ax + 2, ay + 1, C_G0);
+}
+
+/*
+ * The progress bar on the floor, rows y..y + 3 from x0 to x1, filled to
+ * `progress` 0..1; or, not knowing (-1), a shimmer sliding along it.
+ */
+static void draw_progress(int x0, int x1, int y, float progress, float t)
+{
+    for (int r = 0; r < 4; r++) {
+        for (int x = x0; x <= x1; x++) {
+            bool end = x == x0 || x == x1;
+            if (end && (r == 0 || r == 3)) {
+                continue;   /* round ends */
+            }
+            px(x, y + r, end || r == 0 || r == 3 ? C_AURA2 : C_SHADOW);
+        }
+    }
+    int in0 = x0 + 1, w = x1 - x0 - 1;
+    int a, b;
+    if (progress >= 0) {
+        a = in0;
+        b = in0 + iround(clampf(progress, 0, 1) * w) - 1;
+    } else {
+        int seg = w / 3, head = iround(fracf(t * 0.8f) * (w + seg));
+        a = in0 + head - seg;
+        b = in0 + head - 1;
+    }
+    int glint = in0 + iround(fracf(t * 0.9f) * (w + 6)) - 3;
+    for (int x = a; x <= b; x++) {
+        if (x < in0 || x >= in0 + w) {
+            continue;
+        }
+        px(x, y + 1, x == glint || x == glint + 1 ? C_WHITE : C_G0);
+        px(x, y + 2, C_ACC);
+    }
 }
 
 #define MUG_W 10
@@ -1893,9 +1979,12 @@ void muse_pixel_render(const muse_pose_t *p)
     static muse_act_t s_last_act;
     float pk_u = act == MUSE_ACT_PACKAGES ? pk_update(at, p->act_progress, s_last_act != MUSE_ACT_PACKAGES) : -1.0f;
     s_last_act = act;
-    if (pk_u >= PK_CATCH && pk_u < PK_LIFT) {
-        hop -= sinf((pk_u - PK_CATCH) / (PK_LIFT - PK_CATCH) * 3.1416f) * 1.2f;   /* the catch, a dip */
+    if (pk_u >= PK_CATCH && pk_u < PK_HOLD) {
+        hop -= sinf((pk_u - PK_CATCH) / (PK_HOLD - PK_CATCH) * 3.1416f) * 1.2f;   /* the catch, a dip */
     }
+    /* Downloading: up off the floor for the bar, and over to the left of the stack. */
+    s_pk.rise += ((act == MUSE_ACT_PACKAGES ? 1.0f : 0.0f) - s_pk.rise) * (1.0f - expf(-dt * 8.0f));
+    float rise = PK_RISE * s_pk.rise;
 
     /* Boot: the avatar pops up from a squash, then opens their eyes. */
     float boot = mode == MUSE_MODE_BOOT ? clampf(p->mode_t / 1.4f, 0, 1) : 1.0f;
@@ -1908,8 +1997,8 @@ void muse_pixel_render(const muse_pose_t *p)
     j.b = 23.0f * (1 - breathe) * squash * (1.0f - 0.05f * tired + 0.05f * yawn);   /* a slouch; a stretch to yawn */
     j.a *= 1.0f + 0.05f * brace;   /* braced: knees bent, lower and wider */
     j.b *= 1.0f - 0.07f * brace;
-    j.cx = 32.0f + lean;
-    j.cy = 56.5f - j.b + bob * 0.5f - hop;   /* feet stay near the ground */
+    j.cx = 32.0f + lean - 5.0f * s_pk.rise;
+    j.cy = 56.5f - j.b + bob * 0.5f - hop - rise;   /* feet stay near the ground */
     if (bed) {
         j.cy += 3.0f * lie - 5.0f * s_rise;   /* down in the bed, or sat up out of it */
     }
@@ -1935,7 +2024,7 @@ void muse_pixel_render(const muse_pose_t *p)
         draw_rings(j.cx, j.fy + 2, t, level, 0.6f);
     }
     if (!bed) {
-        draw_shadow(j.cx, 58.5f, 13.0f - hop * 0.8f + 3.0f * brace);
+        draw_shadow(j.cx, 58.5f - rise, 13.0f - hop * 0.8f + 3.0f * brace);
     }
 
     float spk_speed = mode == MUSE_MODE_THINKING ? 2.8f : mode == MUSE_MODE_LISTENING ? 1.2f
@@ -2037,47 +2126,34 @@ void muse_pixel_render(const muse_pose_t *p)
             arms[0] = arm_to(slx, shy, j.cx - 19.0f, j.cy + 1.0f - 5.0f * g);
         }
     } else if (act == MUSE_ACT_PACKAGES) {
-        float cbx = j.cx - BOX_W / 2.0f, cby = j.fy + j.fb + 0.5f;   /* a box held at his chest */
-        limb_t ready_l = arm_to(slx, shy, j.cx - 15.0f, j.cy - 6.0f - bob);
-        limb_t ready_r = arm_to(srx, shy, j.cx + 15.0f, j.cy - 7.0f - bob);
-        arms[0] = ready_l;
+        /* Reaching up under the cloud for the next box, paw ready; catching
+         * it, then setting it down on the stack. */
+        float sx, sy;
+        pk_slot(s_pk.shown < PK_MAX ? s_pk.shown : PK_MAX - 1, &sx, &sy);
+        float catch_y = fminf(sy - 3.0f, j.cy - 10.0f);
+        limb_t ready_r = arm_to(srx, shy, sx + 0.5f, j.cy - 6.0f + sinf(t * 4.0f));
         arms[1] = ready_r;
+        arms[0] = arm_to(slx, shy, j.cx - 16.0f, j.cy + 2.0f);   /* a paw on his hip */
+        box_x = sx;
         if (pk_u >= 0 && pk_u < PK_CATCH) {
             float k = pk_u / PK_CATCH;
-            /* Tossed in from the top right, down to chest height before it's past his face. */
-            box_x = 66.0f + (cbx - 66.0f) * k;
-            box_y = 4.0f + (cby - 4.0f) * (1 - (1 - k) * (1 - k));
+            box_y = CLOUD_Y + CLOUD_H - BOX_H - 1.0f + (catch_y - (CLOUD_Y + CLOUD_H - BOX_H - 1.0f)) * k * k;
             box_air = true;
-        } else if (pk_u >= PK_CATCH && (pk_u < PK_LAND || s_pk.toss)) {
-            float k = clampf((pk_u - PK_LIFT) / ((s_pk.toss ? 1.0f : PK_LAND) - PK_LIFT), 0, 1), e = k * k * (3 - 2 * k);
-            float ex = 1 - (1 - k) * (1 - k) * (1 - k), ey = k * k;
-            float sx, sy;
-            if (s_pk.toss) {
-                /* Over his shoulder, up and out of sight. */
-                sx = 46.0f;
-                sy = -BOX_H - 4.0f;
-            } else {
-                /* Across first, then up or down onto the stack: clear of his face. */
-                pk_slot(s_pk.shown, &sx, &sy);
-            }
-            box_x = cbx + (sx - cbx) * ex;
-            box_y = cby + (sy - cby) * ey - sinf(k * 3.1416f) * 2.0f;
+        } else if (pk_u >= PK_CATCH && pk_u < PK_LAND) {
+            float k = clampf((pk_u - PK_HOLD) / (PK_LAND - PK_HOLD), 0, 1);
+            box_y = catch_y + (sy - catch_y) * k * k + (pk_u < PK_HOLD ? 1.0f : 0.0f);   /* a bump as it lands in his paw */
             box_air = box_held = true;
-            /* Held at both sides; then the right paw lifts it across. */
-            arms[0] = limb_mix(arm_to(slx, shy, box_x - 0.5f, box_y + 4.0f), ready_l, e);
-            arms[1] = arm_to(srx, shy, box_x + (BOX_W - 0.5f) * (1 - e) + 1.0f * e, box_y + 4.0f + 1.5f * e);
+            arms[1] = arm_to(srx, shy, box_x + 0.5f, box_y + 5.0f);
         } else if (pk_u >= PK_LAND) {
             float k = clampf((pk_u - PK_LAND) / (1 - PK_LAND), 0, 1);
-            float sx, sy;
-            pk_slot(s_pk.shown > 0 ? s_pk.shown - 1 : 0, &sx, &sy);
-            arms[1] = limb_mix(arm_to(srx, shy, sx + 1.0f, sy + 5.5f), ready_r, k * k);
+            arms[1] = limb_mix(arm_to(srx, shy, sx + 0.5f, sy - 6.0f), ready_r, k * k);
         }
         if (box_air) {
             s_look_x = clampf((box_x + BOX_W / 2.0f - j.fx) / 9.0f, -1, 1);
             s_look_y = clampf((box_y + BOX_H / 2.0f - j.fy) / 9.0f, -1, 1);
         } else {
-            s_look_x = 0.8f;   /* up at where they come from */
-            s_look_y = -0.8f;
+            s_look_x = 0.9f;   /* up at the cloud */
+            s_look_y = -0.9f;
         }
     } else if (tea) {
         /* The mug by the handle, out at his side where the steam shows; up to his lips for a sip. */
@@ -2179,7 +2255,7 @@ void muse_pixel_render(const muse_pose_t *p)
         mouth = box_air && !box_held ? MOUTH_O : MOUTH_SMILE;
         open = 1.0f - blink;
         brows = box_air && !box_held ? 2 : 0;
-        if (pk_u >= PK_CATCH && pk_u < PK_LIFT + 0.08f) {
+        if (pk_u >= PK_CATCH && pk_u < PK_HOLD + 0.1f) {
             style = EYES_HAPPY;   /* got it */
             mouth = MOUTH_GRIN;
         }
@@ -2259,29 +2335,37 @@ void muse_pixel_render(const muse_pose_t *p)
         draw_paw(hx, hy);
     }
     if (act == MUSE_ACT_PACKAGES) {
+        float poof = s_pk.poof >= 0 ? (at - s_pk.poof) / PK_POOF : -1.0f;
         for (int i = 0; i < s_pk.shown && i < PK_MAX; i++) {
             float sx, sy;
             pk_slot(i, &sx, &sy);
-            draw_box(iround(sx), iround(sy));
+            if (poof < 0.5f) {
+                draw_box(iround(sx), iround(sy));
+            }
+            if (poof >= 0) {
+                /* All unpacked: gone in a puff of sparkles, to start again. */
+                draw_sparkle(iround(sx + BOX_W / 2.0f), iround(sy + BOX_H / 2.0f), 1.0f - poof, true);
+            }
         }
-        if (pk_u >= PK_LAND && pk_u < PK_LAND + 0.1f && !s_pk.toss && s_pk.shown > 0) {
+        if (pk_u >= PK_LAND && pk_u < PK_LAND + 0.1f && s_pk.shown > 0) {
             float sx, sy;
             pk_slot(s_pk.shown - 1, &sx, &sy);
-            draw_sparkle(iround(sx - 1), iround(sy + 1), 0.9f, true);   /* down it goes */
-            draw_sparkle(iround(sx + BOX_W), iround(sy + 2), 0.5f, true);
+            draw_sparkle(iround(sx - 1), iround(sy + BOX_H - 2), 0.9f, true);   /* down it goes */
+            draw_sparkle(iround(sx + BOX_W), iround(sy + BOX_H - 3), 0.5f, true);
         }
         if (box_air) {
             draw_box(iround(box_x), iround(box_y));
         }
         if (box_held) {
-            for (int a = 0; a < 2; a++) {
-                int hx, hy;
-                paw_of(&arms[a], sh_x[a], sh_y[a], &hx, &hy);
-                if (a == 1 || pk_u < PK_LIFT + 0.1f) {
-                    draw_paw(hx, hy);
-                }
+            /* His paw on it, while it's within reach. */
+            int hx, hy;
+            paw_of(&arms[1], sh_x[1], sh_y[1], &hx, &hy);
+            if (fabsf(hx - (box_x + 0.5f)) < 1.5f && fabsf(hy - (box_y + 5.0f)) < 1.5f) {
+                draw_paw(hx, hy);
             }
         }
+        draw_cloud(t);   /* over the box coming out of it */
+        draw_progress(9, 56, 59, p->act_progress, t);
     }
     if (tea) {
         draw_mug(iround(mug_x), iround(mug_y), sip < 0.5f);
