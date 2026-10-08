@@ -74,6 +74,20 @@ static const char *TAG = "muse_ui";
 #define SPEAKER_GROW_PX 8       /* how much the speaker button swells while held */
 #define SPEAKER_HOLD_MS 400     /* LVGL's long press */
 #define NIGHT_CELL_PX 3         /* Muse's grid cells in bed on the Night face */
+#define PHOTO_BORDER 6          /* a reply's image, held up: its white border */
+#define PHOTO_HEAD_ROW 10       /* the top of Muse's head in the grid, with a bob, to tuck under it */
+#define PHOTO_REACH_S 0.4f      /* Muse reaching into his pocket for it */
+#define PHOTO_RISE_S 0.6f       /* taking it out and holding it up, and back down */
+#define PHOTO_STOW_S 0.3f       /* his hand back out of the pocket */
+#define PHOTO_HOLD_S 60.0f      /* held up this long after the reply */
+#define PHOTO_BOB_PX 2
+#define PAW_PX 20
+#define ARM_PX 12           /* about his own arms, at the photo layout's 2 px cells */
+#define ARM_EDGE_PX 2
+#define COLOR_FUR 0xe6d7bd      /* the default avatar's arms (avatar/muse_pixel.c's C_BL, C_OUT) */
+#define COLOR_FUR_EDGE 0x3a2b22
+#define COLOR_PHOTO 0xf8f5ee
+#define COLOR_PHOTO_SHADOW 0x5b3fd9
 
 #define COLOR_DIM 0x8b84a8
 #define COLOR_CAPTION 0xd8d2ff
@@ -195,11 +209,12 @@ typedef struct {
     int cols, lines;          /* the reply's page */
     int w, h, top;            /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[7];       /* what it covers: three of the read layout's own, and add_hides' four */
+    lv_obj_t *hides[11];      /* what it covers: three of its own, and add_hides' four, twice for the photo */
 } answer_layout_t;
 
-enum { ANSWER_HEARD, ANSWER_READ };
-static answer_layout_t s_answers[2];
+/* ANSWER_PHOTO: holding up a reply's image (photo_*), idle or not. */
+enum { ANSWER_HEARD, ANSWER_READ, ANSWER_PHOTO, ANSWER_COUNT };
+EXT_RAM_BSS_ATTR static answer_layout_t s_answers[ANSWER_COUNT];   /* in PSRAM: only read when the layout changes */
 static int s_answer = -1;       /* the layout showing, or -1 */
 static int s_page_for = -1;     /* the layout the reply's page is sized for */
 static int s_big_y;             /* Muse's centre at full size */
@@ -209,6 +224,38 @@ static int s_muse_y;            /* and now */
 static bool s_night;
 static int s_night_y, s_night_heard_y;
 static int s_from_px, s_from_y, s_to_px, s_to_y;
+
+/*
+ * An image from a reply (muse_ui_present): Muse reaches into his pocket for
+ * it (PHOTO_REACH), takes it out and holds it up over his head, small under
+ * it (PHOTO_RISE, PHOTO_HOLD), and later puts it back (PHOTO_LOWER, then his
+ * hand out of the pocket, PHOTO_STOW). The photo is an LVGL card on the face,
+ * his arms LVGL lines from his shoulders to its bottom corners; the renderer
+ * draws the reach and the pocket (muse_pose_t). A tap shows it full size.
+ * The compact layout skips all that and shows it full size straight away.
+ */
+typedef enum { PHOTO_NONE, PHOTO_REACH, PHOTO_RISE, PHOTO_HOLD, PHOTO_LOWER, PHOTO_STOW } photo_phase_t;
+
+typedef struct {
+    uint16_t *full, *held;      /* RGB565, PSRAM: fitting the screen, and held up */
+    int fw, fh, hw, hh;
+} photo_px_t;
+
+EXT_RAM_BSS_ATTR static struct {
+    photo_phase_t phase;
+    float at;                   /* when the phase began */
+    float held_at;              /* when it was held up, or came back from full size */
+    photo_px_t px;              /* shown */
+    photo_px_t next;            /* from muse_ui_present, under s_image_mutex */
+    lv_image_dsc_t full_dsc, held_dsc;
+} s_photo;
+static int s_photo_px;          /* the held image's side; 0 in the compact layout */
+static int s_photo_y;           /* the card's centre, from the screen's */
+static lv_obj_t *s_photo_card, *s_photo_pic;
+static lv_obj_t *s_photo_full, *s_photo_full_pic;
+static lv_obj_t *s_arm[2][2];   /* each arm's outline, then its fur */
+static lv_obj_t *s_paw[2];
+EXT_RAM_BSS_ATTR static lv_point_precise_t s_arm_pts[2][2];
 
 static const char *const MODE_NAMES[MUSE_MODE_COUNT] = {
     [MUSE_MODE_BOOT] = "WAKING UP",
@@ -728,7 +775,7 @@ static void set_answer(int which)
         lv_obj_set_style_text_align(s_reply_lbl, l->align, 0);
     }
     int px = l ? l->px : s_canvas_px, y = l ? l->y : s_big_y;
-    if (s_night && which != ANSWER_READ) {
+    if (s_night && which != ANSWER_READ && which != ANSWER_PHOTO) {
         /* In bed it sits up where it is (muse_pixel.c) rather than growing. */
         px = MUSE_PX_W * NIGHT_CELL_PX;
         y = l ? s_night_heard_y : s_night_y;
@@ -767,24 +814,91 @@ static void set_reply_box(answer_layout_t *l, int cols, int lines, int top, int 
     l->top = top;
 }
 
-/* The hint icons, and the readouts' corner, a layout's reply would cover go while it's up. */
-static void add_hides(answer_layout_t *l, int n)
+/* The hint icons, and the readouts' corner, that `box` (screen coordinates) covers go while layout l is up. */
+static int hide_under(answer_layout_t *l, int n, const lv_area_t *box)
+{
+    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_corner(), muse_home_extras_up_next() };
+    const int cap = sizeof(l->hides) / sizeof(l->hides[0]);
+    for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]) && n < cap; i++) {
+        if (!hints[i]) {
+            continue;   /* no such icon on this board */
+        }
+        bool have = false;
+        for (int k = 0; k < n; k++) {
+            have |= l->hides[k] == hints[i];
+        }
+        lv_area_t a;
+        lv_obj_get_coords(hints[i], &a);
+        if (!have && a.x1 <= box->x2 && a.x2 >= box->x1 && a.y1 <= box->y2 && a.y2 >= box->y1) {
+            l->hides[n++] = hints[i];
+        }
+    }
+    return n;
+}
+
+/* What a layout's reply would cover. */
+static int add_hides(answer_layout_t *l, int n)
 {
     lv_area_t box = {
         .x1 = s_w / 2 - l->w / 2, .y1 = s_h / 2 + l->top,
         .x2 = s_w / 2 + l->w / 2 - 1, .y2 = s_h / 2 + l->top + l->h - 1,
     };
-    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_corner(), muse_home_extras_up_next() };
-    for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]); i++) {
-        if (!hints[i]) {
-            continue;   /* no such icon on this board */
-        }
-        lv_area_t a;
-        lv_obj_get_coords(hints[i], &a);
-        if (a.x1 <= box.x2 && a.x2 >= box.x1 && a.y1 <= box.y2 && a.y2 >= box.y1) {
-            l->hides[n++] = hints[i];
+    return hide_under(l, n, &box);
+}
+
+/*
+ * The photo layout: the card as big as fits across the top while leaving
+ * room under it for Muse at his smallest, head tucked under its bottom edge,
+ * and three lines of reply under him (two if three won't fit).
+ */
+static void build_photo_layout(int ring_in, int cw, int pitch)
+{
+    answer_layout_t *l = &s_answers[ANSWER_PHOTO];
+    l->px = MUSE_PX_W * MINI_CELL_PX;
+    l->align = LV_TEXT_ALIGN_CENTER;
+    int side = s_w < s_h ? s_w : s_h;
+    int muse_h = (MUSE_PX_H - ART_BLANK_ROWS - PHOTO_HEAD_ROW) * MINI_CELL_PX;
+    int r = ring_in - 6;
+    int card = 0, top = 0, reply_top = 0, lines = 0;
+    for (int want = 3; want >= 2 && !lines; want--) {
+        for (card = side * 3 / 5 & ~1; card >= side * 2 / 5; card -= 2) {
+            top = -s_h / 2 + 12;
+            if (muse_board->round) {
+                if (card / 2 >= r) {
+                    continue;
+                }
+                top = -(int)sqrtf((float)(r * r - card * card / 4)) + 2;   /* its top corners inside the ring */
+            }
+            reply_top = top + card + 4 + muse_h + 4;
+            int n = (reply_bottom(CAPTION_W, ring_in) - reply_top + CAPTION_LINE_SPACE) / pitch;
+            if (n >= want) {
+                lines = want;
+                break;
+            }
         }
     }
+    if (!lines) {
+        card = side * 2 / 5 & ~1;
+        lines = 1;
+    }
+    int cols = 12;
+    for (int c = 30; c > 12; c--) {   /* its bottom line, further from the centre, is the narrowest */
+        if (fits_across(c * cw, reply_top + lines * pitch, ring_in) && (c + 1) * lines <= MUSE_CAPTION_MAX * 2 / 3) {
+            cols = c;
+            break;
+        }
+    }
+    set_reply_box(l, cols, lines, reply_top, cw, pitch);
+    s_photo_px = card - 2 * PHOTO_BORDER;
+    s_photo_y = top + card / 2;
+    l->y = top + card + 4 - PHOTO_HEAD_ROW * MINI_CELL_PX + l->px / 2;
+    l->hides[0] = s_state_lbl;
+    l->hides[1] = s_name_lbl;
+    l->hides[2] = muse_home_extras_clock();
+    int n = add_hides(l, l->hides[2] ? 3 : 2);
+    lv_area_t box = { s_w / 2 - card / 2, s_h / 2 + top, s_w / 2 + card / 2 - 1, s_h / 2 + top + card - 1 };
+    hide_under(l, n, &box);
+    ESP_LOGI(TAG, "photo held at %d px, reply under it %d x %d", s_photo_px, cols, lines);
 }
 
 /*
@@ -868,6 +982,68 @@ static void build_answer(lv_obj_t *face, int ring_in)
     s_answers[ANSWER_READ].hides[2] = muse_home_extras_clock();   /* in the name's row; NULL without it */
     add_hides(&s_answers[ANSWER_READ], s_answers[ANSWER_READ].hides[2] ? 3 : 2);
     add_hides(&s_answers[ANSWER_HEARD], 0);
+    build_photo_layout(ring_in, cw, pitch);
+}
+
+/* ---- A reply's image, held up (s_photo) ---- */
+
+static lv_obj_t *make_arm(lv_obj_t *face, int width, uint32_t color, lv_point_precise_t *pts)
+{
+    lv_obj_t *line = lv_line_create(face);
+    lv_obj_set_style_line_width(line, width, 0);
+    lv_obj_set_style_line_color(line, lv_color_hex(color), 0);
+    lv_obj_set_style_line_rounded(line, true, 0);
+    lv_obj_remove_flag(line, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(line, LV_OBJ_FLAG_HIDDEN);
+    lv_line_set_points(line, pts, 2);
+    return line;
+}
+
+static void photo_full_show(void);
+
+static void on_photo_clicked(lv_event_t *e)
+{
+    (void)e;
+    if (s_photo.phase == PHOTO_RISE || s_photo.phase == PHOTO_HOLD) {
+        photo_full_show();
+    }
+}
+
+/* On the face, over everything else on it: the arms, the card, the paws on its corners. */
+static void build_photo(lv_obj_t *face)
+{
+    for (int a = 0; a < 2; a++) {
+        s_arm[a][0] = make_arm(face, ARM_PX + 2 * ARM_EDGE_PX, COLOR_FUR_EDGE, s_arm_pts[a]);
+        s_arm[a][1] = make_arm(face, ARM_PX, COLOR_FUR, s_arm_pts[a]);
+    }
+    s_photo_card = lv_obj_create(face);
+    lv_obj_remove_style_all(s_photo_card);
+    lv_obj_set_style_bg_color(s_photo_card, lv_color_hex(COLOR_PHOTO), 0);
+    lv_obj_set_style_bg_opa(s_photo_card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(s_photo_card, 10, 0);
+    /* On black a shadow doesn't show; a dim glow of the idle colour does. */
+    lv_obj_set_style_shadow_color(s_photo_card, lv_color_hex(COLOR_PHOTO_SHADOW), 0);
+    lv_obj_set_style_shadow_width(s_photo_card, 20, 0);
+    lv_obj_set_style_shadow_offset_y(s_photo_card, 6, 0);
+    lv_obj_set_style_shadow_opa(s_photo_card, LV_OPA_40, 0);
+    lv_obj_remove_flag(s_photo_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_photo_card, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_photo_card, on_photo_clicked, LV_EVENT_CLICKED, NULL);
+    s_photo_pic = lv_image_create(s_photo_card);
+    lv_image_set_inner_align(s_photo_pic, LV_IMAGE_ALIGN_STRETCH);   /* sized as the card grows */
+    lv_obj_remove_flag(s_photo_pic, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_center(s_photo_pic);
+    for (int a = 0; a < 2; a++) {
+        s_paw[a] = lv_obj_create(face);
+        lv_obj_remove_style_all(s_paw[a]);
+        lv_obj_set_style_radius(s_paw[a], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(s_paw[a], lv_color_hex(COLOR_FUR), 0);
+        lv_obj_set_style_bg_opa(s_paw[a], LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(s_paw[a], lv_color_hex(COLOR_FUR_EDGE), 0);
+        lv_obj_set_style_border_width(s_paw[a], ARM_EDGE_PX, 0);
+        lv_obj_remove_flag(s_paw[a], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(s_paw[a], LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 /*
@@ -1085,6 +1261,7 @@ static void build_screen(void)
     }
 
     build_answer(face, ring_in);
+    build_photo(face);
 }
 
 
@@ -1165,6 +1342,330 @@ static void on_any_press(lv_event_t *e)
     muse_state_poke();
 }
 
+static void photo_px_free(photo_px_t *p)
+{
+    heap_caps_free(p->full);
+    heap_caps_free(p->held);
+    *p = (photo_px_t){ 0 };
+}
+
+static void set_dsc(lv_image_dsc_t *dsc, const uint16_t *px, int w, int h)
+{
+    *dsc = (lv_image_dsc_t){ 0 };
+    dsc->header.magic = LV_IMAGE_HEADER_MAGIC;
+    dsc->header.cf = LV_COLOR_FORMAT_RGB565;
+    dsc->header.w = w;
+    dsc->header.h = h;
+    dsc->header.stride = w * sizeof(uint16_t);
+    dsc->data_size = (size_t)w * h * sizeof(uint16_t);
+    dsc->data = (const uint8_t *)px;
+}
+
+/* Shows p in place of what was, which goes. */
+static void photo_adopt(photo_px_t *p)
+{
+    photo_px_t old = s_photo.px;
+    s_photo.px = *p;
+    *p = (photo_px_t){ 0 };
+    set_dsc(&s_photo.full_dsc, s_photo.px.full, s_photo.px.fw, s_photo.px.fh);
+    lv_image_set_src(s_photo_full_pic, &s_photo.full_dsc);
+    if (s_photo_pic && s_photo.px.held) {
+        set_dsc(&s_photo.held_dsc, s_photo.px.held, s_photo.px.hw, s_photo.px.hh);
+        lv_image_set_src(s_photo_pic, &s_photo.held_dsc);
+    }
+    photo_px_free(&old);
+}
+
+static bool photo_full_shown(void)
+{
+    return s_photo_full && !lv_obj_has_flag(s_photo_full, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void photo_full_show(void)
+{
+    if (!s_photo.px.full) {
+        return;
+    }
+    muse_menu_close();
+    lv_obj_remove_flag(s_photo_full, LV_OBJ_FLAG_HIDDEN);
+    muse_state_poke();
+}
+
+/* All gone: the card, the arms, the full size view and the pixels. */
+static void photo_drop(void)
+{
+    s_photo.phase = PHOTO_NONE;
+    if (s_photo_card) {
+        lv_obj_add_flag(s_photo_card, LV_OBJ_FLAG_HIDDEN);
+        lv_image_set_src(s_photo_pic, NULL);
+        for (int a = 0; a < 2; a++) {
+            lv_obj_add_flag(s_arm[a][0], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_arm[a][1], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_paw[a], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_photo_full) {
+        lv_obj_add_flag(s_photo_full, LV_OBJ_FLAG_HIDDEN);
+        lv_image_set_src(s_photo_full_pic, NULL);
+    }
+    photo_px_free(&s_photo.px);
+}
+
+static void photo_full_hide(float now)
+{
+    if (!photo_full_shown()) {
+        return;
+    }
+    lv_obj_add_flag(s_photo_full, LV_OBJ_FLAG_HIDDEN);
+    if (s_photo.phase == PHOTO_NONE) {
+        photo_drop();   /* the compact layout's only showing */
+    }
+    s_photo.held_at = now;   /* held a while longer */
+}
+
+static void on_photo_full_clicked(lv_event_t *e)
+{
+    (void)e;
+    photo_full_hide((float)esp_timer_get_time() / 1e6f);
+}
+
+/* The photo layout's up: from reaching for it until it's back in the pocket. */
+static bool photo_shown(void)
+{
+    return s_photo.phase != PHOTO_NONE && s_photo.phase != PHOTO_STOW;
+}
+
+static float phase_t(float now, float len)
+{
+    float t = (now - s_photo.at) / len;
+    return t < 0 ? 0 : t > 1 ? 1 : t;
+}
+
+static float ease_in_out(float t)
+{
+    return t * t * (3 - 2 * t);
+}
+
+/* Puts it away: back down into the pocket from wherever it's got to. */
+static void photo_put_away(float now, const char *why)
+{
+    switch (s_photo.phase) {
+    case PHOTO_REACH: {
+        float reach = phase_t(now, PHOTO_REACH_S);
+        s_photo.phase = PHOTO_STOW;
+        s_photo.at = now - (1 - reach) * PHOTO_STOW_S;
+        break;
+    }
+    case PHOTO_RISE: {
+        float rise = phase_t(now, PHOTO_RISE_S);
+        s_photo.phase = PHOTO_LOWER;
+        s_photo.at = now - (1 - rise) * PHOTO_RISE_S;
+        break;
+    }
+    case PHOTO_HOLD:
+        s_photo.phase = PHOTO_LOWER;
+        s_photo.at = now;
+        break;
+    default:
+        return;
+    }
+    ESP_LOGI(TAG, "photo put away: %s", why);
+}
+
+/* Hides or shows o, if that's a change: unhiding redraws it all, even when it showed already. */
+static void show_obj(lv_obj_t *o, bool on)
+{
+    if (on == lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_set_flag(o, LV_OBJ_FLAG_HIDDEN, !on);
+    }
+}
+
+/* A point of Muse's grid, on the face, where his canvas is now. */
+static void grid_point(float gx, float gy, int32_t *x, int32_t *y)
+{
+    float px = (float)s_muse_src.header.w, cell = px / MUSE_PX_W;
+    *x = (int32_t)lroundf(s_w / 2.0f - px / 2 + gx * cell);
+    *y = (int32_t)lroundf(s_h / 2.0f + s_muse_y - px / 2 + gy * cell);
+}
+
+/*
+ * Places the card for `rise` (0 in the pocket, 1 held up), with his arms from
+ * his shoulders to its bottom corners and his paws on them; -1 hides it all.
+ */
+static void photo_place(float rise, float now)
+{
+    bool on = rise >= 0 && s_photo.px.held;
+    show_obj(s_photo_card, on);
+    for (int a = 0; a < 2; a++) {
+        show_obj(s_arm[a][0], on);
+        show_obj(s_arm[a][1], on);
+        show_obj(s_paw[a], on);
+    }
+    if (!on) {
+        return;
+    }
+    /*
+     * Out of the pocket (avatar/muse_pixel.c's draw_pocket), up past his
+     * side and over his head on a curve (a quadratic Bezier), small until
+     * it's clear of him, then swelling a touch past its size and settling.
+     */
+    int32_t px, py;
+    grid_point(42.0f, 47.0f, &px, &py);
+    int card = s_photo_px + 2 * PHOTO_BORDER;
+    float hx = s_w / 2.0f;
+    float bob = s_photo.phase == PHOTO_HOLD ? lroundf(PHOTO_BOB_PX * sinf((now - s_photo.held_at) * 2.1f)) : 0;
+    float hy = s_h / 2.0f + s_photo_y + bob;   /* a gentle bob while it's held, from where it stopped */
+    float bx = hx + card * 0.45f, by = py - card * 0.55f;
+    float m = ease_in_out(rise), u = 1 - m;
+    float cx = u * u * px + 2 * u * m * bx + m * m * hx;
+    float cy = u * u * py + 2 * u * m * by + m * m * hy;
+    float size = 0.12f + 0.88f * rise * rise + 0.2f * sinf(rise * 3.1416f) * rise * rise;
+    int border = (int)lroundf(PHOTO_BORDER * size);
+    border = border > 1 ? border : 1;
+    int pw = (int)lroundf(s_photo.px.hw * size), ph = (int)lroundf(s_photo.px.hh * size);
+    pw = pw > 2 ? pw : 2;
+    ph = ph > 2 ? ph : 2;
+    int w = pw + 2 * border, h = ph + 2 * border;
+    int x0 = (int)lroundf(cx) - w / 2, y0 = (int)lroundf(cy) - h / 2;
+    lv_obj_set_pos(s_photo_card, x0, y0);
+    lv_obj_set_size(s_photo_card, w, h);
+    lv_obj_set_size(s_photo_pic, pw, ph);
+    int radius = (int)lroundf(10 * size);
+    if (radius != lv_obj_get_style_radius(s_photo_card, 0)) {
+        lv_obj_set_style_radius(s_photo_card, radius, 0);   /* a style change: not every frame */
+    }
+    int paw = (int)lroundf(PAW_PX * (0.6f + 0.4f * rise));
+    /* His right hand brings it out; the left, down at his side, takes its other corner once it's up. */
+    float grab = (rise - 0.45f) / 0.3f;
+    grab = ease_in_out(grab < 0 ? 0 : grab > 1 ? 1 : grab);
+    int32_t rest_x, rest_y;
+    grid_point(14.0f, 43.0f, &rest_x, &rest_y);
+    for (int a = 0; a < 2; a++) {
+        int32_t sx, sy;
+        grid_point(a ? 46.0f : 18.0f, 34.0f, &sx, &sy);   /* his shoulders */
+        int32_t ex = a ? x0 + w - 3 : x0 + 3, ey = y0 + h - 3;
+        if (!a) {
+            ex = rest_x + (int32_t)lroundf((ex - rest_x) * grab);
+            ey = rest_y + (int32_t)lroundf((ey - rest_y) * grab);
+        }
+        if (s_arm_pts[a][0].x != sx || s_arm_pts[a][0].y != sy || s_arm_pts[a][1].x != ex || s_arm_pts[a][1].y != ey) {
+            s_arm_pts[a][0] = (lv_point_precise_t){ sx, sy };
+            s_arm_pts[a][1] = (lv_point_precise_t){ ex, ey };
+            lv_line_set_points(s_arm[a][0], s_arm_pts[a], 2);
+            lv_line_set_points(s_arm[a][1], s_arm_pts[a], 2);
+        }
+        lv_obj_set_size(s_paw[a], paw, paw);
+        lv_obj_set_pos(s_paw[a], ex - paw / 2, ey - paw / 2);
+    }
+}
+
+/*
+ * Each frame: takes a new image, moves the phases on, puts the photo away
+ * when it's time, and places it. Returns how far Muse's hand is in his pocket
+ * (muse_pose_t.reach), and sets *holding.
+ */
+static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding)
+{
+    *holding = false;
+    xSemaphoreTake(s_image_mutex, portMAX_DELAY);
+    photo_px_t next = s_photo.next;
+    s_photo.next = (photo_px_t){ 0 };
+    xSemaphoreGive(s_image_mutex);
+    if (next.full && mode == MUSE_MODE_LISTENING) {
+        ESP_LOGI(TAG, "photo dropped: a new turn's begun");
+        photo_px_free(&next);
+    }
+    if (next.full) {
+        if (!s_photo_card) {
+            photo_drop();
+            photo_adopt(&next);
+            photo_full_show();   /* compact: straight to full size */
+        } else if (s_photo.phase == PHOTO_NONE || s_photo.phase == PHOTO_STOW) {
+            photo_drop();
+            photo_adopt(&next);
+            s_photo.phase = PHOTO_REACH;
+            s_photo.at = now;
+            muse_menu_close();
+            muse_ui_show_face();
+        } else {
+            photo_adopt(&next);   /* another, while one's out: shown in its place */
+            s_photo.held_at = now;
+            if (s_photo.phase == PHOTO_LOWER) {
+                s_photo.phase = PHOTO_RISE;
+                s_photo.at = now - (1 - phase_t(now, PHOTO_RISE_S)) * PHOTO_RISE_S;
+            }
+        }
+    }
+    if (!s_photo_card || s_photo.phase == PHOTO_NONE) {
+        return 0;
+    }
+
+    if (mode == MUSE_MODE_LISTENING) {
+        photo_put_away(now, "a new turn");
+    } else if (muse_power_menu_is_open()) {
+        photo_put_away(now, "a button");
+    } else if (s_photo.phase == PHOTO_HOLD && mode == MUSE_MODE_IDLE && !photo_full_shown()) {
+        float since = now - mode_t > s_photo.held_at ? now - mode_t : s_photo.held_at;
+        if (now - since > PHOTO_HOLD_S) {
+            photo_put_away(now, "held long enough");
+        }
+    }
+
+    switch (s_photo.phase) {
+    case PHOTO_REACH:
+        if (now - s_photo.at >= PHOTO_REACH_S) {
+            s_photo.phase = PHOTO_RISE;
+            s_photo.at = now;
+        }
+        break;
+    case PHOTO_RISE:
+        if (now - s_photo.at >= PHOTO_RISE_S) {
+            s_photo.phase = PHOTO_HOLD;
+            s_photo.held_at = now;
+        }
+        break;
+    case PHOTO_LOWER:
+        if (now - s_photo.at >= PHOTO_RISE_S) {
+            s_photo.phase = PHOTO_STOW;
+            s_photo.at = now;
+            photo_full_hide(now);
+        }
+        break;
+    case PHOTO_STOW:
+        if (now - s_photo.at >= PHOTO_STOW_S) {
+            photo_drop();
+            return 0;
+        }
+        break;
+    default:
+        break;
+    }
+
+    float reach = 0, rise = -1;
+    switch (s_photo.phase) {
+    case PHOTO_REACH:
+        reach = ease_in_out(phase_t(now, PHOTO_REACH_S));
+        break;
+    case PHOTO_RISE:
+        rise = phase_t(now, PHOTO_RISE_S);
+        break;
+    case PHOTO_HOLD:
+        rise = 1;
+        break;
+    case PHOTO_LOWER:
+        rise = 1 - phase_t(now, PHOTO_RISE_S);
+        break;
+    case PHOTO_STOW:
+        reach = 1 - ease_in_out(phase_t(now, PHOTO_STOW_S));
+        break;
+    default:
+        break;
+    }
+    *holding = rise >= 0;
+    photo_place(rise, now);
+    return reach;
+}
+
 static void build_overlays(void)
 {
     lv_obj_t *scr = lv_screen_active();
@@ -1188,6 +1689,19 @@ static void build_overlays(void)
     lv_obj_set_pos(s_image, 0, 0);
     lv_obj_add_flag(s_image, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(s_image, on_image_clicked, LV_EVENT_CLICKED, NULL);
+
+    /* A reply's image full size (s_photo): a tap on the card, and a tap to go back. */
+    s_photo_full = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_photo_full);
+    lv_obj_set_size(s_photo_full, s_w, s_h);
+    lv_obj_set_style_bg_color(s_photo_full, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_photo_full, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_photo_full, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_photo_full, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_photo_full, on_photo_full_clicked, LV_EVENT_CLICKED, NULL);
+    s_photo_full_pic = lv_image_create(s_photo_full);
+    lv_obj_remove_flag(s_photo_full_pic, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_center(s_photo_full_pic);
 #if CONFIG_MUSE_WATCHER_CAMERA
     s_camera_hint = lv_btn_create(scr);
     lv_obj_set_size(s_camera_hint, 244, 46);
@@ -1579,7 +2093,7 @@ static void update_status(muse_mode_t mode, float now)
     }
 
     /* The mic's meter; a reply's page has the room while answering. */
-    bool meter = mode == MUSE_MODE_LISTENING;
+    bool meter = mode == MUSE_MODE_LISTENING && !photo_shown();   /* Muse is where the meter goes */
     set_meter_visible(meter);
     if (meter && !s_small) {
         int lit = (int)lroundf(s_level * METER_SEGS);
@@ -1600,13 +2114,14 @@ static void update_status(muse_mode_t mode, float now)
     bool fresh = muse_state_caption(caption, sizeof(caption), &s_caption_version);
     int answer = -1;
     if (s_reply_lbl) {
-        /* The speaker picks the layout, even mid-reply: the voice task pages to fit. */
-        int layout = muse_settings_speaker_on() ? ANSWER_HEARD : ANSWER_READ;
+        /* The speaker picks the layout, even mid-reply: the voice task pages to fit.
+         * A photo held up has its own, between replies too. */
+        int layout = photo_shown() ? ANSWER_PHOTO : muse_settings_speaker_on() ? ANSWER_HEARD : ANSWER_READ;
         if (layout != s_page_for) {
             muse_state_set_page(s_answers[layout].cols, s_answers[layout].lines);
             s_page_for = layout;
         }
-        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING) {
+        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING || layout == ANSWER_PHOTO) {
             answer = layout;
         }
     }
@@ -1750,6 +2265,7 @@ static void frame_tick(lv_timer_t *timer)
     if (mode != s_last_mode) {
         if (mode == MUSE_MODE_LISTENING) {
             image_hide_locked();
+            photo_full_hide(now);
             muse_ui_show_face();
         }
         s_last_mode = mode;
@@ -1763,9 +2279,12 @@ static void frame_tick(lv_timer_t *timer)
     muse_home_extras_tick(now);
     if (muse_menu_tick(now)) {
         image_hide_locked();
+        photo_drop();
         return;   /* the menu covers the face */
     }
-    if (s_image_dsc.data) {
+    bool holding;
+    float reach = photo_tick(mode, mode_t, now, &holding);
+    if (s_image_dsc.data || photo_full_shown()) {
         return;   /* the image covers the face */
     }
     if (s_tv && lv_obj_get_scroll_x(s_tv) != FACE_COL * s_w) {
@@ -1785,12 +2304,14 @@ static void frame_tick(lv_timer_t *timer)
         .mode_t = mode_t,
         .level = s_level,
         .happy = muse_state_happiness(),
-        .bed = s_night,
-        .dizzy = update_quake(mode, now, quake),
+        .bed = s_night && !photo_shown(),   /* up out of bed to show it */
+        .dizzy = update_quake(mode, now, quake && !photo_shown()),
+        .reach = reach,
+        .holding = holding,
     };
     /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
      * (or an earthquake). */
-    pose.sleepy = s_night && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f;
+    pose.sleepy = pose.bed && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f;
     muse_pixel_render(&pose);
     invalidate_muse();
 
@@ -1940,6 +2461,31 @@ void muse_ui_image_hide(void)
     if (s_camera_hint) lv_obj_add_flag(s_camera_hint, LV_OBJ_FLAG_HIDDEN);
 #endif
     muse_board->display_unlock();
+}
+
+bool muse_ui_present_sizes(int *screen_w, int *screen_h, int *photo_px)
+{
+    if (!s_ready || !heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) {
+        return false;
+    }
+    *screen_w = s_w;
+    *screen_h = s_h;
+    *photo_px = s_photo_px;
+    return true;
+}
+
+bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int hh)
+{
+    if (!s_ready || !full || fw <= 0 || fh <= 0 || fw > s_w || fh > s_h || (s_photo_px && !held)) {
+        return false;
+    }
+    xSemaphoreTake(s_image_mutex, portMAX_DELAY);
+    photo_px_free(&s_photo.next);   /* one not taken yet: this is newer */
+    s_photo.next = (photo_px_t){ full, held, fw, fh, hw, hh };
+    xSemaphoreGive(s_image_mutex);
+    muse_state_set_asleep(false);   /* to be seen */
+    muse_state_poke();
+    return true;
 }
 
 #if CONFIG_MUSE_WATCHER_CAMERA
