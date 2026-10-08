@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -167,7 +168,7 @@ static int s_shown_state = -1;
 static const char *s_shown_name;
 static const char *s_idle_name = "READY";   /* idle's label: set by the Wi-Fi state */
 /* Idle in a chat other than the main one, its name stands in for READY. */
-static char s_chat_label[MUSE_CHAT_NAME_MAX + 1];
+EXT_RAM_BSS_ATTR static char s_chat_label[MUSE_CHAT_NAME_MAX + 1];
 static uint32_t s_chat_label_gen = UINT32_MAX;
 static int s_shown_lit = -1;
 static uint32_t s_shown_accent;
@@ -194,7 +195,7 @@ typedef struct {
     int cols, lines;          /* the reply's page */
     int w, h, top;            /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[6];       /* what it covers */
+    lv_obj_t *hides[7];       /* what it covers: three of the read layout's own, and add_hides' four */
 } answer_layout_t;
 
 enum { ANSWER_HEARD, ANSWER_READ };
@@ -773,7 +774,7 @@ static void add_hides(answer_layout_t *l, int n)
         .x1 = s_w / 2 - l->w / 2, .y1 = s_h / 2 + l->top,
         .x2 = s_w / 2 + l->w / 2 - 1, .y2 = s_h / 2 + l->top + l->h - 1,
     };
-    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_corner() };
+    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_corner(), muse_home_extras_up_next() };
     for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]); i++) {
         if (!hints[i]) {
             continue;   /* no such icon on this board */

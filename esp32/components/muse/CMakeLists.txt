@@ -79,6 +79,9 @@ if(CONFIG_MUSE_ENABLED)
             if(CONFIG_MUSE_GADGET_AUTO_FLIP)
                 list(APPEND srcs "muse_orient.c")   # upside down at night
             endif()
+            if(CONFIG_MUSE_GADGET_UP_NEXT)
+                list(APPEND srcs "muse_up_next.c")   # the face's "up next" line
+            endif()
         endif()
         if(CONFIG_MUSE_GADGET_CHATS)
             list(APPEND srcs "muse_chats_ui.c")   # the Chats screen, left of Muse

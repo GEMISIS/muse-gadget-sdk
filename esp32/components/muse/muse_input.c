@@ -44,6 +44,7 @@
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_ui.h"
+#include "muse_up_next.h"
 #include "muse_voice.h"
 #include "muse_wifi.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
@@ -815,6 +816,18 @@ static bool console_command(char *line, bool whole)
         muse_ui_quake();   /* as a shake of the board would */
         return true;
     }
+#if CONFIG_MUSE_GADGET_UP_NEXT
+    if (!strcmp(line, "brief")) {
+        muse_up_next_refresh();
+        printf("@brief {\"asking\":true}\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "brief?")) {
+        muse_up_next_print();
+        return true;
+    }
+#endif
     if (!strncmp(line, "face=", 5)) {
         set_face(line + 5);
         return true;
@@ -855,7 +868,8 @@ static bool console_command(char *line, bool whole)
  * the device's state, "power" the battery meter (muse_battery.h) and
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
  * two minutes asleep on battery would; 'w' rejoins), "quake" shakes Muse
- * up as a shake of the board does, "face=" shows a face
+ * up as a shake of the board does, "brief" asks the Muse for the face's
+ * "up next" line now and "brief?" prints it (muse_up_next.h), "face=" shows a face
  * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and "chat_sid=", "chat_new=" and "chats" pick
  * the chat it goes to and list the named ones (see chat_sid_command).

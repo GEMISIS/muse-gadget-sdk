@@ -127,6 +127,19 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
             listen and answer, and goes back to sleep after. Needs
             LV_FONT_MONTSERRAT_48 for the clock.
 
+    config MUSE_GADGET_UP_NEXT
+        bool "Up next: a line on the face of what to get ready for"
+        depends on MUSE_GADGET_HOME_EXTRAS && MUSE_HATCH
+        default y
+        help
+            One dim line above the battery saying what's next today, from
+            your calendar and plans as the Muse knows them. The gadget asks
+            in the background, in a hidden chat of its own (never the one
+            picked, and nothing on screen or spoken), at most once an hour
+            while idle and in reach and once each morning, and hides an
+            answer over three hours old (muse_up_next.c). ">brief" on the
+            serial console asks now, ">brief?" prints what it has.
+
     config MUSE_GADGET_CHATS
         bool "Chats screen: swipe right from Muse to pick a chat"
         default y
