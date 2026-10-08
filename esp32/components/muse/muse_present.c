@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "esp_attr.h"
 #include "esp_crt_bundle.h"
@@ -58,6 +59,8 @@ static const char *TAG = "muse_present";
 #define TASK_STACK (20 * 1024)          /* in PSRAM: the decoder, asking, and a TLS fetch of a web image */
 #define WEB_MAX (768 * 1024)            /* a web image bigger than this goes to Muse to shrink */
 #define WEB_TIMEOUT_MS 6000
+#define TEST_PX 48                      /* smaller than this each way, a push is Muse testing, not the picture */
+#define TEST_BYTES 900                  /* and a JPEG this small too: a 96 px preview is ~1.5 KB */
 #define WEB_BUFFER 16384                /* esp_http_client's receive buffer (PSRAM: over the 4 KB internal limit) */
 #define TASK_PRIORITY 3                 /* under the UI (5), the chat session (5) and draw_url's (4) */
 #define JOBS 3                          /* the one being shown, the next, and a nudge to ask */
@@ -258,6 +261,13 @@ static bool show_jpeg(const job_t *job)
     JRESULT rc = jd_prepare(&jd, jpeg_in, pool, JPEG_POOL_BYTES, &j);
     int fw = 0, fh = 0;
     uint8_t scale = 0;
+    if (rc == JDR_OK && (jd.width < TEST_PX || jd.height < TEST_PX)) {
+        /* Muse checking the command works ("test", 16x16): not the picture. */
+        ESP_LOGI(TAG, "\"%s\": %ux%u is a test, not the picture: not shown", job->label, (unsigned)jd.width,
+                 (unsigned)jd.height);
+        heap_caps_free(pool);
+        return false;
+    }
     if (rc == JDR_OK) {
         fit(jd.width, jd.height, sw, sh, &fw, &fh);
         /* The most the decoder can shrink it and still leave as much as the screen shows. */
@@ -588,9 +598,10 @@ static void ask_tick(void)
     bool web = !strncmp(path, "http://", 7) || !strncmp(path, "https://", 8);
     snprintf(msg + n, sizeof(msg) - n,
              "%s the image at \"%s\" (\"%s\") %sto this gadget with display.show_image, twice, each in one "
-             "chunk (offset 0, final=true): first a preview scaled to 120x120 (fit inside) as a baseline JPEG "
-             "at 50%% quality, about 2 KB, then a 240x240 one at 70%% quality, under 14 KB. Copy the base64 "
-             "from a tool's output exactly. Don't create links. Reply with just: sent.",
+             "chunk (offset 0, final=true): first a preview scaled to 96x96 (fit inside) as a baseline JPEG "
+             "at 50%% quality, about 1.5 KB, then a 240x240 one at 70%% quality, under 14 KB. Make the base64 "
+             "with code and paste its output exactly; if the gadget says it arrived damaged, encode it again. "
+             "No test images. Don't create links. Reply with just: sent.",
              web ? "Download" : "Send", path, label, web ? "and send it " : "");
     new_sid(s_ask_sid);
     if (!muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_IMAGE, s_ask_sid, msg)) {
@@ -653,9 +664,10 @@ static void present_task(void *arg)
         TickType_t wait = ask_pending() ? pdMS_TO_TICKS(ASK_POLL_MS) : portMAX_DELAY;
         if (xQueueReceive(s_jobs, &job, wait) == pdTRUE && job) {
             int64_t t0 = esp_timer_get_time();
-            run(job);
+            if (run(job)) {
+                atomic_fetch_add(&s_seq, 1);   /* the face has it: held speech goes on */
+            }
             job_free(job);
-            atomic_fetch_add(&s_seq, 1);   /* the face has it now, if it could be shown */
             ESP_LOGI(TAG, "shown in %d ms; stack %u free", (int)ms_since(t0),
                      (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
@@ -693,6 +705,12 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
     job->data = data;
     job->len = len;
     strlcpy(job->label, label && label[0] ? label : "image", sizeof(job->label));
+    if (!strcasecmp(job->label, "test") || len < TEST_BYTES) {
+        /* Muse trying the command out: not the picture, and not to be taken for it. */
+        ESP_LOGI(TAG, "\"%s\" (%u bytes): a test push, not the picture: ignored", job->label, (unsigned)len);
+        job_free(job);
+        return true;
+    }
     /* Muse pushed one by itself (the mode's contract asks it to): one still
      * waiting to be asked for needn't be. One asked for already is this, likely. */
     char called_off[LABEL_MAX] = "";
