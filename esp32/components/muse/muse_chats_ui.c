@@ -161,9 +161,8 @@ static void rebuild(void)
                          : c->name[0] ? c->name : c->sid;
         s_values[i] = row(icon, name, on_chat, (void *)(intptr_t)i);
     }
-    s_note = label(s_list, &lv_font_montserrat_16, COLOR_DIM,
-                   "Where you talk to Muse from here on; a restart goes back to the main chat. "
-                   "A new chat starts with the first thing you ask, and Muse names it. Hold one to forget it.");
+    /* Empty but for a short word on what a tap just did; the "?" explains the rest. */
+    s_note = label(s_list, &lv_font_montserrat_16, COLOR_DIM, "");
     lv_obj_set_width(s_note, lv_pct(100));
     lv_label_set_long_mode(s_note, LV_LABEL_LONG_MODE_WRAP);
 }
