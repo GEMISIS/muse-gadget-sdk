@@ -92,7 +92,7 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
         default 0
 
     config MUSE_GADGET_IMU
-        bool "QMI8658 motion: wake on lift or double tap, shake to replay, steps"
+        bool "QMI8658 motion: wake on lift or double tap, shake for an earthquake, steps"
         depends on MUSE_GADGET_EXTRAS
         default y
 

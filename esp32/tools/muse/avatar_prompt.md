@@ -42,6 +42,7 @@ API (muse_pixel.h, unchanged; implement exactly these)
       float happy;    // 0..1 pet reaction; rises to 1, eases out over ~1.6 s
       bool bed;       // optional: the Night face, tucked up in bed
       bool sleepy;    // optional: asleep in it (eyes shut, slow breaths); false sits up
+      float dizzy;    // optional: 0..1 shaken by an earthquake, easing out
   } muse_pose_t;
   uint32_t muse_pixel_accent(muse_mode_t mode);    // 0xRRGGBB accent for the UI around the avatar
   void muse_pixel_render(const muse_pose_t *pose); // draw one frame into the 64x64 grid
@@ -117,6 +118,10 @@ ANIMATION BEATS (every one of these, adapted to your body)
   blank ones. With sleepy: lying back with eyes shut, a flat mouth, slow
   breaths, no sparkles and z's drifting up; without it, sat up out of the
   quilt, easing between the two over ~0.5 s.
+- dizzy > 0 (optional; the board was shaken, and the screen jitters the
+  avatar about meanwhile): swirly eyes, a wobbly zigzag mouth, reeling side
+  to side, stars circling the head; at 1 (still shaking) grit falling from
+  above and a "!". It eases out from 1 to 0 over ~0.8 s. Not in ERROR or OFF.
 - Keep it readable at 64x64: expressions come from 2-5 px shapes, so
   exaggerate. The face needs strong contrast against the body.
 
