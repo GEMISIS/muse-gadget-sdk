@@ -70,6 +70,16 @@ extern "C" bool noise_tx_has_dma_headroom_reclaiming(size_t reclaimable) {
 }
 #endif
 
+#if CONFIG_MUSE_ENABLED && CONFIG_MUSE_BOARD_WAVESHARE_S3_216
+static constexpr size_t NOISE_TX_CONTROL_RESERVE_BYTES = 12 * 1024;
+#else
+static constexpr size_t NOISE_TX_CONTROL_RESERVE_BYTES = NOISE_TX_DMA_RESERVE_BYTES;
+#endif
+
+extern "C" bool noise_tx_has_control_headroom(void) {
+    return heap_caps_get_free_size(MALLOC_CAP_DMA) >= NOISE_TX_CONTROL_RESERVE_BYTES;
+}
+
 extern "C" bool noise_tx_has_contiguous_dma_headroom(void) {
     return heap_caps_get_largest_free_block(MALLOC_CAP_DMA)
         >= NOISE_TX_DMA_CONTIGUOUS_BYTES;

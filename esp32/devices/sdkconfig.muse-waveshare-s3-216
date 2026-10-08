@@ -42,6 +42,11 @@ CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
 CONFIG_LV_DRAW_SW_DRAW_UNIT_CNT=2
 CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Only allocations under 1 KiB prefer internal RAM (sdkconfig.muse has 4 KiB):
+# with this board's extras, 4 KiB left the DMA-capable heap under the Noise
+# control channel's margin, so link.register sat unsent and Muse saw the
+# gadget offline.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=1024
 
 # Static buffers in PSRAM: Wi-Fi's, lwIP's and BT's, and those marked
 # EXT_RAM_BSS_ATTR (Muse's chat turn, the tunnel batch). Without it light
