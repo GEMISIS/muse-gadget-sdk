@@ -69,6 +69,10 @@ bool muse_settings_ble_on(void);
  * clock wasn't set when it was picked). */
 int muse_settings_gadget_mode(void);
 bool muse_settings_mode_override(uint32_t *until);
+/* The scheduled Night window, in minutes after local midnight: from 21:00
+ * (1260) to 05:00 (300) unless set. It may cross midnight; equal times leave
+ * Night off the schedule. */
+void muse_settings_night(int *from_min, int *to_min);
 /* The network that counts as home; empty if none is set. */
 void muse_settings_home_ssid(char out[MUSE_SSID_MAX + 1]);
 /* The network that means On-the-go (a phone hotspot); empty if none is set. */
@@ -187,6 +191,8 @@ void muse_settings_set_wifi_on(bool on);
 void muse_settings_set_ble_on(bool on);
 void muse_settings_set_gadget_mode(int mode);
 void muse_settings_set_mode_override(bool on, uint32_t until);
+/* Saves the Night window; muse_gadget_mode_set_night() also reschedules. */
+void muse_settings_set_night(int from_min, int to_min);
 void muse_settings_set_home_ssid(const char *ssid);
 void muse_settings_set_away_ssid(const char *ssid);
 /* A network name is remembered first among the saved ones and joined now;

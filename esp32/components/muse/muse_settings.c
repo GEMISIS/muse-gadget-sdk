@@ -47,6 +47,7 @@ static struct {
     uint8_t gadget_mode;
     bool mode_override;
     uint32_t override_until;
+    uint16_t night_from, night_to;             /* the Night window, minutes after local midnight */
     char home_ssid[MUSE_SSID_MAX + 1];
     char away_ssid[MUSE_SSID_MAX + 1];
     char ssid[MUSE_SSID_MAX + 1];
@@ -74,6 +75,8 @@ static struct {
     .brightness = 100,
     .sleep_s = 120,
     .wifi_on = true,
+    .night_from = 21 * 60,
+    .night_to = 5 * 60,
     .host = DEFAULT_HOST,
     .told_main = -1,
     .told_gadget = -1,
@@ -297,6 +300,13 @@ esp_err_t muse_settings_init(void)
         s.mode_override = b;
     }
     nvs_get_u32(s_nvs, "gmode_until", &s.override_until);
+    uint16_t m;
+    if (nvs_get_u16(s_nvs, "night_from", &m) == ESP_OK && m < 24 * 60) {
+        s.night_from = m;
+    }
+    if (nvs_get_u16(s_nvs, "night_to", &m) == ESP_OK && m < 24 * 60) {
+        s.night_to = m;
+    }
     load_str("home_ssid", s.home_ssid, sizeof(s.home_ssid));
     load_str("away_ssid", s.away_ssid, sizeof(s.away_ssid));
     load_str("ssid", s.ssid, sizeof(s.ssid));
@@ -352,6 +362,14 @@ bool muse_settings_mode_override(uint32_t *until)
 void muse_settings_home_ssid(char out[MUSE_SSID_MAX + 1])
 {
     LOCKED(strlcpy(out, s.home_ssid, MUSE_SSID_MAX + 1));
+}
+
+void muse_settings_night(int *from_min, int *to_min)
+{
+    LOCKED({
+        *from_min = s.night_from;
+        *to_min = s.night_to;
+    });
 }
 
 void muse_settings_away_ssid(char out[MUSE_SSID_MAX + 1])
@@ -848,6 +866,20 @@ void muse_settings_set_mode_override(bool on, uint32_t until)
         nvs_set_u32(s_nvs, "gmode_until", s.override_until);
         nvs_commit(s_nvs);
     });
+    notify(MUSE_SETTING_GADGET_MODE);
+}
+
+void muse_settings_set_night(int from_min, int to_min)
+{
+    LOCKED({
+        s.night_from = (uint16_t)clampi(from_min, 0, 24 * 60 - 1);
+        s.night_to = (uint16_t)clampi(to_min, 0, 24 * 60 - 1);
+        nvs_set_u16(s_nvs, "night_from", s.night_from);
+        nvs_set_u16(s_nvs, "night_to", s.night_to);
+        nvs_commit(s_nvs);
+    });
+    ESP_LOGI(TAG, "night: %02d:%02d to %02d:%02d", s.night_from / 60, s.night_from % 60, s.night_to / 60,
+             s.night_to % 60);
     notify(MUSE_SETTING_GADGET_MODE);
 }
 
