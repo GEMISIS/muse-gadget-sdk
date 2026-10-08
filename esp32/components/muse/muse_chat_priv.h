@@ -25,6 +25,7 @@
 #include <string.h>
 
 #include "muse_chat.h"
+#include "muse_activity.h"
 #include "muse_chat_md.h"
 
 #ifdef __cplusplus

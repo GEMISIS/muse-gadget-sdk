@@ -25,6 +25,7 @@
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 
+#include "esp_attr.h"
 #include "muse_text.h"
 
 #define HAPPY_SECS 1.6f
@@ -50,6 +51,7 @@ static volatile int s_page_cols = 16, s_page_lines = 2;
 static volatile int s_cjk_cols, s_cjk_lines;
 static muse_power_t s_power = { .battery_pct = -1 };
 static volatile bool s_as_if_battery;
+EXT_RAM_BSS_ATTR static volatile int s_activity;   /* muse_activity_t; in PSRAM, as internal RAM is short */
 
 static float secs_since(int64_t us)
 {
@@ -90,6 +92,16 @@ void muse_state_set_turn(muse_turn_t turn)
 muse_turn_t muse_state_turn(void)
 {
     return s_turn;
+}
+
+void muse_state_set_activity(muse_activity_t activity)
+{
+    s_activity = activity;
+}
+
+muse_activity_t muse_state_activity(void)
+{
+    return (muse_activity_t)s_activity;
 }
 
 muse_mode_t muse_state_mode(float *secs_in_mode)

@@ -100,6 +100,7 @@ extern "C" {
 #endif
 #if CONFIG_MUSE_ENABLED
 #include "muse_present.h"
+#include "muse_state.h"
 #endif
 }
 #include "muse_chat_priv.h"
@@ -261,6 +262,7 @@ static uint32_t img_seq(void);         /* muse_present_seq: images handled */
 static uint32_t img_up(void);          /* muse_present_up_seq: images held up */
 static void img_wait(bool on);         /* muse_present_wait */
 static int img_progress(void);         /* muse_present_progress */
+static void img_activity(muse_activity_t a);   /* muse_state_set_activity: what Muse is at, for the face */
 static bool bg_chat(const char *sid);  /* the background request's chat (bg_t) */
 static void bg_yield(void);            /* a turn starts: a request not yet posted waits for it (bg_t) */
 
@@ -334,6 +336,8 @@ struct turn_t {
     msg_t msgs[MAX_MSGS];
     int nmsgs;
     bool agent_busy;
+    muse_activity_t activity;   /* what Muse says he's at (agent.status), as the face has it */
+    bool img_made;           /* he's made an image this turn: what follows is it coming (IMAGE_MADE) */
     /* TTS */
     int tts_msg;             /* message being fetched (or shown, speaker off), or -1 */
     bool silent;             /* speaker off: tts_msg is paced by silence, not fetched */
@@ -1112,6 +1116,7 @@ static void turn_finish(void)
         s_turn.img_hold_end_us = now_us();
     }
     img_wait(false);
+    img_activity(MUSE_ACTIVITY_NONE);
     s_turn.tts_msg = -1;
     s_turn.silent = false;
     s_turn.mp3_len = 0;
@@ -1168,6 +1173,7 @@ static bool turn_start(uint32_t gen, bool text)
     s_turn.tells = -1;
     s_turn.img_seq = img_seq();
     s_turn.img_up = img_up();
+    img_activity(MUSE_ACTIVITY_NONE);
     memset(s_marks, 0, sizeof(s_marks));
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
@@ -2038,6 +2044,27 @@ static bool img_in_status(cJSON *payload)
     return false;
 }
 
+/*
+ * What Muse says he's at (an agent.status's activity_code and _text), for the
+ * face to act out (muse_activity.h). Once he's made an image this turn,
+ * whatever he's at next is the image on its way to us (IMAGE_MADE): it
+ * goes on to the cloud and the boxes.
+ */
+static void turn_activity(const char *code, const char *text)
+{
+    muse_activity_t a = muse_activity_of(code, text);
+    if (a == MUSE_ACTIVITY_IMAGE) {
+        s_turn.img_made = true;
+    } else if (s_turn.img_made) {
+        a = MUSE_ACTIVITY_IMAGE_MADE;
+    }
+    if (a != s_turn.activity) {
+        ESP_LOGI(TAG, "Muse is at: %s (\"%s\")", muse_activity_name(a), text ?: "");
+        s_turn.activity = a;
+        img_activity(a);
+    }
+}
+
 /* Whether an image for chat `sid` (NULL: none named) is this turn's, or came just after it in its chat. */
 static bool img_ours(const char *sid)
 {
@@ -2174,8 +2201,11 @@ static void on_event(cJSON *line)
         }
         const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_code"));
         const char *status = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "status"));
-        ESP_LOGI(TAG, "%s: activity %s \"%s\", status %s", event, code ?: "-",
-                 cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_text")) ?: "", status ?: "-");
+        const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_text"));
+        ESP_LOGI(TAG, "%s: activity %s \"%s\", status %s", event, code ?: "-", text ?: "", status ?: "-");
+        if (code || text) {
+            turn_activity(code, text);   /* task.status says only running or done */
+        }
         bool was = s_turn.agent_busy;
         if (code) {
             s_turn.agent_busy = code[0] && strcmp(code, "online") && strcmp(code, "idle");
@@ -2922,6 +2952,15 @@ static void img_wait(bool on)
     muse_present_wait(on);
 #else
     (void)on;
+#endif
+}
+
+static void img_activity(muse_activity_t a)
+{
+#if CONFIG_MUSE_ENABLED
+    muse_state_set_activity(a);
+#else
+    (void)a;
 #endif
 }
 
