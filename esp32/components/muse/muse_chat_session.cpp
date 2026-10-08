@@ -206,6 +206,7 @@ struct msg_t {
     tts_t tts;
     uint32_t pcm_start;      /* where its speech starts in the reply audio */
     uint32_t pcm_frames;     /* how long it is; 0 until the MP3 has all arrived */
+    bool streaming;          /* spoken sentence by sentence while it arrives (speak_early) */
 };
 
 struct resampler_t {
@@ -1401,11 +1402,78 @@ static void message_done(int i, const char *final_text)
     if (!m.len && final_text && final_text[0]) {
         append_text(m, final_text);
     }
+#if CONFIG_MUSE_TTS_PICO
+    if (m.streaming) {
+        m.streaming = false;
+        if (s_turn.pico && s_turn.tts_msg == i && s_turn.texts) {
+            const char *full = s_turn.texts + i * TEXT_MAX;
+            muse_tts_more(full, true);
+            muse_tts_remember(full, i > 0);
+        }
+    }
+#endif
     if (m.len && m.tts == TTS_NONE) {
         m.tts = TTS_QUEUED;
     }
     ESP_LOGI(TAG, "message %s done (%u chars)", m.id, (unsigned)m.len);
 }
+
+#if CONFIG_MUSE_TTS_PICO
+/* Where text's last whole sentence ends: after . ! or ? and a space, or a line break. 0 if none yet. */
+static size_t sentence_end(const char *t)
+{
+    size_t end = 0;
+    for (size_t k = 0; t[k]; k++) {
+        char c = t[k];
+        if (c == '\n' || ((c == '.' || c == '!' || c == '?') && (t[k + 1] == ' ' || t[k + 1] == '\n'))) {
+            end = k + 1;
+        }
+    }
+    return end;
+}
+
+/*
+ * Speaks a reply while it streams in, a sentence at a time, rather than once
+ * it's all here: Pico starts on the first sentence while the rest arrives.
+ * Only the first message to be spoken, with nothing ahead of it.
+ */
+static void speak_early(int i)
+{
+    msg_t &m = s_turn.msgs[i];
+    if (s_turn.text || !s_turn.texts || m.done) {
+        return;
+    }
+    char *full = s_turn.texts + i * TEXT_MAX;
+    size_t cut = sentence_end(full);
+    if (!cut) {
+        return;
+    }
+    char keep = full[cut];
+    full[cut] = '\0';
+    if (m.streaming) {
+        if (s_turn.pico && s_turn.tts_msg == i) {
+            muse_tts_more(full, false);
+        }
+    } else if (m.tts == TTS_NONE && s_turn.tts_msg < 0 && muse_tts_wanted()) {
+        bool queued = false;
+        for (int k = 0; k < s_turn.nmsgs; k++) {
+            queued |= s_turn.msgs[k].tts == TTS_QUEUED;
+        }
+        if (!queued && muse_tts_start(full, false)) {
+            m.pcm_start = s_turn.pcm_out;
+            m.pcm_frames = 0;
+            m.tts = TTS_ACTIVE;
+            m.streaming = true;
+            s_turn.tts_msg = i;
+            s_turn.silent = false;
+            s_turn.pico = true;
+            mark(M_TTS);
+            ESP_LOGI(TAG, "speaking message %s as it arrives", m.id);
+        }
+    }
+    full[cut] = keep;
+}
+#endif
 
 static const char *msg_id(cJSON *payload, cJSON *event)
 {
@@ -1477,6 +1545,9 @@ static void on_event(cJSON *line)
             mark(M_TEXT);
             append_text(m, text);
             show_reply_start(m);   /* ignored once the speech starts */
+#if CONFIG_MUSE_TTS_PICO
+            speak_early(i);
+#endif
         }
     } else if (done || full) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "display_text"));
@@ -1615,10 +1686,11 @@ static void pace_silently(void)
 /* On-device speech: moves what's synthesized into the reply audio while there's room. */
 static void pump_speech(void)
 {
-    enum { CHUNK = 256, LEAD = MIC_RATE / 2 };
+    enum { CHUNK = 256, LEAD = MIC_RATE / 5 };
     msg_t &m = s_turn.msgs[s_turn.tts_msg];
     muse_tts_status_t st = muse_tts_status();
-    /* Half a second ahead before the first word, so a slow sentence doesn't stutter. */
+    /* A fifth of a second ahead before the first word: Pico runs faster than
+     * real time, so that's enough to keep the first sentence from stuttering. */
     if (s_turn.pcm_out == m.pcm_start && st == MUSE_TTS_SPEAKING && muse_tts_buffered() < LEAD) {
         return;
     }

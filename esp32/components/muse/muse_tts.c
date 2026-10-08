@@ -18,8 +18,8 @@
  * Replies spoken by SVOX Pico (picotts_engine.h). Each request is numbered;
  * the synthesis task works on the newest and gives up on it once a newer one
  * arrives or it's stopped, checking between steps of a few milliseconds. The
- * engine (1.1 MB of PSRAM) loads on the first reply and is freed after
- * IDLE_CLOSE_MS without one.
+ * engine (1.1 MB of PSRAM) loads at boot and stays loaded, so a reply's first
+ * words don't wait for it.
  */
 #include "muse_tts.h"
 
@@ -46,7 +46,6 @@ static const char *TAG = "muse_tts";
 #define STEP_FRAMES 127                           /* the most the engine hands over per step */
 #define STACK_BYTES (16 * 1024)                   /* in PSRAM: the task never writes flash */
 #define PRIORITY 3                                /* below the chat session (5) and the voice task (6) */
-#define IDLE_CLOSE_MS (5 * 60 * 1000)
 #define STOP_WAIT_MS 300                          /* for a stopped utterance to wind down */
 #define CHARS_PER_S 14                            /* Pico's pace, for a replay's captions */
 
@@ -54,6 +53,7 @@ static TaskHandle_t s_task;
 static SemaphoreHandle_t s_lock;
 static StreamBufferHandle_t s_pcm;
 static char *s_text;    /* cleaned text of the request being spoken */
+static char *s_more;    /* muse_tts_more()'s cleaning space */
 static char *s_last;    /* the last reply, for muse_tts_replay_last() */
 
 static atomic_uint s_req;      /* the newest request */
@@ -61,6 +61,8 @@ static atomic_uint s_stop;     /* requests up to this one are stopped */
 static atomic_uint s_done;     /* the last request whose speech is all in s_pcm */
 static atomic_uint s_failed;   /* the last request the engine failed */
 static atomic_bool s_busy;     /* the task is on a request */
+static atomic_size_t s_len;    /* how much of s_text is there to say */
+static atomic_bool s_final;    /* s_text is complete: no more will be added */
 static atomic_bool s_replay;
 static bool s_no_voice;        /* no voice partitions: never try */
 
@@ -121,19 +123,33 @@ static void speak(unsigned r)
         return;
     }
     EXT_RAM_BSS_ATTR static int16_t pcm[STEP_FRAMES];
-    const char *text = s_text;
-    size_t left = strlen(text) + 1;   /* the '\0' makes Pico say the last sentence */
+    size_t pos = 0;
     size_t frames = 0;
     int64_t t0 = esp_timer_get_time();
     bool ok = true;
-    while (left && ok && !stopped(r)) {
-        int put = picotts_engine_put(text, left);
+    while (ok && !stopped(r)) {
+        /* Final before length: the length is set first, so it's complete once final is. */
+        bool final = atomic_load(&s_final);
+        size_t len = atomic_load(&s_len);
+        if (pos >= len) {
+            if (final) {
+                break;
+            }
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20));   /* the next sentence */
+            continue;
+        }
+        /* Up to a sentence end (muse_tts_more()), then a '\0' so Pico says it
+         * now rather than waiting to see what follows. */
+        int put = picotts_engine_put(s_text + pos, len - pos);
         if (put < 0) {
             ok = false;
             break;
         }
-        text += put;
-        left -= (size_t)put;
+        pos += (size_t)put;
+        if (pos >= len && picotts_engine_put("", 1) < 0) {
+            ok = false;
+            break;
+        }
         picotts_step_t step;
         do {
             size_t n = 0;
@@ -166,12 +182,11 @@ static void tts_task(void *arg)
 {
     (void)arg;
     unsigned handled = 0;
+    open_engine();   /* now, not when the first reply is waiting on it */
     for (;;) {
-        TickType_t wait = picotts_engine_is_open() ? pdMS_TO_TICKS(IDLE_CLOSE_MS) : portMAX_DELAY;
-        if (!ulTaskNotifyTake(pdTRUE, wait) && picotts_engine_is_open()) {
-            picotts_engine_close();
-            log_heap("engine freed after idling");
-            continue;
+        /* speak() may have taken the notification for a request that stopped it. */
+        if (atomic_load(&s_req) == handled) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         }
         /* Busy before looking, so muse_tts_say() never rewrites text being read. */
         atomic_store(&s_busy, true);
@@ -197,7 +212,8 @@ void muse_tts_init(void)
     s_pcm = xStreamBufferCreateWithCaps(PCM_BYTES, 1, MALLOC_CAP_SPIRAM);
     s_text = heap_caps_calloc(1, MUSE_TTS_TEXT_MAX, MALLOC_CAP_SPIRAM);
     s_last = heap_caps_calloc(1, MUSE_TTS_TEXT_MAX, MALLOC_CAP_SPIRAM);
-    if (!s_lock || !s_pcm || !s_text || !s_last ||
+    s_more = heap_caps_calloc(1, MUSE_TTS_TEXT_MAX, MALLOC_CAP_SPIRAM);
+    if (!s_lock || !s_pcm || !s_text || !s_last || !s_more ||
         xTaskCreatePinnedToCoreWithCaps(tts_task, "muse_tts", STACK_BYTES, NULL, PRIORITY, &s_task, tskNO_AFFINITY,
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "start failed");
@@ -215,6 +231,11 @@ bool muse_tts_wanted(void)
 
 bool muse_tts_say(const char *text)
 {
+    return muse_tts_start(text, true);
+}
+
+bool muse_tts_start(const char *text, bool final)
+{
     if (!s_task || s_no_voice) {
         return false;
     }
@@ -230,7 +251,10 @@ bool muse_tts_say(const char *text)
         ESP_LOGW(TAG, "still busy with the last reply");
     } else {
         xStreamBufferReset(s_pcm);
-        ok = muse_tts_clean(text, s_text, MUSE_TTS_TEXT_MAX) > 0;
+        size_t n = muse_tts_clean(text, s_text, MUSE_TTS_TEXT_MAX);
+        ok = n > 0;
+        atomic_store(&s_len, n);
+        atomic_store(&s_final, final);
     }
     if (ok) {
         atomic_store(&s_req, prev + 1);
@@ -238,6 +262,26 @@ bool muse_tts_say(const char *text)
     }
     xSemaphoreGive(s_lock);
     return ok;
+}
+
+void muse_tts_more(const char *text, bool final)
+{
+    if (!s_task || s_no_voice) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    size_t had = atomic_load(&s_len);
+    size_t n = muse_tts_clean(text, s_more, MUSE_TTS_TEXT_MAX);
+    if (n > had) {
+        /* Only past what's there: the task may be reading the rest. */
+        memcpy(s_text + had, s_more + had, n - had + 1);
+        atomic_store(&s_len, n);
+    }
+    if (final) {
+        atomic_store(&s_final, true);
+    }
+    xSemaphoreGive(s_lock);
+    xTaskNotifyGive(s_task);
 }
 
 size_t muse_tts_read(int16_t *pcm, size_t frames)

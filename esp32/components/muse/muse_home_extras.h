@@ -24,19 +24,21 @@ extern "C" {
 #endif
 
 /*
- * Readouts in the face's top corners on the Waveshare 2.16
- * (CONFIG_MUSE_GADGET_HOME_EXTRAS): the time top left; battery and steps
- * toward the goal top right. The square screen's corners are outside the
- * bezel ring, so they cover neither Muse nor the captions. Both run in the
+ * Readouts on the face on the Waveshare 2.16 (CONFIG_MUSE_GADGET_HOME_EXTRAS):
+ * the time above Muse, under the status line; battery and steps toward the
+ * goal in the bottom right corner, outside the bezel ring. Both run in the
  * LVGL task (muse_ui.c).
  */
 #if CONFIG_MUSE_GADGET_HOME_EXTRAS
 void muse_home_extras_build(lv_obj_t *face);
 /* Every frame while the screen is on; `now` in seconds. */
 void muse_home_extras_tick(float now);
+/* The clock label, for muse_ui.c to hide while a reply takes the top. */
+lv_obj_t *muse_home_extras_clock(void);
 #else
 static inline void muse_home_extras_build(lv_obj_t *face) { (void)face; }
 static inline void muse_home_extras_tick(float now) { (void)now; }
+static inline lv_obj_t *muse_home_extras_clock(void) { return NULL; }
 #endif
 
 #ifdef __cplusplus

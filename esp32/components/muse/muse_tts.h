@@ -46,7 +46,7 @@ typedef enum {
 size_t muse_tts_clean(const char *in, char *out, size_t cap);
 
 /* Maps the voice and starts the synthesis task. Call once, from a task whose
- * stack is in internal RAM. The engine itself loads on the first reply. */
+ * stack is in internal RAM. The engine loads on its own task right after. */
 void muse_tts_init(void);
 
 /* Whether replies are spoken: the speaker setting is on and muse_gadget_tts_allowed() agrees. */
@@ -55,6 +55,15 @@ bool muse_tts_wanted(void);
 /* Starts speaking text, ending anything still being said. False if it can't
  * (no voice partitions, nothing sayable, the engine stuck): show it instead. */
 bool muse_tts_say(const char *text);
+
+/* muse_tts_say(), but with final false more of the text can follow through
+ * muse_tts_more(), so speech starts before a streamed reply is complete. End
+ * text at a sentence end: Pico says each piece as it gets it. */
+bool muse_tts_start(const char *text, bool final);
+
+/* The text so far of what muse_tts_start() began, a longer copy of what it was
+ * given (cut at a sentence end until final). */
+void muse_tts_more(const char *text, bool final);
 
 /* Up to frames of speech, without waiting. */
 size_t muse_tts_read(int16_t *pcm, size_t frames);

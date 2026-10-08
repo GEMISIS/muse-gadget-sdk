@@ -158,7 +158,7 @@ typedef struct {
     int cols, lines;          /* the reply's page */
     int w, h, top;            /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[4];       /* what it covers */
+    lv_obj_t *hides[5];       /* what it covers */
 } answer_layout_t;
 
 enum { ANSWER_HEARD, ANSWER_READ };
@@ -750,7 +750,8 @@ static void build_answer(lv_obj_t *face, int ring_in)
     lv_obj_update_layout(face);
     s_answers[ANSWER_READ].hides[0] = s_state_lbl;
     s_answers[ANSWER_READ].hides[1] = s_name_lbl;   /* the reply takes the top too */
-    add_hides(&s_answers[ANSWER_READ], 2);
+    s_answers[ANSWER_READ].hides[2] = muse_home_extras_clock();   /* in the name's row; NULL without it */
+    add_hides(&s_answers[ANSWER_READ], s_answers[ANSWER_READ].hides[2] ? 3 : 2);
     add_hides(&s_answers[ANSWER_HEARD], 0);
 }
 

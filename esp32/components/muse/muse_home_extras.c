@@ -17,14 +17,16 @@
 /*
  * The face's corner readouts (muse_home_extras.h). On the 480x480 screen the
  * bezel ring is a 236 px circle about the centre; everything here stays
- * outside it, in the bottom corners. The top corners are left to the
- * button icons, as the keys are on the top edge.
+ * outside it: battery and steps in the bottom right corner, the top corners
+ * being left to the button icons, as the keys are on the top edge. The clock
+ * goes above Muse instead (CLOCK_Y).
  */
 #include "muse_home_extras.h"
 
 #include <stdio.h>
 #include <string.h>
 
+#include "muse_board.h"
 #include "muse_extras.h"
 #include "muse_imu.h"
 #include "muse_state.h"
@@ -37,6 +39,10 @@
 #define LOW_PCT 15
 #define EDGE 16
 #define BAR_W 56
+/* The clock sits in the row muse_ui.c keeps for the unpaired gadget's name,
+ * under the status line and the state, above Muse's head; once paired that
+ * row is empty. Offsets are for a 466 px tall screen, as muse_ui.c's are. */
+#define CLOCK_Y 60
 
 static lv_obj_t *s_clock;
 static lv_obj_t *s_batt;
@@ -57,7 +63,8 @@ static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, 
 
 void muse_home_extras_build(lv_obj_t *face)
 {
-    s_clock = label(face, &lv_font_montserrat_28, COLOR_TEXT, LV_ALIGN_BOTTOM_LEFT, EDGE, -12);
+    s_clock = label(face, &lv_font_montserrat_20, COLOR_TEXT, LV_ALIGN_TOP_MID, 0,
+                    CLOCK_Y + (muse_board->height - 466) / 2);
     s_batt = label(face, &lv_font_unscii_16, COLOR_DIM, LV_ALIGN_BOTTOM_RIGHT, -EDGE, -54);
 #if CONFIG_MUSE_GADGET_IMU
     s_steps = label(face, &lv_font_unscii_16, COLOR_DIM, LV_ALIGN_BOTTOM_RIGHT, -EDGE, -34);
@@ -73,6 +80,11 @@ void muse_home_extras_build(lv_obj_t *face)
     lv_obj_add_flag(s_bar, LV_OBJ_FLAG_HIDDEN);
 #endif
     s_next = 0;
+}
+
+lv_obj_t *muse_home_extras_clock(void)
+{
+    return s_clock;
 }
 
 static void set_text(lv_obj_t *l, const char *text)
