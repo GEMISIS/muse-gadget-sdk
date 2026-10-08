@@ -88,3 +88,54 @@ const char *muse_hatch_state_name(muse_hatch_state_t state)
     }
     return "";
 }
+
+/* ---- Background requests, by asker ---- */
+
+static portMUX_TYPE s_bg_lock = portMUX_INITIALIZER_UNLOCKED;
+static muse_chat_bg_for_t s_bg_for;   /* whose the request is, until its result is taken (with s_bg_lock) */
+
+static void bg_release(void)
+{
+    portENTER_CRITICAL(&s_bg_lock);
+    s_bg_for = MUSE_CHAT_BG_FOR_NONE;
+    portEXIT_CRITICAL(&s_bg_lock);
+}
+
+bool muse_chat_bg_ask_for(muse_chat_bg_for_t who, const char *sid, const char *message)
+{
+    if (who == MUSE_CHAT_BG_FOR_NONE) {
+        return false;
+    }
+    portENTER_CRITICAL(&s_bg_lock);
+    bool free = s_bg_for == MUSE_CHAT_BG_FOR_NONE;
+    if (free) {
+        s_bg_for = who;
+    }
+    portEXIT_CRITICAL(&s_bg_lock);
+    if (!free) {
+        return false;
+    }
+    if (!muse_chat_bg_ask(sid, message)) {
+        bg_release();
+        return false;
+    }
+    return true;
+}
+
+muse_chat_bg_state_t muse_chat_bg_result_for(muse_chat_bg_for_t who, char *out, size_t cap)
+{
+    portENTER_CRITICAL(&s_bg_lock);
+    bool mine = who != MUSE_CHAT_BG_FOR_NONE && s_bg_for == who;
+    portEXIT_CRITICAL(&s_bg_lock);
+    if (!mine) {
+        return MUSE_CHAT_BG_NONE;
+    }
+    muse_chat_bg_state_t st = muse_chat_bg_result(out, cap);
+    if (st == MUSE_CHAT_BG_NONE) {
+        st = MUSE_CHAT_BG_FAILED;   /* asked, yet nothing's under way: it's gone */
+    }
+    if (st != MUSE_CHAT_BG_BUSY) {
+        bg_release();
+    }
+    return st;
+}
