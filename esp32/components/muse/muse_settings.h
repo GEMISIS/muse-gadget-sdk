@@ -122,6 +122,23 @@ bool muse_settings_chat_forget(const char *sid);
 /* muse_settings_chat_add, then picks the chat: the new one, or with
  * ESP_ERR_INVALID_STATE the one that already has the name. */
 esp_err_t muse_settings_chat_new(const char *name, char sid_out[MUSE_CHAT_SID_MAX + 1]);
+/*
+ * Picks a new chat with nothing typed for it: a fresh id, kept in RAM only.
+ * It starts on the Muse with the first message, which the Muse titles it by;
+ * only then does it join the named chats, under that title
+ * (muse_settings_chat_retitle). Picking another chat first drops it.
+ * ESP_ERR_NO_MEM with MUSE_CHATS_MAX kept already.
+ */
+esp_err_t muse_settings_chat_pick_new(void);
+/* The new chat picked by muse_settings_chat_pick_new(), not yet titled. */
+bool muse_settings_chat_untitled(const char *sid);
+/* The Muse's title for a chat: a named one's new name, or the new chat's,
+ * which then joins the named chats (*started set). Kept in RAM at once, so
+ * any task may call it; muse_settings_chats_flush() writes it to flash.
+ * False if sid is neither. */
+bool muse_settings_chat_retitle(const char *sid, const char *title, bool *started);
+/* Writes retitled chats to flash; from a task whose stack is internal RAM. */
+void muse_settings_chats_flush(void);
 
 /* Every chat to pick from, for a chat picker. */
 typedef enum {
@@ -129,6 +146,7 @@ typedef enum {
     MUSE_CHAT_GADGET,   /* muse_settings_gadget_chat_sid */
     MUSE_CHAT_NAMED,    /* one of muse_settings_chats */
     MUSE_CHAT_CUSTOM,   /* picked by its id alone (set_chat, the console); listed only while picked */
+    MUSE_CHAT_NEW,      /* "New chat": always listed last; sid set while it's picked (muse_settings_chat_pick_new) */
 } muse_chat_kind_t;
 
 typedef struct {
@@ -138,7 +156,7 @@ typedef struct {
 } muse_chat_item_t;
 
 /* Main, Gadget, the named chats oldest first, and a custom one while picked. */
-#define MUSE_CHAT_ITEMS_MAX (MUSE_CHATS_MAX + 3)
+#define MUSE_CHAT_ITEMS_MAX (MUSE_CHATS_MAX + 4)   /* main, gadget, custom and New chat too */
 /*
  * Fills out with up to max items in that order and returns how many; *current
  * (may be NULL) is the index of the one picked, -1 if it didn't fit.

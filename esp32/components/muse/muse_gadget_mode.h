@@ -55,6 +55,9 @@ muse_gadget_mode_t muse_gadget_mode(void);
 void muse_gadget_mode_pick(muse_gadget_mode_t mode);
 /* Tells the Muse the current mode again, as a change does (another chat picked). */
 void muse_gadget_mode_resend(void);
+/* The new chat picked has its title from its first message
+ * (muse_settings_chat_retitle): tell it the mode now, once that turn's done. */
+void muse_gadget_mode_chat_started(void);
 /* "desk", "night" or "on_the_go"; false for anything else. */
 bool muse_gadget_mode_parse(const char *name, muse_gadget_mode_t *out);
 /* "Desk", "Night", "On-the-go". */

@@ -71,6 +71,7 @@ extern "C" {
 #include "cJSON.h"
 #include "minimp3.h"
 #include "muse_account_api.h"
+#include "muse_gadget_mode.h"
 #include "muse_link.h"
 #include "muse_settings.h"
 #include "muse_wifi.h"
@@ -1570,11 +1571,23 @@ static void on_event(cJSON *line)
         }
         s_last_seq = v > s_last_seq ? v : s_last_seq;
     }
+    const char *event = cJSON_GetStringValue(cJSON_GetObjectItem(line, "event")) ?: "";
+    cJSON *payload = cJSON_GetObjectItem(line, "payload");
+    if (!strcmp(event, "sessions.updated")) {
+        /* The Muse titles a chat after its first message (change "renamed");
+         * a named chat kept here takes that title as its name. */
+        cJSON *session = cJSON_GetObjectItem(payload, "session");
+        const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(session, "session_id"));
+        const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(session, "title"));
+        bool started = false;
+        if (sid && title && title[0] && muse_settings_chat_retitle(sid, title, &started) && started) {
+            muse_gadget_mode_chat_started();   /* titled by the first message: now the mode */
+        }
+        return;
+    }
     if (s_turn.phase != P_WAIT_REPLY) {
         return;
     }
-    const char *event = cJSON_GetStringValue(cJSON_GetObjectItem(line, "event")) ?: "";
-    cJSON *payload = cJSON_GetObjectItem(line, "payload");
 
     if (!strcmp(event, "agent.status") || !strcmp(event, "task.status")) {
         const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_code"));
@@ -1994,7 +2007,9 @@ static bool stream_end(stream_t *s, bool ok)
         s_turn.chat_id = 0;
         if (!ok) {
             turn_fail("MUSE DIDN'T TAKE IT");
-        } else if (s_sub_missing && !open_subscription()) {
+            break;
+        }
+        if (s_sub_missing && !open_subscription()) {
             return false;   /* the chat exists now: its replies need the subscription */
         }
         break;
@@ -2335,6 +2350,11 @@ extern "C" void muse_chat_set_subscribe_session(bool on)
 extern "C" bool muse_chat_subscribe_session(void)
 {
     return s_sub_with_sid;
+}
+
+extern "C" bool muse_hatch_turn_busy(void)
+{
+    return s_turn.phase != P_IDLE;
 }
 
 extern "C" bool muse_hatch_ready(void)
