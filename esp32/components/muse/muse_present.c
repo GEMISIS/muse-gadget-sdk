@@ -65,6 +65,7 @@ typedef struct {
     uint8_t *data;
     size_t len;
     char label[LABEL_MAX];
+    bool sharper;   /* a bigger copy of the image already shown this turn (after its preview) */
 } job_t;
 
 static QueueHandle_t s_jobs;   /* job_t *, or NULL to look at the asking */
@@ -233,7 +234,7 @@ static void show_jpeg(const job_t *job)
     ESP_LOGI(TAG, "\"%s\": %ux%u JPEG, decoded at 1/%d in %d ms, sized to %dx%d and %dx%d in %d ms", job->label,
              (unsigned)jd.width, (unsigned)jd.height, 1 << scale, (int)((t1 - t0) / 1000), fw, fh, hw, hh,
              (int)ms_since(t1));
-    if (!muse_ui_present(full, fw, fh, held, hw, hh)) {
+    if (!muse_ui_present(full, fw, fh, held, hw, hh, job->sharper)) {
         ESP_LOGW(TAG, "\"%s\": the face didn't take it", job->label);
         heap_caps_free(full);
         heap_caps_free(held);
@@ -283,6 +284,7 @@ static void new_sid(char out[MUSE_CHAT_SID_MAX + 1])
  * answer the request, and only the first of the two is shown.
  */
 EXT_RAM_BSS_ATTR static bool s_guard, s_guard_shown;
+EXT_RAM_BSS_ATTR static size_t s_guard_len;   /* the size of the one shown this turn */
 
 /* Waiting for an image (muse_present_wait), and its bytes so far (with s_ask_lock). */
 EXT_RAM_BSS_ATTR static struct {
@@ -401,10 +403,10 @@ static void ask_tick(void)
     /* A file in Muse's workspace (generated), or an image on the web it fetches first. */
     bool web = !strncmp(path, "http://", 7) || !strncmp(path, "https://", 8);
     snprintf(msg + n, sizeof(msg) - n,
-             "%s the image at \"%s\" (\"%s\") %sto this gadget with display.show_image: first make a copy "
-             "scaled to 200x200 (keep the aspect, fit inside), saved as a baseline JPEG at about 70%% quality, "
-             "under 12 KB, then send that copy in one chunk (offset 0, final=true). Don't create links. "
-             "Reply with just: sent.",
+             "%s the image at \"%s\" (\"%s\") %sto this gadget with display.show_image, twice, each in one "
+             "chunk (offset 0, final=true): first a preview scaled to 120x120 (fit inside) as a baseline JPEG "
+             "at 50%% quality, about 2 KB, then a 240x240 one at 70%% quality, under 14 KB. Copy the base64 "
+             "from a tool's output exactly. Don't create links. Reply with just: sent.",
              web ? "Download" : "Send", path, label, web ? "and send it " : "");
     new_sid(s_ask_sid);
     if (!muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_IMAGE, s_ask_sid, msg)) {
@@ -499,15 +501,21 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
         s_want.want = false;
         memcpy(called_off, s_want.label, sizeof(called_off));
     }
-    bool twice = s_guard && s_guard_shown;
-    s_guard_shown |= s_guard;
+    /* A second push in the turn is shown only if it's bigger: the sharp copy
+     * after the preview. The same again, or a smaller one, isn't. */
+    bool twice = s_guard && s_guard_shown && job->len <= s_guard_len;
+    job->sharper = s_guard && s_guard_shown && !twice;
+    if (s_guard && !twice) {
+        s_guard_shown = true;
+        s_guard_len = job->len;
+    }
     portEXIT_CRITICAL(&s_ask_lock);
     if (called_off[0]) {
         ESP_LOGI(TAG, "\"%s\": pushed by Muse itself; not asking for \"%s\"", job->label, called_off);
     }
     if (twice) {
         /* By itself in the turn, and again for the request (or the other way round). */
-        ESP_LOGI(TAG, "\"%s\": pushed again while asked for; the first is shown", job->label);
+        ESP_LOGI(TAG, "\"%s\": pushed again, no bigger than the one shown; that one stays", job->label);
         job_free(job);
         return true;
     }

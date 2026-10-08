@@ -73,7 +73,10 @@ void muse_ui_image_hide(void);
  * (heap_caps_malloc'd) when it returns true: `full` fits the screen.
  */
 bool muse_ui_present_sizes(int *screen_w, int *screen_h, int *photo_px);
-bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int hh);
+/* `sharper`: a bigger copy of the photo just shown (its preview first): it
+ * takes the preview's place in Muse's hands, or is dropped if that's been
+ * put away already, rather than coming out of the pocket again. */
+bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int hh, bool sharper);
 /* Watcher camera mode: shows an on-screen shutter hint over the live image. */
 void muse_ui_camera_hint(bool visible);
 
