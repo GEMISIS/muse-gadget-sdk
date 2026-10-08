@@ -21,10 +21,10 @@
 #include "lvgl.h"
 
 /*
- * The settings tile (swipe left from Muse): Wi-Fi, Sound, Sleep, Mode and
- * Power pages, and Advanced, which holds the Muse connection, Bluetooth and
- * Battery pages and the firmware version and IP address. Runs entirely in
- * the LVGL task; hardware state is polled from the owning modules.
+ * The settings tile (swipe left from Muse): General (Mode, Wi-Fi, Display
+ * and Sound pages), Advanced (the Muse connection, Bluetooth, Battery, About
+ * and Reset device pages) and Power off. Runs entirely in the LVGL task;
+ * hardware state is polled from the owning modules.
  */
 
 void muse_settings_ui_build(lv_obj_t *tile);
@@ -32,5 +32,6 @@ void muse_settings_ui_build(lv_obj_t *tile);
 /* Call periodically from the LVGL task; `visible` = settings tile is showing. */
 void muse_settings_ui_tick(bool visible);
 
-/* True when a sub-page is open (the tileview must not steal horizontal swipes). */
+/* True when a sub-page or a dialog (muse_dialog.h) is open: the tileview
+ * must not steal horizontal swipes. */
 bool muse_settings_ui_in_subpage(void);
