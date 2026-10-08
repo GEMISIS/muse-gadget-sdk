@@ -161,8 +161,8 @@ ANIMATION BEATS (every one of these, adapted to your body)
   in 3x5 pixel digits and a % in white on a small dark rounded panel, after
   a 3x5 bolt while charging whose colour goes red (0%) to yellow (50%) to
   green (100%). Only on the body's own pixels, so an arm stays in front;
-  not while reaching or holding (the pocket's there), and only when cells
-  are 2 px or bigger (muse_pixel_set_size of 128 or more).
+  not in bed, nor while reaching or holding (the pocket's there), and only
+  when cells are 2 px or bigger (muse_pixel_set_size of 128 or more).
 - Keep it readable at 64x64: expressions come from 2-5 px shapes, so
   exaggerate. The face needs strong contrast against the body.
 
