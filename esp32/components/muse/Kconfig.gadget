@@ -102,13 +102,13 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
             A double tap always wakes it.
 
     config MUSE_GADGET_AUTO_FLIP
-        bool "Turn the screen upside down to match the board in Night and On-the-go"
+        bool "Turn the screen upside down to match the board"
         depends on MUSE_GADGET_IMU
         default y
         help
-            Charging stood on its keys at night, or carried upside down,
-            the picture and touch turn 180 degrees so they read right way
-            up (muse_orient.c). Desk mode always keeps it upright.
+            Charging stood on its keys, or carried upside down, the
+            picture and touch turn 180 degrees so they read right way up
+            (muse_orient.c), in every mode.
 
     config MUSE_GADGET_HOME_EXTRAS
         bool "Clock and battery on the face"

@@ -58,6 +58,9 @@ void app_ble_companion_set(bool advertise);
 bool app_confirm_pairing_press(void);
 // Full setup reset and reboot, from a worker task.
 void app_reset_setup_async(void);
+// The setup reset, then every setting on the device erased (all of NVS):
+// back to how a freshly flashed board starts. From a worker task.
+void app_factory_reset_async(void);
 #endif
 
 #if CONFIG_MUSE_ENABLED || CONFIG_HOMEHUB_VOICE
