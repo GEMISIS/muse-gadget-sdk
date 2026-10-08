@@ -88,11 +88,16 @@ bool muse_tts_last(char *out, size_t cap);
 
 /* The caption page for a replay of text, played frames in. */
 bool muse_tts_caption(const char *text, size_t played, char *out, size_t cap);
+/* How many frames muse_tts_caption() takes to get through text: its pace,
+ * for a replay shown without speech. */
+size_t muse_tts_caption_frames(const char *text);
 
 /*
- * Says the last reply again, between turns, if replies are spoken. Safe from
- * any task: the voice task picks it up within one idle pass (20 ms) and plays
- * it, and any button press stops it.
+ * Says the last reply again, between turns. Safe from any task: the voice
+ * task picks it up within one idle pass (20 ms) and plays it, and any button
+ * press stops it. If replies aren't spoken now (the speaker off, or a mode
+ * that doesn't speak them) it shows the reply's pages again instead, at the
+ * pace speech would have taken.
  */
 void muse_tts_replay_last(void);
 
