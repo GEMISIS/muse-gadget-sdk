@@ -1467,8 +1467,9 @@ void muse_pixel_render(const muse_pose_t *p)
     draw_avatar(&j, arms, feet, !p->holding);
     if (reach > 0 || p->holding) {
         draw_pocket(iround(j.cx + 10.0f), iround(j.cy + 12.0f));
-    } else if (p->battery && p->belly && s_size >= 2 * W) {
-        /* The level on the belly; the digits need cells of 2 px or more. */
+    } else if (p->battery && p->belly && !bed && s_size >= 2 * W) {
+        /* The level on the belly (in bed, the quilt's over it); the digits
+         * need cells of 2 px or more. */
         draw_belly(iround(j.cx), iround(j.cy + 5.0f), p->battery_pct, p->charging, t);
     }
 
