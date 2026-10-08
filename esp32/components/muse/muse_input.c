@@ -950,6 +950,21 @@ static bool console_command(char *line, bool whole)
         return true;
     }
 #endif
+#if CONFIG_MUSE_HATCH
+    if (!strncmp(line, "say=", 4) && line[4]) {
+        /* Typed words as a voice turn, on the face: a talk press and release, the mic's audio dropped. */
+        char *words = strdup(line + 4);
+        if (words) {
+            muse_hatch_unescape(words);
+            muse_hatch_typed_voice(words);
+            muse_state_poke();
+            post(MUSE_PTT_DOWN, false);
+            vTaskDelay(pdMS_TO_TICKS(600));   /* past a tap's length */
+            post(MUSE_PTT_UP, false);
+        }
+        return true;
+    }
+#endif
     if (!strncmp(line, "face=", 5)) {
         set_face(line + 5);
         return true;
