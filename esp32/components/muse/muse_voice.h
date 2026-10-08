@@ -38,6 +38,23 @@ float muse_voice_monitor_db(void);
 /* Plays a short chirp at the current volume (when idle). */
 void muse_voice_request_chirp(void);
 
+/*
+ * Earcons: short, quiet sounds (80 ms at most) that say a key did something.
+ * None with the speaker off, and at half the level in Night mode. The talk
+ * key's pair (listening starts, and stops) the voice task plays itself; the
+ * rest are asked for here, from any task, and play once it's idle, the
+ * newest replacing one not yet played. One asked for while a turn is under
+ * way is dropped rather than played late.
+ */
+typedef enum {
+    MUSE_EARCON_TICK,     /* a volume step, at the new volume */
+    MUSE_EARCON_LISTEN,   /* listening starts: a soft rising ping */
+    MUSE_EARCON_STOP,     /* listening stops: a lower, falling one */
+    MUSE_EARCON_CLICK,    /* the power menu opens */
+} muse_earcon_t;
+
+void muse_voice_earcon(muse_earcon_t which);
+
 /* Runs muse_audio_loopback_test() at the current volume (when idle); results go to the log. */
 void muse_voice_request_loopback(void);
 

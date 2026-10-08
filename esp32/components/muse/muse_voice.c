@@ -32,6 +32,7 @@
 #include "muse_audio.h"
 #include "muse_board.h"
 #include "muse_chat.h"
+#include "muse_gadget_mode.h"
 #include "muse_input.h"
 #include "muse_mem.h"
 #include "muse_sd.h"
@@ -55,6 +56,9 @@ static const char *TAG = "muse_voice";
 #define PRE_CHUNKS 16                                  /* 320 ms of audio kept from before the press */
 #endif
 #define SETTLE_CHUNKS 10   /* after Muse makes a sound, 200 ms of capture is its own tail */
+#define EARCON_DROP_CHUNKS 8   /* 160 ms of capture after the listening ping: its echo, not speech */
+#define EARCON_STALE_MS 300    /* an earcon not played by then isn't */
+#define EARCON_LEVEL 3000.0f   /* peak, of 32767: well under a reply's level */
 #define REST_BACKSTOP_MS 60000
 
 #if CONFIG_MUSE_HATCH
@@ -78,6 +82,8 @@ static volatile float s_monitor_db = -100.0f;
 static volatile bool s_chirp;
 static volatile bool s_loopback;
 static volatile bool s_mp3test;
+static volatile int s_earcon = -1;         /* muse_earcon_t asked for, -1 for none */
+static volatile uint32_t s_earcon_ms;      /* when, in ms since boot */
 
 /*
  * Pre-roll: while idle the mic keeps running into this ring, so a recording
@@ -170,6 +176,42 @@ static void idle_capture(void)
     s_pre_fill = s_pre_fill < PRE_CHUNKS ? s_pre_fill + 1 : PRE_CHUNKS;
 }
 
+/*
+ * Plays an earcon (muse_voice.h) through s_chunk, which is free between
+ * reads: a sine gliding from f0 to f1 with a quick attack and a fast decay.
+ * Nothing with the speaker off; half as loud at night. Returns whether it
+ * played, so a caller can skip the echo it leaves in the capture.
+ */
+static bool earcon_play(muse_earcon_t which)
+{
+    static const struct {
+        uint16_t ms, f0, f1;
+    } SHAPES[] = {
+        [MUSE_EARCON_TICK] = { 25, 1800, 1700 },
+        [MUSE_EARCON_LISTEN] = { 70, 880, 1320 },
+        [MUSE_EARCON_STOP] = { 70, 740, 440 },
+        [MUSE_EARCON_CLICK] = { 15, 2400, 1600 },
+    };
+    if ((unsigned)which >= sizeof(SHAPES) / sizeof(SHAPES[0]) || !muse_settings_speaker_on()
+        || !muse_settings_volume()) {
+        return false;
+    }
+    float level = EARCON_LEVEL * (muse_gadget_mode() == MUSE_GADGET_NIGHT ? 0.5f : 1.0f);
+    int n = MUSE_AUDIO_RATE * SHAPES[which].ms / 1000;
+    float f0 = SHAPES[which].f0, df = (float)SHAPES[which].f1 - f0, phase = 0;
+    for (int at = 0; at < n; at += MUSE_AUDIO_CHUNK) {
+        int len = n - at < MUSE_AUDIO_CHUNK ? n - at : MUSE_AUDIO_CHUNK;
+        for (int i = 0; i < len; i++) {
+            float x = (float)(at + i) / n;
+            phase += 2.0f * (float)M_PI * (f0 + df * x) / MUSE_AUDIO_RATE;
+            float env = (x < 0.08f ? x / 0.08f : 1.0f) * (1.0f - x) * (1.0f - x);
+            s_chunk[i] = (int16_t)(sinf(phase) * env * level);
+        }
+        muse_audio_write(s_chunk, len);
+    }
+    return true;
+}
+
 /* Non-blocking: returns true if an event of `type` arrived (others dropped). */
 static bool got_event(muse_ptt_t type)
 {
@@ -248,8 +290,10 @@ static void take(rec_stats_t *st, const int16_t *pcm)
  * gets the part after the press. It streams to Hatch as it goes if it can.
  * If not, the note is kept in s_rec to send later, and streams from partway
  * if Hatch comes within reach. Returns false if Hatch failed the turn with no
- * kept note to fall back on (why says what failed). There is no start chirp:
- * anything played now would land on top of the first words.
+ * kept note to fall back on (why says what failed). It starts with the
+ * listening ping (an earcon), and drops the capture's first 160 ms after it,
+ * which would be the ping's own echo; the pre-roll, from before the ping,
+ * keeps what was said as the key went down.
  */
 static bool record(bool barge_in, size_t *held, char *why, size_t cap)
 {
@@ -267,8 +311,12 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
     rec_stats_t st = { 0 };
 
     size_t n = 0;
+    /* The listening ping, before any of the live capture: what the mic hears
+     * of it is dropped below, so it never reaches the note. */
+    bool pinged = earcon_play(MUSE_EARCON_LISTEN);
     if (barge_in) {
-        /* Pressed during playback: the queued tail of the reply is still sounding. */
+        /* Pressed during playback: the queued tail of the reply (and the
+         * ping) is still sounding. */
         for (int i = 0; i < SETTLE_CHUNKS; i++) {
             muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK);
         }
@@ -280,6 +328,11 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
         }
     }
     size_t pre = n;
+    for (int i = 0; pinged && !barge_in && i < EARCON_DROP_CHUNKS; i++) {
+        /* The ping's echo: counted as held, but not kept. */
+        muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK);
+        n += MUSE_AUDIO_CHUNK;
+    }
     bool released = false;
     size_t stop_at = MAX_FRAMES;
     while (n + MUSE_AUDIO_CHUNK <= stop_at) {
@@ -784,10 +837,10 @@ static bool finish_note(void)
         bool fed = false, interrupted = false;
         delivered = false;
         if (s_live && s_sent == s_rec_n) {
-            muse_hatch_turn_end();   /* before the chirp, which takes ~90 ms */
+            muse_hatch_turn_end();   /* before the stop ping, which takes 70 ms */
             fed = true;
         }
-        muse_audio_chirp(0);
+        earcon_play(MUSE_EARCON_STOP);
         if (s_live && !fed) {
             /* Hatch is behind (still connecting, say): the rest from the kept note. */
             muse_state_set_mode(MUSE_MODE_THINKING);
@@ -808,8 +861,8 @@ static bool finish_note(void)
         return interrupted;
     }
 #endif
-    muse_hatch_turn_end();   /* before the chirp, which takes ~90 ms */
-    muse_audio_chirp(0);
+    muse_hatch_turn_end();   /* before the stop ping, which takes 70 ms */
+    earcon_play(MUSE_EARCON_STOP);
     return hatch_reply(&delivered);
 }
 
@@ -890,6 +943,14 @@ static void voice_task(void *arg)
                 s_chirp = false;
                 muse_audio_chirp(1);
                 pre_reset();
+            }
+            int earcon = s_earcon;
+            if (earcon >= 0) {
+                s_earcon = -1;
+                uint32_t age = (uint32_t)(esp_timer_get_time() / 1000) - s_earcon_ms;
+                if (age < EARCON_STALE_MS && earcon_play((muse_earcon_t)earcon)) {
+                    pre_reset();
+                }
             }
             if (s_mp3test) {
                 s_mp3test = false;
@@ -987,6 +1048,17 @@ float muse_voice_monitor_db(void)
 void muse_voice_request_chirp(void)
 {
     s_chirp = true;
+    muse_state_nudge();
+}
+
+void muse_voice_earcon(muse_earcon_t which)
+{
+    /* Only between turns: the voice task is busy with the speaker otherwise. */
+    if (muse_state_mode(NULL) != MUSE_MODE_IDLE || !muse_settings_speaker_on()) {
+        return;
+    }
+    s_earcon_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    s_earcon = which;
     muse_state_nudge();
 }
 
