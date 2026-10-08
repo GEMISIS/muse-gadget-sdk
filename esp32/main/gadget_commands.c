@@ -26,6 +26,7 @@
 #include "muse_settings.h"
 #include "muse_state.h"
 #if CONFIG_MUSE_HATCH
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "muse_present.h"
@@ -233,8 +234,8 @@ cJSON *gadget_list_chats_command(const cJSON *params) {
 #define SHOW_IMAGE_REPEAT_US (120 * 1000000LL)
 
 // The image being pushed. Only the Noise session's task runs commands, so it
-// needs no lock. Its bytes are in PSRAM.
-static struct {
+// needs no lock. It and its bytes are in PSRAM: internal RAM is short.
+EXT_RAM_BSS_ATTR static struct {
     uint8_t *buf;
     size_t len, cap;
     char label[SHOW_IMAGE_LABEL_MAX + 1];
