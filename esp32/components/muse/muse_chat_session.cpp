@@ -57,6 +57,8 @@
  * hold ("GETTING THE IMAGE... 40%") until Muse holds the image up, then
  * follow. Muse saying he's at work on an image (agent.status) holds them from
  * the start, and the speech gives an image event a moment to turn up first.
+ * Pico starts on the reply meanwhile, so its first words are ready to play
+ * the moment the speech may go: only the playing and the captions wait.
  *
  * A background request (muse_chat_bg_ask, for the face's "up next" line) is a
  * typed message to a chat of the asker's, on streams of its own beside the
@@ -259,6 +261,7 @@ static uint32_t img_seq(void);         /* muse_present_seq: images handled */
 static void img_wait(bool on);         /* muse_present_wait */
 static int img_progress(void);         /* muse_present_progress */
 static bool bg_chat(const char *sid);  /* the background request's chat (bg_t) */
+static void bg_yield(void);            /* a turn starts: a request not yet posted waits for it (bg_t) */
 
 #define MAX_STREAMS 6
 static stream_t s_streams[MAX_STREAMS];
@@ -280,6 +283,7 @@ struct msg_t {
     uint32_t pcm_start;      /* where its speech starts in the reply audio */
     uint32_t pcm_frames;     /* how long it is; 0 until the MP3 has all arrived */
     bool streaming;          /* spoken sentence by sentence while it arrives (speak_early) */
+    bool no_pico;            /* Pico couldn't say it: shown at reading pace, not tried again each pass */
 };
 
 struct resampler_t {
@@ -346,8 +350,10 @@ struct turn_t {
 EXT_RAM_BSS_ATTR static turn_t s_turn;
 
 /* Turn milestones, logged together when the turn ends. */
-enum mark_t : uint8_t { M_RELEASE, M_SENT, M_ACK, M_TEXT, M_DONE, M_TTS, M_MP3, M_AUDIO, M_COUNT };
-static const char *const MARK_NAMES[M_COUNT] = { "release", "sent", "ack", "text", "done", "tts", "mp3", "audio" };
+enum mark_t : uint8_t { M_RELEASE, M_SENT, M_ACK, M_TEXT, M_DONE, M_TTS, M_GO, M_MP3, M_AUDIO, M_COUNT };
+/* tts: Pico (or the silent pacing) started; go: the speech may play (speech_wait); audio: it does. */
+static const char *const MARK_NAMES[M_COUNT] = { "release", "sent", "ack", "text", "done", "tts", "go", "mp3",
+                                                 "audio" };
 static int64_t s_marks[M_COUNT];
 static char s_reply_shown[EV_TEXT];   /* the pre-speech caption last sent */
 
@@ -1157,6 +1163,7 @@ static bool turn_start(uint32_t gen, bool text)
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
     resampler_init(&s_turn.up, MIC_RATE, DICT_RATE);
+    bg_yield();   /* nothing of the background's goes to Muse ahead of this turn's message */
     if (subscription_stale()) {
         disconnect("chat changed");   /* subscribe again for the chat this turn goes to */
     }
@@ -1819,7 +1826,10 @@ static void speak_early(int i)
         if (s_turn.pico && s_turn.tts_msg == i) {
             muse_tts_more(full, false);
         }
-    } else if (m.tts == TTS_NONE && s_turn.tts_msg < 0 && muse_tts_wanted() && !speech_wait()) {
+    } else if (m.tts == TTS_NONE && s_turn.tts_msg < 0 && muse_tts_wanted()) {
+        /* Even while the speech waits (speech_wait, which this starts the
+         * image grace of): Pico gets ahead, and decode() holds the playing. */
+        speech_wait();
         bool queued = false;
         for (int k = 0; k < s_turn.nmsgs; k++) {
             queued |= s_turn.msgs[k].tts == TTS_QUEUED;
@@ -1833,7 +1843,8 @@ static void speak_early(int i)
             s_turn.silent = false;
             s_turn.pico = true;
             mark(M_TTS);
-            ESP_LOGI(TAG, "speaking message %s as it arrives", m.id);
+            ESP_LOGI(TAG, "speaking message %s as it arrives%s", m.id,
+                     s_turn.speech_go ? "" : " (played once the speech may go)");
         }
     }
     full[cut] = keep;
@@ -1957,6 +1968,7 @@ static bool speech_wait(void)
         }
     }
     s_turn.speech_go = true;
+    mark(M_GO);
     return false;
 }
 
@@ -2216,9 +2228,11 @@ static void start_tts(void)
     for (int i = 0; i < s_turn.nmsgs; i++) {
         queued |= s_turn.msgs[i].tts == TTS_QUEUED;
     }
-    if (!queued || speech_wait()) {
+    if (!queued) {
         return;
     }
+    /* Pico may start while the speech still waits (decode() holds the playing); showing it may not. */
+    bool wait = speech_wait();
     for (int i = 0; i < s_turn.nmsgs; i++) {
         msg_t &m = s_turn.msgs[i];
         if (m.tts != TTS_QUEUED) {
@@ -2241,10 +2255,10 @@ static void start_tts(void)
          */
 #if CONFIG_MUSE_TTS_PICO
         /* On-device speech (muse_tts.h): its PCM goes where decoded MP3 would. */
-        if (!s_turn.text && s_turn.texts) {
+        if (!s_turn.text && s_turn.texts && !m.no_pico) {
             const char *text = s_turn.texts + i * TEXT_MAX;
-            muse_tts_remember(text, i > 0);
             if (muse_tts_wanted() && muse_tts_say(text)) {
+                muse_tts_remember(text, i > 0);
                 m.pcm_start = s_turn.pcm_out;
                 m.pcm_frames = 0;
                 m.tts = TTS_ACTIVE;
@@ -2252,10 +2266,20 @@ static void start_tts(void)
                 s_turn.silent = false;
                 s_turn.pico = true;
                 mark(M_TTS);
-                ESP_LOGI(TAG, "speaking message %s (%u chars)", m.id, (unsigned)m.len);
-                show_reply_start(m);
+                ESP_LOGI(TAG, "speaking message %s (%u chars)%s", m.id, (unsigned)m.len,
+                         wait ? ", played once the speech may go" : "");
+                show_reply_start(m);   /* nothing while it waits: decode() shows it then */
                 return;
             }
+            m.no_pico = true;   /* not spoken: shown at reading pace, once it may be */
+        }
+#endif
+        if (wait) {
+            return;   /* shown at reading pace once it may be */
+        }
+#if CONFIG_MUSE_TTS_PICO
+        if (!s_turn.text && s_turn.texts) {
+            muse_tts_remember(s_turn.texts + i * TEXT_MAX, i > 0);   /* to show again (muse_tts_replay_last) */
         }
 #endif
         m.pcm_start = s_turn.pcm_out;
@@ -2319,6 +2343,9 @@ static void pump_speech(void)
 {
     enum { CHUNK = 256, LEAD = MIC_RATE / 5 };
     msg_t &m = s_turn.msgs[s_turn.tts_msg];
+    if (s_turn.pcm_out == m.pcm_start) {
+        show_reply_start(m);   /* started while the speech waited: its words come up with it */
+    }
     muse_tts_status_t st = muse_tts_status();
     /* A fifth of a second ahead before the first word: Pico runs faster than
      * real time, so that's enough to keep the first sentence from stuttering. */
@@ -2353,7 +2380,8 @@ static void pump_speech(void)
 /* Decodes buffered MP3 while the reply buffer has room. */
 static void decode(void)
 {
-    if (s_turn.tts_msg < 0 || speech_held()) {
+    /* speech_wait, not just speech_held: Pico may be ahead of an image grace still running. */
+    if (s_turn.tts_msg < 0 || speech_wait()) {
         return;
     }
     if (s_turn.silent) {
@@ -2490,7 +2518,7 @@ static void check_turn(void)
  * message, so then the message goes first and the subscription follows its
  * ack. Only the first assistant message replying to it counts. It doesn't
  * start while a turn runs, unless it's asked to go beside one (an image the
- * turn's speech waits for), and a failure (or the connection going) only
+ * turn's speech waits for), nor post its message once one has (bg_yield), and a failure (or the connection going) only
  * ends it: the turn, the picked chat's subscription and the connection are
  * left alone.
  */
@@ -2743,6 +2771,31 @@ static void bg_poll(void)
         if (s && s->status > 0 && s->status < 400) {
             bg_post();
         }
+    }
+}
+
+/*
+ * A turn starts (turn_start). A request that waits for turns, still on its
+ * subscription, goes back to waiting rather than being posted beside the
+ * turn: Muse gets the turn's message without another of the gadget's ahead
+ * of it. One already posted can't be called back: it's logged, to tell a
+ * slow reply from a busy Muse.
+ */
+static void bg_yield(void)
+{
+    if (s_bg.in_turn) {
+        return;
+    }
+    if (s_bg.phase == BG_SUBSCRIBING && !s_bg.posted) {
+        int64_t sub = s_bg.sub_id;
+        s_bg.sub_id = 0;
+        s_bg.phase = BG_WANTED;
+        s_bg.told_waiting = false;
+        bg_reset(sub);
+        ESP_LOGI(TAG, "background request to chat %s waits for the turn", s_bg.sid);
+    } else if (s_bg.phase == BG_WAITING) {
+        ESP_LOGI(TAG, "background request to chat %s still under way beside the turn (asked %.1fs ago)", s_bg.sid,
+                 (now_us() - s_bg.start_us) / 1e6);
     }
 }
 
