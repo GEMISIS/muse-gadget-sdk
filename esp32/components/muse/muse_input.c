@@ -310,6 +310,7 @@ static void volume_step(int delta)
         muse_settings_set_volume(pct);   /* saved, and applied by the app's listener */
     }
     muse_power_menu_show_volume(pct);
+    muse_voice_earcon(MUSE_EARCON_TICK);   /* at the new volume, so it can be heard */
 }
 
 /*
