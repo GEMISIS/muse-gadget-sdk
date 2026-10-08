@@ -236,7 +236,7 @@ static void set_told(const char *sid, int mode)
     s_told[i].mode = (int8_t)mode;
 }
 
-void muse_gadget_mode_resend(void)
+static void resend(bool started)
 {
     if (!s_lock) {
         return;
@@ -244,6 +244,11 @@ void muse_gadget_mode_resend(void)
     muse_gadget_mode_t mode = muse_gadget_mode();
     char sid[MUSE_CHAT_SID_MAX + 1];
     muse_settings_chat_sid(sid);
+    if (!started && muse_settings_chat_untitled(sid)) {
+        /* Told once the first message has titled it (muse_gadget_mode_chat_started). */
+        ESP_LOGI(TAG, "%s mode: telling the new chat after its first message", NAMES[mode]);
+        return;
+    }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (told_mode(sid) == (int)mode) {
         xSemaphoreGive(s_lock);
@@ -256,6 +261,16 @@ void muse_gadget_mode_resend(void)
     if (s_task) {
         xTaskNotifyGive(s_task);
     }
+}
+
+void muse_gadget_mode_resend(void)
+{
+    resend(false);
+}
+
+void muse_gadget_mode_chat_started(void)
+{
+    resend(true);
 }
 
 bool muse_gadget_mode_set_away(void)
@@ -370,8 +385,8 @@ static void send_pending(void)
 #if CONFIG_MUSE_HATCH
     float t;
     muse_mode_t face = muse_state_mode(&t);
-    if (!muse_hatch_ready() || face == MUSE_MODE_LISTENING || face == MUSE_MODE_THINKING
-        || face == MUSE_MODE_SPEAKING) {
+    if (!muse_hatch_ready() || muse_hatch_turn_busy() || face == MUSE_MODE_LISTENING
+        || face == MUSE_MODE_THINKING || face == MUSE_MODE_SPEAKING) {
         return;   /* try again next tick */
     }
     char *text = strdup(CONTRACTS[mode]);
@@ -408,6 +423,7 @@ static void mode_task(void *arg)
         }
         check_network();
         send_pending();
+        muse_settings_chats_flush();   /* titles the Muse gave new chats */
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TICK_MS));
     }
 }

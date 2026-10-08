@@ -18,8 +18,9 @@
  * The Chats screen (muse_chats_ui.h): the main chat, the gadget's own, and
  * the ones made here (muse_settings_chat_items), the one in use ticked.
  * Tapping one picks it and goes back to Muse; holding a made one arms
- * forgetting it, and a tap then forgets it. "New chat" asks for a name on
- * a keyboard of its own. Styled as the settings pages are
+ * forgetting it, and a tap then forgets it. "New chat" is ticked when picked;
+ * the chat joins the list once the first thing asked in it has the Muse
+ * title it (muse_settings_chat_pick_new, muse_settings_chat_retitle). Styled as the settings pages are
  * (muse_settings_ui.c).
  */
 #include "muse_chats_ui.h"
@@ -46,8 +47,6 @@
 
 static lv_obj_t *s_list;
 static lv_obj_t *s_note;
-static lv_obj_t *s_entry;      /* the name being typed and its keyboard, over the list */
-static lv_obj_t *s_entry_ta;
 static muse_chat_item_t s_items[MUSE_CHAT_ITEMS_MAX];
 static lv_obj_t *s_values[MUSE_CHAT_ITEMS_MAX];
 static int s_count;
@@ -121,76 +120,22 @@ static void on_chat(lv_event_t *e)
     muse_ui_show_face();   /* back to Muse, to talk in it */
 }
 
-static void entry_close(void)
-{
-    lv_textarea_set_text(s_entry_ta, "");
-    lv_obj_add_flag(s_entry, LV_OBJ_FLAG_HIDDEN);
-}
-
-static void on_entry_key(lv_event_t *e)
-{
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_CANCEL) {
-        entry_close();
-        return;
-    }
-    if (code != LV_EVENT_READY) {
-        return;
-    }
-    char name[MUSE_CHAT_NAME_MAX + 1];
-    strlcpy(name, lv_textarea_get_text(s_entry_ta), sizeof(name));
-    if (!name[0]) {
-        entry_close();
-        return;
-    }
-    char sid[MUSE_CHAT_SID_MAX + 1];
-    esp_err_t err = muse_settings_chat_new(name, sid);
-    entry_close();
-    if (err == ESP_ERR_NO_MEM) {
-        set_text(s_note, "Eight chats is the most; hold one to forget it first.");
-    } else if (err == ESP_OK || err == ESP_ERR_INVALID_STATE) {
-        muse_ui_show_face();   /* made (or already there) and picked */
-    } else {
-        set_text(s_note, "That name won't do; try another.");
-    }
-}
-
 static void on_new(lv_event_t *e)
 {
     if (lv_event_get_code(e) != LV_EVENT_SHORT_CLICKED) {
         return;
     }
     s_armed = -1;
-    lv_obj_remove_flag(s_entry, LV_OBJ_FLAG_HIDDEN);
-}
-
-static void build_entry(lv_obj_t *tile)
-{
-    s_entry = lv_obj_create(tile);
-    lv_obj_remove_style_all(s_entry);
-    lv_obj_set_size(s_entry, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(s_entry, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(s_entry, LV_OPA_COVER, 0);
-    lv_obj_remove_flag(s_entry, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(s_entry, LV_OBJ_FLAG_HIDDEN);
-
-    lv_obj_t *t = label(s_entry, &lv_font_unscii_16, COLOR_ACCENT, "NEW CHAT");
-    lv_obj_set_style_text_letter_space(t, 2, 0);
-    lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 44);
-
-    s_entry_ta = lv_textarea_create(s_entry);
-    lv_textarea_set_one_line(s_entry_ta, true);
-    lv_textarea_set_max_length(s_entry_ta, MUSE_CHAT_NAME_MAX);
-    lv_textarea_set_placeholder_text(s_entry_ta, "Its name");
-    lv_obj_set_width(s_entry_ta, LIST_W);
-    lv_obj_set_style_text_font(s_entry_ta, &lv_font_montserrat_20, 0);
-    lv_obj_align(s_entry_ta, LV_ALIGN_TOP_MID, 0, LIST_TOP);
-
-    lv_obj_t *kb = lv_keyboard_create(s_entry);
-    lv_obj_set_size(kb, muse_board->width, muse_board->height / 2);
-    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_keyboard_set_textarea(kb, s_entry_ta);
-    lv_obj_add_event_cb(kb, on_entry_key, LV_EVENT_ALL, NULL);
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    if (i == s_current) {
+        muse_ui_show_face();   /* picked already: nothing said in it yet */
+        return;
+    }
+    if (muse_settings_chat_pick_new() == ESP_ERR_NO_MEM) {
+        set_text(s_note, "Eight chats is the most; hold one to forget it first.");
+        return;
+    }
+    muse_ui_show_face();   /* to ask the first thing, which the Muse names it by */
 }
 
 /* Rows for the chats as they are now: after one is made, picked or forgotten. */
@@ -201,6 +146,10 @@ static void rebuild(void)
     lv_obj_clean(s_list);
     for (int i = 0; i < s_count; i++) {
         const muse_chat_item_t *c = &s_items[i];
+        if (c->kind == MUSE_CHAT_NEW) {
+            s_values[i] = row(LV_SYMBOL_PLUS, "New chat", on_new, (void *)(intptr_t)i);
+            continue;
+        }
         const char *icon = c->kind == MUSE_CHAT_MAIN ? LV_SYMBOL_HOME
                          : c->kind == MUSE_CHAT_GADGET ? LV_SYMBOL_AUDIO : LV_SYMBOL_LIST;
         const char *name = c->kind == MUSE_CHAT_MAIN ? "Main chat"
@@ -208,10 +157,9 @@ static void rebuild(void)
                          : c->name[0] ? c->name : c->sid;
         s_values[i] = row(icon, name, on_chat, (void *)(intptr_t)i);
     }
-    row(LV_SYMBOL_PLUS, "New chat", on_new, NULL);
     s_note = label(s_list, &lv_font_montserrat_16, COLOR_DIM,
                    "Where you talk to Muse from here on; a restart goes back to the main chat. "
-                   "A new chat shows up in the Muse app with its first message. Hold one to forget it.");
+                   "A new chat starts with the first thing you ask, and Muse names it. Hold one to forget it.");
     lv_obj_set_width(s_note, lv_pct(100));
     lv_label_set_long_mode(s_note, LV_LABEL_LONG_MODE_WRAP);
 }
@@ -235,8 +183,6 @@ void muse_chats_ui_build(lv_obj_t *tile)
     lv_obj_set_style_pad_bottom(s_list, 110, 0);   /* clear of the page dots */
     lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
-
-    build_entry(tile);
 }
 
 void muse_chats_ui_tick(bool visible)
@@ -250,9 +196,6 @@ void muse_chats_ui_tick(bool visible)
         rebuild();
     }
     if (!visible) {
-        if (!lv_obj_has_flag(s_entry, LV_OBJ_FLAG_HIDDEN)) {
-            entry_close();
-        }
         s_armed = -1;
     }
     if (s_armed >= 0 && esp_timer_get_time() - s_armed_us >= FORGET_ARMED_US) {
@@ -266,5 +209,5 @@ void muse_chats_ui_tick(bool visible)
 
 bool muse_chats_ui_typing(void)
 {
-    return s_entry && !lv_obj_has_flag(s_entry, LV_OBJ_FLAG_HIDDEN);
+    return false;   /* nothing's typed here: the Muse names new chats */
 }

@@ -108,6 +108,7 @@ static cJSON *chat_json(const char *sid) {
     cJSON_AddStringToObject(chat, "chat", !sid[0]                 ? "main"
                                           : !strcmp(sid, gadget) ? "gadget"
                                           : named                ? "named"
+                                          : muse_settings_chat_untitled(sid) ? "new"
                                                                  : "custom");
     cJSON_AddStringToObject(chat, "session_id", sid);
     if (named) {

@@ -90,6 +90,9 @@ void muse_hatch_set_resting(bool resting);
 
 /* Token set and Wi-Fi up: a press can start a turn. */
 bool muse_hatch_ready(void);
+/* A turn is under way (sent, or its reply still coming): a typed turn now
+ * would interrupt it. */
+bool muse_hatch_turn_busy(void);
 
 /* Press: connects if needed and starts streaming speech to the VM. */
 void muse_hatch_turn_begin(void);

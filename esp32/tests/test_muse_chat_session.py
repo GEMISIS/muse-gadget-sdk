@@ -44,6 +44,8 @@ static int64_t s_last_seq, s_marks[4];
 static int captions, console_events;
 enum mark_t { M_TEXT, M_DONE };
 static void mark(mark_t) {}
+static bool muse_settings_chat_retitle(const char *, const char *, bool *started) { *started = false; return false; }
+static void muse_gadget_mode_chat_started() {}
 static int64_t now_us() { return 12345; }
 static void emit(muse_hatch_ev_t type, const char *) {
     if (type == MUSE_HATCH_EV_REPLY) captions++;

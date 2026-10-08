@@ -57,6 +57,8 @@ static struct {
     muse_chat_entry_t chats[MUSE_CHATS_MAX];   /* NVS "chats": a blob of chats_n entries */
     int chats_n;
     uint32_t chats_gen;                        /* bumped when the list or the pick changes */
+    bool chats_dirty;                          /* retitled: save_chats() is due (muse_settings_chats_flush) */
+    char new_sid[MUSE_CHAT_SID_MAX + 1];       /* the new chat picked, until the Muse titles it (RAM only) */
 } s = {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
@@ -442,6 +444,101 @@ esp_err_t muse_settings_chat_add(const char *name, char sid_out[MUSE_CHAT_SID_MA
     return err;
 }
 
+esp_err_t muse_settings_chat_pick_new(void)
+{
+    uint8_t u[16];
+    esp_fill_random(u, sizeof(u));
+    u[6] = (u[6] & 0x0f) | 0x40;
+    u[8] = (u[8] & 0x3f) | 0x80;
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    snprintf(sid, sizeof(sid), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", u[0], u[1],
+             u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15]);
+    bool full;
+    LOCKED({
+        full = s.chats_n >= MUSE_CHATS_MAX;
+        if (!full) {
+            strlcpy(s.new_sid, sid, sizeof(s.new_sid));
+        }
+    });
+    if (full) {
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "new chat: %s, named once the Muse titles it", sid);
+    muse_settings_set_chat_sid(sid);
+    return ESP_OK;
+}
+
+bool muse_settings_chat_untitled(const char *sid)
+{
+    bool untitled = false;
+    if (sid && sid[0]) {
+        LOCKED(untitled = !strcmp(s.new_sid, sid));
+    }
+    return untitled;
+}
+
+bool muse_settings_chat_retitle(const char *sid, const char *title, bool *started)
+{
+    if (started) {
+        *started = false;
+    }
+    char clean[MUSE_CHAT_NAME_MAX + 1];
+    if (!sid || !sid[0] || !title) {
+        return false;
+    }
+    /* A long title is cut at a word, with an ellipsis, to fit. */
+    char cut[MUSE_CHAT_NAME_MAX + 1];
+    if (strlen(title) > MUSE_CHAT_NAME_MAX) {
+        size_t n = MUSE_CHAT_NAME_MAX - 3;
+        while (n > 8 && title[n] != ' ') {
+            n--;
+        }
+        snprintf(cut, sizeof(cut), "%.*s...", (int)n, title);
+        title = cut;
+    }
+    if (!chat_name(title, clean)) {
+        return false;
+    }
+    bool found = false, changed = false, joined = false;
+    LOCKED({
+        int i = find_chat_sid(sid);
+        if (i < 0 && !strcmp(s.new_sid, sid) && s.chats_n < MUSE_CHATS_MAX) {
+            /* The new chat has started: it joins the named ones, under its title. */
+            i = s.chats_n++;
+            memset(&s.chats[i], 0, sizeof(s.chats[i]));
+            strlcpy(s.chats[i].sid, sid, sizeof(s.chats[i].sid));
+            s.new_sid[0] = '\0';
+            joined = true;
+        }
+        if (i >= 0) {
+            found = true;
+            changed = strcmp(s.chats[i].name, clean) != 0;
+            if (changed) {
+                strlcpy(s.chats[i].name, clean, sizeof(s.chats[i].name));
+                s.chats_dirty = true;
+                s.chats_gen++;
+            }
+        }
+    });
+    if (changed) {
+        ESP_LOGI(TAG, "chat %s titled \"%s\"", sid, clean);
+    }
+    if (started) {
+        *started = joined;
+    }
+    return found;
+}
+
+void muse_settings_chats_flush(void)
+{
+    LOCKED({
+        if (s.chats_dirty) {
+            s.chats_dirty = false;
+            save_chats();
+        }
+    });
+}
+
 esp_err_t muse_settings_chat_new(const char *name, char sid_out[MUSE_CHAT_SID_MAX + 1])
 {
     char sid[MUSE_CHAT_SID_MAX + 1];
@@ -487,13 +584,21 @@ int muse_settings_chat_items(muse_chat_item_t *out, int max, int *current)
                 cur = n;
             }
         }
-        /* Picked by its id alone (the set_chat command, the console): listed last. */
-        if (s.chat_sid[0] && !cur) {
+        /* Picked by its id alone (the set_chat command, the console). */
+        bool is_new = s.new_sid[0] && !strcmp(s.chat_sid, s.new_sid);
+        if (s.chat_sid[0] && !cur && !is_new) {
             if (n < max) {
                 chat_item(&out[n], MUSE_CHAT_CUSTOM, "Other chat", s.chat_sid);
             }
             cur = n++;
         }
+        if (n < max) {
+            chat_item(&out[n], MUSE_CHAT_NEW, "New chat", is_new ? s.new_sid : "");
+        }
+        if (is_new) {
+            cur = n;
+        }
+        n++;
     });
     if (current) {
         *current = cur < max ? cur : -1;
