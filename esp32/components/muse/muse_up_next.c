@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 #include "cJSON.h"
@@ -50,6 +51,9 @@ static const char *TAG = "up_next";
 #define PROMPT                                                                                                     \
     "In one short line (max ~40 characters), what should I prepare for next today? Use my calendar and plans if " \
     "you know them. Reply with just the line, no preamble."
+/* After PROMPT when a line's showing: kept, word for word, unless it needs to change. */
+#define KEEP " Right now I show: \"%s\". If that's still right, reply with just the word SAME instead."
+#define SAME "SAME"
 /* Ahead of PROMPT when an earlier ask's chat is still on the Muse. */
 #define DELETE_FIRST "First, quietly delete the chat with session id %s (an earlier one of these questions); don't mention it. Then: "
 #define NVS_NS "gadget"
@@ -203,6 +207,17 @@ static void take_reply(void)
     }
     char line[UP_NEXT_MAX];
     tidy(reply, line, sizeof(line));
+    if (!strncasecmp(line, SAME, strlen(SAME)) && !line[strspn(line + strlen(SAME), ".! ") + strlen(SAME)]) {
+        portENTER_CRITICAL(&s_lock);
+        bool kept = s_line_us != 0;
+        s_line_us = kept ? esp_timer_get_time() : 0;   /* still right: fresh again, word for word */
+        strlcpy(line, s_line, sizeof(line));
+        portEXIT_CRITICAL(&s_lock);
+        strlcpy(s_prev, s_sid, sizeof(s_prev));
+        save(kept ? line : "");
+        ESP_LOGI(TAG, "up next: unchanged");
+        return;
+    }
     portENTER_CRITICAL(&s_lock);
     strlcpy(s_line, line, sizeof(s_line));
     strlcpy(s_full, reply, sizeof(s_full));
@@ -257,11 +272,12 @@ void muse_up_next_tick(void)
         load();   /* no clock yet: the line can't be dated, but the chat to delete is known */
     }
     new_chat_sid(s_sid);
-    static char ask[sizeof(DELETE_FIRST) + MUSE_CHAT_SID_MAX + sizeof(PROMPT)];
-    if (s_prev[0]) {
-        snprintf(ask, sizeof(ask), DELETE_FIRST "%s", s_prev, PROMPT);
-    } else {
-        strlcpy(ask, PROMPT, sizeof(ask));
+    static char ask[sizeof(DELETE_FIRST) + MUSE_CHAT_SID_MAX + sizeof(PROMPT) + sizeof(KEEP) + UP_NEXT_MAX];
+    char shown[UP_NEXT_MAX];
+    muse_up_next_line(shown, sizeof(shown));
+    int n = s_prev[0] ? snprintf(ask, sizeof(ask), DELETE_FIRST "%s", s_prev, PROMPT) : snprintf(ask, sizeof(ask), "%s", PROMPT);
+    if (shown[0] && n > 0 && (size_t)n < sizeof(ask)) {
+        snprintf(ask + n, sizeof(ask) - n, KEEP, shown);
     }
     s_asking = muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_UP_NEXT, s_sid, ask);
     ESP_LOGI(TAG, "%s Muse what's up next (%s)", s_asking ? "asking" : "couldn't ask", why);
