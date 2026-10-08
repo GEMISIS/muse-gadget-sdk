@@ -203,6 +203,9 @@ static uint32_t img_seq() { return fake_seq; }
 static uint32_t img_up() { return fake_up; }
 static void img_wait(bool on) { waiting_on = on; }
 static int img_progress() { return fake_progress; }
+/* What the face is told Muse is at (muse_state_set_activity). */
+static muse_activity_t face_activity = MUSE_ACTIVITY_COUNT;
+static void img_activity(muse_activity_t a) { face_activity = a; }
 #if CONFIG_MUSE_TTS_PICO
 #include "muse_tts.h"
 /* Pico, faked: what it was asked to say, and speech made ready by the test. */
@@ -924,6 +927,36 @@ static void pico_not_spoken() {
     assert(pcm_sent && captions == 1 && !s_turn.pico && tts_tries == 1 && tts_remembers == 1);
 }
 #endif
+/* What Muse says he's at goes to the face, this turn's only; once he's made an image, the rest is it on its way. */
+static void activities() {
+    begin();
+    assert(face_activity == MUSE_ACTIVITY_NONE);
+    status("is working", nullptr, "working");
+    assert(face_activity == MUSE_ACTIVITY_NONE);
+    status("Searching news", nullptr, "working");
+    assert(face_activity == MUSE_ACTIVITY_NEWS && s_turn.activity == MUSE_ACTIVITY_NEWS);
+    status("Canceling reminder", nullptr, "working");
+    assert(face_activity == MUSE_ACTIVITY_REMINDER_CANCEL);
+    status("Pondering quietly", nullptr, "working");
+    assert(face_activity == MUSE_ACTIVITY_NONE);   /* not known: the phone */
+    status("Generating image", nullptr, "working");
+    assert(face_activity == MUSE_ACTIVITY_IMAGE && s_turn.img_made);
+    status("is responding", nullptr, "responding");
+    assert(face_activity == MUSE_ACTIVITY_IMAGE_MADE);
+    status("Checking calendar", nullptr, "working");
+    assert(face_activity == MUSE_ACTIVITY_IMAGE_MADE);
+    /* A task.status says nothing he's at: left as it was. */
+    cJSON *root = cJSON_Parse("{\"type\":\"event\",\"event\":\"task.status\",\"payload\":{\"status\":\"running\"}}");
+    on_event(root);
+    cJSON_Delete(root);
+    assert(face_activity == MUSE_ACTIVITY_IMAGE_MADE);
+    /* The next turn starts with nothing. */
+    begin();
+    assert(face_activity == MUSE_ACTIVITY_NONE && !s_turn.img_made);
+    status("is responding", nullptr, "responding");
+    assert(face_activity == MUSE_ACTIVITY_RESPOND);
+    s_turn.texts = nullptr;
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -939,6 +972,7 @@ int main(int argc, char **argv) {
     case 9: not_held(); break;
     case 10: progress(); break;
     case 11: held_turn_takes_the_request(); break;
+    case 15: activities(); break;
 #if CONFIG_MUSE_TTS_PICO
     case 12: pico_ahead_of_the_grace(); break;
     case 13: pico_ahead_of_an_image(); break;
@@ -1011,6 +1045,9 @@ int main(int argc, char **argv) {
 
     def test_held_turn_with_its_reply_in_starts_the_image_request(self):
         self.run_case(11)
+
+    def test_what_muse_says_hes_at_goes_to_the_face(self):
+        self.run_case(15)
 
     def test_pico_starts_during_the_image_grace_and_plays_after_it(self):
         self.run_case(12, self.pico_binary)

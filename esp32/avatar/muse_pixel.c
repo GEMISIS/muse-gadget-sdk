@@ -6,6 +6,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#else
+#define EXT_RAM_BSS_ATTR
+#endif
+
 #define W MUSE_PX_W
 #define H MUSE_PX_H
 #define TAU 6.2831853f
@@ -1575,9 +1581,11 @@ static float pk_update(float at, float progress, bool first)
 
 /*
  * The cloud the boxes come out of, and a bold down arrow through it, bobbing,
- * in the accent colour; `gone` 0..1 floating up and away, thinning out.
+ * in the accent colour; `gone` 0..1 floating up and away, thinning out (or,
+ * going back down, coming). `wait`: nothing coming out of it yet, the arrow
+ * slower and pulsing, and three dots going under it.
  */
-static void draw_cloud(float t, float gone)
+static void draw_cloud(float t, float gone, bool wait)
 {
     if (gone >= 1) {
         return;
@@ -1616,14 +1624,27 @@ static void draw_cloud(float t, float gone)
         "..###..",
         "...#...",
     };
-    int ax = CLOUD_X + CLOUD_W / 2 - 3, ay = CLOUD_Y + 2 + iround(1.0f - cosf(t * 6.0f));   /* bobbing down */
+    float bob = wait ? 0.5f - 0.5f * cosf(t * 2.6f) : 1.0f - cosf(t * 6.0f);
+    int ax = CLOUD_X + CLOUD_W / 2 - 3, ay = CLOUD_Y + 2 + iround(bob);   /* bobbing down */
     static const int8_t AROUND[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
     for (int k = 0; k < 4; k++) {
         stamp(ARROW, 7, ax + AROUND[k][0], ay + AROUND[k][1], C_OUT, C_OUT);
     }
-    stamp(ARROW, 7, ax, ay, C_ACC, C_ACC);
-    px(ax + 2, ay, C_G0);   /* a glint */
-    px(ax + 2, ay + 1, C_G0);
+    bool lit = !wait || sinf(t * 2.6f) < 0.2f;   /* waiting: it pulses, dim and lit */
+    stamp(ARROW, 7, ax, ay, lit ? C_ACC : C_G2, lit ? C_ACC : C_G2);
+    px(ax + 2, ay, lit ? C_G0 : C_ACC);   /* a glint */
+    px(ax + 2, ay + 1, lit ? C_G0 : C_ACC);
+    if (wait) {
+        int on = (int)(fracf(t * 1.4f) * 4.0f);   /* one, two, three, none */
+        for (int i = 0; i < 3; i++) {
+            int dx = CLOUD_X + CLOUD_W / 2 - 4 + i * 3, dy = CLOUD_Y + CLOUD_H + 2;
+            uint8_t c = i < on ? C_BUBBLE : C_BUBBLED;
+            px(dx, dy, c);
+            px(dx + 1, dy, c);
+            px(dx, dy + 1, c);
+            px(dx + 1, dy + 1, c);
+        }
+    }
 }
 
 /*
@@ -1789,6 +1810,1248 @@ static void draw_box_open(int x, int y)
     static const char *const FLAP_R[] = { "..##", ".#o#", "#o#.", "##.." };
     stamp(FLAP, 4, x - 3, y - 2, C_OUT, C_BOXL);
     stamp(FLAP_R, 4, x + BOX_W - 1, y - 2, C_OUT, C_BOXL);
+}
+
+/*
+ * Making the image (MUSE_ACT_PAINT): an easel at his right, under where the
+ * cloud will be, its canvas the picture he'll unbox later, dabbed on a
+ * patch at a time (PT_DABS, the sky first, the hills last); a palette in
+ * his other paw, and a beret. Made: a last sweep, and he takes the canvas
+ * off the easel and tosses it up into the cloud (PT_* are fractions of
+ * act_progress), the easel gone in a puff. Then he waits on the cloud
+ * (MUSE_ACT_CLOUD).
+ */
+#define CV_X 42                 /* the canvas's top left on the easel: an outline, */
+#define CV_Y 24
+#define CV 14                   /* a white edge, then the picture */
+#define PT_SHIFT 8.0f           /* Muse this far to the left, for the easel */
+#define PT_STROKE 0.85f         /* one dab, s */
+#define PT_READY 0.4f           /* the brush up before the first */
+#define PT_FLOURISH 0.2f        /* through the toss: the last sweep, */
+#define PT_GRAB 0.32f           /* brush and palette away, a paw on the canvas, */
+#define PT_LIFT 0.46f           /* it up over his shoulder, crouching, */
+#define PT_THROW 0.54f          /* up it goes, */
+#define PT_IN 0.9f              /* into the cloud, which swells */
+
+/* The patches dabbed on, in turn: the picture's row, column, and reach in tenths. */
+static const int8_t PT_DABS[][3] = {
+    { 1, 1, 23 }, { 0, 5, 20 }, { 2, 4, 20 }, { 1, 8, 23 }, { 3, 7, 20 }, { 3, 1, 20 }, { 4, 4, 20 },
+    { 5, 8, 20 }, { 4, 9, 15 }, { 6, 2, 22 }, { 5, 0, 15 }, { 6, 5, 20 }, { 8, 1, 22 }, { 8, 4, 22 },
+    { 7, 9, 15 }, { 8, 7, 22 }, { 9, 9, 16 },
+};
+#define PT_N ((int)(sizeof(PT_DABS) / sizeof(PT_DABS[0])))
+
+/* The picture's colour at (r, c). */
+static uint8_t pic_col(int r, int c)
+{
+    return PIC_COLS[strchr(PIC_KEYS, PICTURE[r][c]) - PIC_KEYS];
+}
+
+/* The first dab to cover picture cell (r, c), or PT_N. */
+static int pt_dab_of(int r, int c)
+{
+    for (int k = 0; k < PT_N; k++) {
+        int dr = r - PT_DABS[k][0], dc = c - PT_DABS[k][1], reach = PT_DABS[k][2];
+        if ((dr * dr + dc * dc) * 100 <= reach * reach) {
+            return k;
+        }
+    }
+    return PT_N;
+}
+
+/* Canvas cell (r, c), 0..CV-1, with `dabs` patches on: outline, edge, paint or bare. */
+static uint8_t canvas_col(int r, int c, int dabs)
+{
+    bool er = r == 0 || r == CV - 1, ec = c == 0 || c == CV - 1;
+    if (er || ec) {
+        return er && ec ? C_BG : C_OUT;
+    }
+    if (r == 1 || c == 1 || r == CV - 2 || c == CV - 2) {
+        return C_MUG;   /* the canvas's edge, round its frame */
+    }
+    int pr = r - 2, pc = c - 2;
+    return pt_dab_of(pr, pc) < dabs ? pic_col(pr, pc) : C_WHITE;
+}
+
+/* The canvas, centred on (x, y), squeezed to sx, sy (0..1: flipping over, going off small). */
+static void draw_canvas(float x, float y, float sx, float sy, int dabs)
+{
+    int w = iround(CV * sx), h = iround(CV * sy);
+    w = w < 2 ? 2 : w;
+    h = h < 2 ? 2 : h;
+    int x0 = iround(x - w / 2.0f), y0 = iround(y - h / 2.0f);
+    for (int r = 0; r < h; r++) {
+        for (int c = 0; c < w; c++) {
+            int sr = r == h - 1 ? CV - 1 : r * CV / h;   /* outlined however small */
+            int sc = c == w - 1 ? CV - 1 : c * CV / w;
+            uint8_t col = canvas_col(sr, sc, dabs);
+            if (col != C_BG) {
+                px(x0 + c, y0 + r, col);
+            }
+        }
+    }
+}
+
+/* The easel: three legs, the ledge the canvas stands on, a clamp over it; `gone` 0..1 going in a puff. */
+static void draw_easel(float gone)
+{
+    if (gone >= 0.35f) {
+        float k = (gone - 0.35f) / 0.65f;
+        draw_sparkle(CV_X + 3, 46, 1.0f - k, true);
+        draw_sparkle(CV_X + 11, 52, 1.1f - k, true);
+        draw_sparkle(CV_X + 7, 39, 0.9f - k, true);
+        return;
+    }
+    for (int y = CV_Y - 3; y <= 56; y++) {
+        px(CV_X + 7, y, C_WOODD);   /* the back leg */
+    }
+    for (int y = CV_Y - 1; y <= 58; y++) {
+        float k = (float)(y - (CV_Y - 1)) / (58 - (CV_Y - 1));
+        int l = iround(CV_X + 5 - k * 6.0f), r = iround(CV_X + 8 + k * 6.0f);
+        px(l - 1, y, C_OUT);
+        px(l, y, C_WOOD);
+        px(r, y, C_WOOD);
+        px(r + 1, y, C_OUT);
+    }
+    for (int x = CV_X - 1; x <= CV_X + CV; x++) {
+        px(x, CV_Y + CV, C_OUT);
+        px(x, CV_Y + CV + 1, C_WOOD);
+        px(x, CV_Y + CV + 2, C_OUT);
+    }
+    for (int x = CV_X + 5; x <= CV_X + 8; x++) {
+        px(x, CV_Y - 2, C_OUT);   /* the clamp */
+        px(x, CV_Y - 1, C_WOODD);
+    }
+    if (gone > 0) {
+        draw_sparkle(CV_X + 7, 44, 1.0f - gone, true);
+    }
+}
+
+/* The palette, his thumb through it at (x, y): wood, with a blob of each paint. */
+static void draw_palette(int x, int y)
+{
+    static const char *const PAL[] = {
+        "..#######..",
+        ".#wwwwwwww#",
+        "#wbbwyywwgg#",
+        "#wbbwwwwwgg#",
+        "#wwwwwwpp.#.",
+        ".#wwwwwpp#..",
+        "..######....",
+    };
+    const uint8_t cols[] = { C_OUT, C_BOXL, C_PICSKY, C_PICSUN, C_PICHILL, C_HEART };
+    stamp_c(PAL, 7, x - 5, y - 3, "#wbygp", cols);
+}
+
+/* The brush, its handle in the paw at (hx, hy), its tip at (tx, ty) wet with `paint`. */
+static void draw_brush(float hx, float hy, float tx, float ty, uint8_t paint)
+{
+    float dx = tx - hx, dy = ty - hy, d = sqrtf(dx * dx + dy * dy);
+    int n = (int)(d + 0.5f);
+    for (int i = -7; i <= n; i++) {
+        float k = d > 0 ? i / d : 0;
+        int x = iround(hx + dx * k), y = iround(hy + dy * k);
+        uint8_t c = i >= n - 1 ? paint : i == n - 2 ? C_BUBBLE : C_WOOD;
+        px(x, y, c);
+        if (i >= n - 1) {
+            px(x + 1, y, paint);   /* a fat wet tip */
+        }
+    }
+}
+
+/* A black beret, cocked to his left, sat on the hood's top at (x, y). */
+static void draw_beret(int x, int y)
+{
+    static const char *const BERET[] = {
+        ".........##.........",
+        "......######........",
+        "....##bbbbbbll##....",
+        "..##bbbbbbbbbbll##..",
+        ".#bbbbbbbbbbbbbbbl#.",
+        "#bbbbbbbbbbbbbbbbbb#",
+        "#bbbbbbbbbbbbbbbbbb#",
+        ".##dddddddddddddd##.",
+        "...##############...",
+    };
+    const uint8_t cols[] = { C_OUT, C_PHONE, C_PHONEL, C_OUT2 };
+    stamp_c(BERET, 9, x - 11, y - 7, "#bld", cols);
+}
+
+/*
+ * Looking something up (MUSE_ACT_SEARCH): a magnifying glass up to his eye,
+ * centred on (x, y), the eye big in it, looking (gx, gy); its handle down to
+ * his right, ending at (x + 9, y + 9).
+ */
+static void draw_magnifier(float x, float y, float gx, float gy, float t)
+{
+    int cx = iround(x), cy = iround(y);
+    for (int i = 4; i <= 9; i++) {
+        px(cx + i, cy + i, i < 6 ? C_BOLTD : C_WOOD);
+        px(cx + i + 1, cy + i, C_OUT);
+        px(cx + i, cy + i + 1, C_OUT);
+    }
+    for (int r = -5; r <= 5; r++) {
+        for (int c = -5; c <= 5; c++) {
+            int d = r * r + c * c;
+            if (d > 30) {
+                continue;
+            }
+            uint8_t col = d > 21 ? C_OUT : d > 13 ? (r < 0 && c < 2 ? C_BOLT : C_BOLTD) : C_SKINL;
+            if (col == C_SKINL && (c - r == 4 || c - r == 5) && r < 0) {
+                col = C_WHITE;   /* a gleam on the glass */
+            }
+            px(cx + c, cy + r, col);
+        }
+    }
+    int ex = cx + iround(gx * 1.2f), ey = cy + iround(gy);
+    if (fracf(t * 0.31f) > 0.95f) {
+        for (int i = -2; i <= 2; i++) {
+            px(ex + i, ey + 1, C_IRIS);   /* a blink, big */
+        }
+    } else {
+        static const char *const EYE[] = { ".###.", "#oo##", "#o###", "#####", ".###." };
+        stamp(EYE, 5, ex - 2, ey - 2, C_IRIS, C_SHINE);
+    }
+}
+
+/* Where the canvas is, its centre, `toss` 0..1 through tossing it (j: Muse, for lifting it). */
+static void pt_canvas(float toss, const avatar_t *j, float *x, float *y)
+{
+    float ex = CV_X + CV / 2.0f, ey = CV_Y + CV / 2.0f;              /* on the easel */
+    float lx = j->cx + 17.0f, ly = j->cy - 15.0f;                    /* lifted, over his shoulder */
+    float cx = lx - 1.0f, cy = ly + 2.0f;                            /* wound up */
+    float ix = CLOUD_X + CLOUD_W / 2.0f, iy = CLOUD_Y + CLOUD_H / 2.0f;   /* in the cloud */
+    if (toss < PT_GRAB) {
+        *x = ex;
+        *y = ey;
+    } else if (toss < PT_LIFT) {
+        float k = (toss - PT_GRAB) / (PT_LIFT - PT_GRAB);
+        k = k * k * (3 - 2 * k);
+        *x = ex + (lx - ex) * k;
+        *y = ey + (ly - ey) * k - sinf(k * 3.1416f) * 3.0f;
+    } else if (toss < PT_THROW) {
+        float k = (toss - PT_LIFT) / (PT_THROW - PT_LIFT);
+        *x = lx + (cx - lx) * k;
+        *y = ly + (cy - ly) * k;
+    } else if (toss < PT_IN) {
+        /* Up past the cloud and down into it. */
+        float k = (toss - PT_THROW) / (PT_IN - PT_THROW), m = 1 - k;
+        float qx = cx + 8.0f, qy = -5.0f;
+        *x = m * m * cx + 2 * m * k * qx + k * k * ix;
+        *y = m * m * cy + 2 * m * k * qy + k * k * iy;
+    } else {
+        *x = ix;
+        *y = iy;
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * What Muse says he's at work on (MUSE_ACT_NEWS .. MUSE_ACT_RESPOND): a prop
+ * each, mostly on his right, clear of the top (the clock) and the bottom
+ * rows (the captions). Each pops in, loops, and goes in a puff (s_work).
+ * ------------------------------------------------------------------------- */
+
+#define WORK_FIRST MUSE_ACT_NEWS
+
+/* In PSRAM, as all the acts' since: internal RAM is short. */
+EXT_RAM_BSS_ATTR static struct {
+    float side;         /* eased: how far to the left he stands, for a prop */
+    bool tossed;        /* MUSE_ACT_CLOUD: the cloud's up already, the canvas tossed into it */
+    muse_act_t last;    /* last frame's act */
+    float gone_t;       /* when its prop went (-1 none), */
+    float gone_x, gone_y;   /* and where it was */
+} s_work;
+
+/* How far to his left he stands for each, to give its prop room. */
+static const int8_t WORK_SIDE[MUSE_ACT_COUNT - WORK_FIRST] = {
+    [MUSE_ACT_NEWS - WORK_FIRST] = 0,     [MUSE_ACT_CALENDAR - WORK_FIRST] = 6, [MUSE_ACT_REMINDER - WORK_FIRST] = 5,
+    [MUSE_ACT_MAIL - WORK_FIRST] = 6,     [MUSE_ACT_CALC - WORK_FIRST] = 2,     [MUSE_ACT_TOOLS - WORK_FIRST] = 6,
+    [MUSE_ACT_WEATHER - WORK_FIRST] = 5,  [MUSE_ACT_MAP - WORK_FIRST] = 0,      [MUSE_ACT_MUSIC - WORK_FIRST] = 0,
+    [MUSE_ACT_WRITE - WORK_FIRST] = 0,    [MUSE_ACT_MEMORY - WORK_FIRST] = 6,   [MUSE_ACT_RESPOND - WORK_FIRST] = 0,
+};
+
+typedef struct {
+    muse_act_t a;
+    float at, t, ap;        /* act_t, the time, act_progress */
+    const avatar_t *j;
+    float slx, srx, shy;    /* the shoulders */
+    float ex, ey, edx;      /* his right eye's middle; the left's is 2 * edx to the left */
+} work_t;
+
+/* 0..1 through [a, b) of x. */
+static float seg(float x, float a, float b)
+{
+    return clampf((x - a) / (b - a), 0, 1);
+}
+
+static float smooth(float k)
+{
+    return k * k * (3 - 2 * k);
+}
+
+/* The prop coming in: 0 to 1 with a pop, over the act's first moments. */
+static float pop_in(float at)
+{
+    return ease_pop(at / 0.3f);
+}
+
+/* A 3x5 glyph (GLYPHS' encoding) at (x, y), its pixels where bayer < `keep`. */
+static void draw_glyph(uint16_t g, int x, int y, uint8_t c, float keep)
+{
+    for (int r = 0; r < 5; r++) {
+        int bits = (g >> (3 * (4 - r))) & 7;
+        for (int k = 0; k < 3; k++) {
+            if ((bits & (4 >> k)) && bayer(x + k, y + r) < keep) {
+                px(x + k, y + r, c);
+            }
+        }
+    }
+}
+
+/* Fills [x0, x1] x [y0, y1], outlined in C_OUT unless `edge` is C_BG. */
+static void box_fill(int x0, int y0, int x1, int y1, uint8_t fill, uint8_t edge)
+{
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            bool e = x == x0 || x == x1 || y == y0 || y == y1;
+            if (e && edge == C_BG) {
+                continue;
+            }
+            px(x, y, e ? edge : fill);
+        }
+    }
+}
+
+/* A sheet of paper (NEWS, MAP, the letter): the page, its top left at (x0, y0). */
+static void draw_newspaper(int x0, int y0, int w, int h, float flip)
+{
+    box_fill(x0, y0, x0 + w - 1, y0 + h - 1, C_MUG, C_OUT);
+    int mid = x0 + w / 2;
+    for (int x = x0 + 2; x < x0 + w - 2; x++) {
+        if (x != mid) {
+            px(x, y0 + 2, C_OUT2);   /* the masthead */
+        }
+    }
+    for (int x = x0 + 2; x < mid - 1; x++) {
+        px(x, y0 + 4, C_OUT);        /* the headline */
+    }
+    box_fill(x0 + 2, y0 + 6, x0 + 6, y0 + 10, C_PICSKY, C_BG);   /* a picture */
+    px(x0 + 3, y0 + 9, C_PICHILL);
+    px(x0 + 4, y0 + 9, C_PICHILL);
+    px(x0 + 5, y0 + 8, C_PICSUN);
+    for (int y = y0 + 6; y < y0 + h - 1; y += 2) {
+        for (int x = x0 + 2; x < x0 + w - 2; x++) {
+            bool pic = x <= x0 + 6 && y <= y0 + 10;
+            if (!pic && x != mid && x != mid - 1 && (x * 7 + y * 3) % 11 != 0) {
+                px(x, y, C_MUGD);   /* the columns */
+            }
+        }
+    }
+    for (int y = y0 + 1; y < y0 + h - 1; y++) {
+        px(mid, y, C_MUGD);   /* the fold */
+    }
+    if (flip > 0) {
+        /* The right-hand page turning over to the left. */
+        float c = cosf(flip * 3.1416f);
+        int pw = iround(fabsf(c) * (w / 2 - 1));
+        int a = c > 0 ? mid + 1 : mid - pw, b = c > 0 ? mid + pw : mid - 1;
+        for (int y = y0; y < y0 + h; y++) {
+            for (int x = a; x <= b; x++) {
+                bool e = y == y0 || y == y0 + h - 1 || x == (c > 0 ? b : a);
+                px(x, y, e ? C_OUT : (y - y0) % 2 ? C_MUG : C_MUGD);
+            }
+        }
+    }
+}
+
+/* The map: panels folded between, land, a river, a dashed red way to an X; upside down when `turned`. */
+static void draw_map(int x0, int y0, int w, int h, bool turned)
+{
+    box_fill(x0, y0, x0 + w - 1, y0 + h - 1, C_TAPE, C_OUT);
+    for (int y = y0 + 1; y < y0 + h - 1; y++) {
+        for (int x = x0 + 1; x < x0 + w - 1; x++) {
+            int u = turned ? x0 + w - 1 - x + x0 : x, v = turned ? y0 + h - 1 - y + y0 : y;   /* where on the map */
+            int mx = u - x0, my = v - y0;
+            uint8_t c = C_TAPE;
+            if ((mx - 6) * (mx - 6) + (my - 4) * (my - 4) * 2 < 14 || (mx - 19) * (mx - 19) + (my - 9) * (my - 9) * 2 < 18) {
+                c = C_PICHILL;   /* land */
+            }
+            if (my == 7 + iround(sinf(mx * 0.5f) * 2.0f)) {
+                c = C_PICSKY;    /* a river */
+            }
+            if ((mx % 7) == 0) {
+                c = c == C_TAPE ? C_BOXL : c;   /* the folds */
+            }
+            int ry = 10 - mx * 7 / (w - 4);
+            if (mx > 2 && mx < w - 5 && my == ry && (mx / 2) % 2 == 0) {
+                c = C_HEART;   /* the way */
+            }
+            px(x, y, c);
+        }
+    }
+    /* The X, where it's going. */
+    int xx = turned ? x0 + 4 : x0 + w - 5, xy = turned ? y0 + h - 5 : y0 + 2;
+    px(xx, xy, C_HEART);
+    px(xx + 2, xy, C_HEART);
+    px(xx + 1, xy + 1, C_HEART);
+    px(xx, xy + 2, C_HEART);
+    px(xx + 2, xy + 2, C_HEART);
+}
+
+/* A sticky note, its top left at (x, y), with `lines` 0..1 of writing; crossed out 0..1. */
+static void draw_sticky(int x, int y, float lines, float crossed)
+{
+    box_fill(x, y, x + 8, y + 8, C_BOLTL, C_OUT);
+    for (int c = 1; c < 8; c++) {
+        px(x + c, y + 1, C_BOLT);   /* the sticky band */
+    }
+    for (int l = 0; l < 3; l++) {
+        float k = clampf(lines * 3.0f - l, 0, 1);
+        int n = iround(k * (l == 2 ? 4 : 6));
+        for (int c = 0; c < n; c++) {
+            px(x + 1 + c, y + 3 + l * 2 - ((c + l) % 3 == 0), C_OUT2);   /* scribble */
+        }
+    }
+    int n = iround(crossed * 14);
+    for (int i = 0; i < n; i++) {
+        int k = i < 7 ? i : i - 7;
+        px(x + 1 + k, i < 7 ? y + 1 + k : y + 7 - k, C_HEART);
+    }
+}
+
+/* An envelope, its top left at (x, y): 9 x 6, a stamp; its flap up, `open`. */
+static void draw_envelope(int x, int y, bool open)
+{
+    box_fill(x, y, x + 8, y + 5, C_WHITE, C_OUT);
+    if (open) {
+        static const char *const FLAP[] = { "...#...", "..#o#..", ".#ooo#.", "#ooooo#" };
+        stamp(FLAP, 4, x + 1, y - 4, C_OUT, C_WHITE);
+        px(x + 4, y - 2, C_HEART);   /* a heart peeking out */
+    } else {
+        for (int c = 1; c < 8; c++) {
+            px(x + c, y + 1 + (c < 4 ? c - 1 : 7 - c) / 1, C_MUGD);   /* the flap's V */
+        }
+    }
+    px(x + 6, y + 1, C_HEART);
+    px(x + 7, y + 1, C_HEART);
+}
+
+/* Little round glasses over his eyes. */
+static void draw_glasses(const work_t *w)
+{
+    for (int e = 0; e < 2; e++) {
+        int cx = iround(w->ex - e * 2 * w->edx), cy = iround(w->ey) + 1;
+        static const char *const RIM[] = { ".####.", "#....#", "#....#", "#....#", ".####." };
+        stamp(RIM, 5, cx - 3, cy - 3, C_OUT, C_OUT);
+        px(cx + 1, cy - 2, C_WHITE);   /* a glint */
+    }
+    for (int x = iround(w->ex - 2 * w->edx) + 3; x <= iround(w->ex) - 3; x++) {
+        px(x, iround(w->ey) - 1, C_OUT);   /* the bridge */
+    }
+}
+
+/* A musical note, its head's left at (x, y). */
+static void draw_note(int x, int y, uint8_t c, bool two)
+{
+    static const char *const SINGLE[] = { "..##", "..#.#", "..#..", "###..", "##..." };
+    static const char *const PAIR[] = { "..#####", "..#...#", "..#...#", "###.###", "##..##." };
+    stamp(two ? PAIR : SINGLE, 5, x, y - 4, c, c);
+}
+
+/* Where, about where, it looks (s_look_*), before he's placed. */
+static void work_look(muse_act_t a, float at, float ap, float *lx, float *ly)
+{
+    float k;
+    switch (a) {
+    case MUSE_ACT_NEWS:
+        k = fmodf(at, 3.6f);
+        *lx = k < 2.9f ? -0.8f + 1.6f * fracf(k / 1.45f) : 0.8f;   /* along the lines */
+        *ly = 0.7f;
+        break;
+    case MUSE_ACT_CALENDAR:
+        *lx = 1.0f;
+        *ly = -0.2f;
+        break;
+    case MUSE_ACT_REMINDER:
+        k = fmodf(at, ap >= 1 ? 3.0f : 4.0f);
+        *lx = ap >= 1 ? (k < 1.8f ? 1.0f : 1.0f) : k < 2.2f ? 0.3f : 1.0f;
+        *ly = ap >= 1 ? (k < 1.5f ? -0.2f : -0.5f) : k < 2.2f ? 0.8f : -0.4f;
+        break;
+    case MUSE_ACT_MAIL:
+        k = fmodf(at, 4.4f);
+        *lx = k < 0.9f ? 0.9f : k < 1.8f ? 0.6f : -0.6f + 1.2f * fracf((k - 1.8f) / 0.65f);
+        *ly = k < 0.9f ? 0.9f : k < 1.8f ? 0.0f : 0.6f;
+        break;
+    case MUSE_ACT_CALC:
+        *lx = 0.4f;
+        *ly = 0.9f;
+        break;
+    case MUSE_ACT_TOOLS:
+        k = fmodf(at, 3.8f);
+        *lx = k < 2.2f ? 1.0f : 0.9f;
+        *ly = k < 2.2f ? 0.9f : -0.6f;
+        break;
+    case MUSE_ACT_WEATHER:
+        *lx = 0.8f;
+        *ly = -1.0f;
+        break;
+    case MUSE_ACT_MAP:
+        *lx = sinf(at * 1.3f) * 0.6f;
+        *ly = 0.8f;
+        break;
+    case MUSE_ACT_MEMORY:
+        k = fmodf(at, 3.4f);
+        *lx = k < 1.2f ? 0.7f : 1.0f;
+        *ly = k < 1.2f ? -1.0f : 0.5f;
+        break;
+    case MUSE_ACT_WRITE:
+        *lx = sinf(at * 2.0f) * 0.3f;
+        *ly = 0.8f;
+        break;
+    default:
+        *lx = 0;
+        *ly = 0;
+        break;
+    }
+}
+
+/* How he bobs and leans at it. */
+static void work_body(muse_act_t a, float at, float t, float *bob, float *lean, float *hop)
+{
+    *bob = sinf(t * 2.4f) * 0.5f;
+    *lean = 0;
+    switch (a) {
+    case MUSE_ACT_MUSIC: {
+        float beat = fracf(at / 0.5f);
+        *bob = -fabsf(sinf(beat * 3.1416f)) * 1.6f + 0.8f;   /* on the beat */
+        *lean = sinf(at * 3.1416f) * 1.6f;
+        break;
+    }
+    case MUSE_ACT_MAP: {
+        float k = fmodf(at, 4.0f);
+        *lean = k < 3.2f ? -1.0f : 1.0f;   /* his head on one side, then the other */
+        break;
+    }
+    case MUSE_ACT_WRITE:
+        *bob = sinf(t * 9.0f) * 0.3f;
+        break;
+    case MUSE_ACT_RESPOND:
+        *hop += sinf(clampf(at / 0.35f, 0, 1) * 3.1416f) * 2.0f;   /* turning to us with a hop */
+        break;
+    default:
+        break;
+    }
+}
+
+/* His arms for it. */
+static void work_arms(const work_t *w, limb_t arms[2])
+{
+    const avatar_t *j = w->j;
+    float at = w->at, t = w->t, k;
+    limb_t hip_l = arm_to(w->slx, w->shy, j->cx - 17.0f, j->cy + 6.0f);
+    limb_t hip_r = arm_to(w->srx, w->shy, j->cx + 17.0f, j->cy + 6.0f);
+    switch (w->a) {
+    case MUSE_ACT_NEWS:
+    case MUSE_ACT_MAP: {
+        bool news = w->a == MUSE_ACT_NEWS;
+        float hw = news ? 12.0f : 13.0f, y = w->ey + (news ? 9.0f : 13.0f);
+        float rustle = news ? sinf(t * 5.0f) * 0.5f : 0.0f;
+        arms[0] = arm_to(w->slx, w->shy, j->cx - hw - 1.0f, y + rustle);
+        arms[1] = arm_to(w->srx, w->shy, j->cx + hw + 0.5f, y - rustle);
+        break;
+    }
+    case MUSE_ACT_CALENDAR:
+        k = fmodf(at, 1.6f);
+        arms[0] = hip_l;
+        arms[1] = k < 1.15f ? arm_to(w->srx, w->shy, 47.0f, 31.0f)
+                            : arm_to(w->srx, w->shy, 50.0f, 31.0f - smooth(seg(k, 1.15f, 1.5f)) * 12.0f);
+        break;
+    case MUSE_ACT_REMINDER:
+        if (w->ap >= 1) {
+            k = fmodf(at, 3.0f);
+            arms[0] = hip_l;
+            arms[1] = k < 1.0f ? arm_to(w->srx, w->shy, 48.0f + seg(k, 0.1f, 1.0f) * 6.0f, 28.0f)
+                    : k < 1.5f ? arm_to(w->srx, w->shy, 50.0f, 27.0f)
+                    : k < 1.8f ? arm_to(w->srx, w->shy, 45.0f, 30.0f)
+                    : k < 2.2f ? arm_to(w->srx, w->shy, j->cx + 18.0f, j->cy - 12.0f)   /* the toss */
+                    : hip_r;
+        } else {
+            k = fmodf(at, 4.0f);
+            float sx = j->cx + 2.0f, sy = j->cy + 1.0f;   /* the note held up, writing on it */
+            arms[0] = arm_to(w->slx, w->shy, sx, sy + 4.0f);
+            if (k < 2.2f) {
+                float wx = sx + 2.0f + fracf(k * 1.4f) * 5.0f, wy = sy + 3.0f + (int)(k * 1.4f) % 3 * 2;
+                arms[1] = arm_to(w->srx, w->shy, wx + 3.0f, wy + 3.0f);
+            } else if (k < 2.6f) {
+                arms[1] = arm_to(w->srx, w->shy, 47.0f, 22.0f);   /* slap */
+            } else {
+                arms[1] = hip_r;
+            }
+            if (k >= 2.2f) {
+                arms[0] = hip_l;
+            }
+        }
+        break;
+    case MUSE_ACT_MAIL:
+        k = fmodf(at, 4.4f);
+        if (k < 0.9f) {
+            arms[0] = hip_l;
+            arms[1] = arm_to(w->srx, w->shy, 49.0f + sinf(t * 14.0f), 45.0f);   /* rummaging */
+        } else if (k < 1.8f) {
+            float e = smooth(seg(k, 0.9f, 1.4f));
+            arms[0] = hip_l;
+            arms[1] = arm_to(w->srx, w->shy, 49.0f + (j->cx + 12.0f - 49.0f) * e, 45.0f + (j->cy - 1.0f - 45.0f) * e);
+        } else if (k < 4.0f) {
+            arms[0] = arm_to(w->slx, w->shy, j->cx - 7.0f, j->cy + 3.0f);   /* the letter in both paws */
+            arms[1] = arm_to(w->srx, w->shy, j->cx + 7.0f, j->cy + 3.0f);
+        } else {
+            arms[0] = hip_l;
+            arms[1] = hip_r;
+        }
+        break;
+    case MUSE_ACT_CALC: {
+        float cx = j->cx + 5.0f, cy = j->cy + 1.0f;   /* the calculator's top middle */
+        arms[0] = arm_to(w->slx, w->shy, cx - 5.0f, cy + 8.0f);
+        int key = (int)(at / 0.28f);
+        float press = fracf(at / 0.28f) < 0.4f ? 1.0f : 0.0f;
+        int kx = (int)((uint32_t)key * 2654435761u >> 28) % 3, ky = (int)((uint32_t)key * 40503u >> 7) % 3;
+        arms[1] = arm_to(w->srx, w->shy, cx - 2.0f + kx * 3.0f + 3.0f, cy + 6.0f + ky * 2.0f + 3.0f + press);
+        break;
+    }
+    case MUSE_ACT_TOOLS:
+        k = fmodf(at, 3.8f);
+        arms[0] = hip_l;
+        arms[1] = k < 1.6f ? arm_to(w->srx, w->shy, 48.0f + sinf(t * 12.0f) * 1.5f, 46.0f)
+                : k < 2.2f ? arm_to(w->srx, w->shy, 48.0f, 46.0f - smooth(seg(k, 1.6f, 2.2f)) * 22.0f)
+                : k < 3.3f ? arm_to(w->srx, w->shy, 47.0f, 24.0f)
+                : arm_to(w->srx, w->shy, 48.0f, 24.0f + smooth(seg(k, 3.3f, 3.8f)) * 22.0f);
+        if (k >= 2.2f && k < 3.3f) {
+            arms[0] = arm_to(w->slx, w->shy, j->cx - 16.0f, j->cy - 6.0f);   /* ta-da */
+        }
+        break;
+    case MUSE_ACT_WEATHER:
+        arms[0] = hip_l;
+        arms[1] = arm_to(w->srx, w->shy, 45.0f, 37.0f);   /* the umbrella's handle */
+        break;
+    case MUSE_ACT_MUSIC: {
+        float beat = fabsf(sinf(at / 0.5f * 3.1416f));
+        arms[0] = arm_to(w->slx, w->shy, j->cx - 16.0f, j->cy - 5.0f + beat * 4.0f);
+        arms[1] = arm_to(w->srx, w->shy, j->cx + 16.0f, j->cy - 1.0f - beat * 4.0f);
+        break;
+    }
+    case MUSE_ACT_WRITE: {
+        float tl = fracf(at / 0.24f) < 0.5f ? 1.0f : 0.0f;
+        arms[0] = arm_to(w->slx, w->shy, j->cx - 6.0f, j->cy + 9.0f + tl);
+        arms[1] = arm_to(w->srx, w->shy, j->cx + 6.0f, j->cy + 10.0f - tl);
+        break;
+    }
+    case MUSE_ACT_MEMORY:
+        k = fmodf(at, 3.4f);
+        arms[0] = hip_l;
+        arms[1] = k < 1.2f ? (limb_t){ j->cx + 7.5f, j->fy + j->fb + 3.5f, -1.1f }   /* a paw to his chin */
+                : arm_to(w->srx, w->shy, 46.0f, 38.0f);                              /* opening the drawer */
+        break;
+    case MUSE_ACT_RESPOND:
+        arms[0] = arm_to(w->slx, w->shy, j->cx - 4.0f, j->cy + 4.0f);   /* paws together */
+        arms[1] = arm_to(w->srx, w->shy, j->cx + 4.0f, j->cy + 4.0f);
+        break;
+    default:
+        break;
+    }
+}
+
+/* His face at it. */
+static void work_face(const work_t *w, float blink, eye_style_t *style, mouth_t *mouth, float *open, int *brows)
+{
+    float at = w->at, k;
+    *style = EYES_NORMAL;
+    *mouth = MOUTH_SMILE;
+    *open = 1.0f - blink;
+    *brows = 0;
+    switch (w->a) {
+    case MUSE_ACT_NEWS:
+        k = fmodf(at, 3.6f);
+        if (k >= 1.8f && k < 2.4f) {
+            *style = EYES_WIDE;   /* well! */
+            *brows = 2;
+        }
+        break;
+    case MUSE_ACT_CALENDAR:
+        *brows = 2;
+        break;
+    case MUSE_ACT_REMINDER:
+        k = fmodf(at, w->ap >= 1 ? 3.0f : 4.0f);
+        if (w->ap >= 1) {
+            *mouth = k < 1.5f ? MOUTH_HMM : MOUTH_GRIN;
+            *style = k >= 1.8f && k < 2.6f ? EYES_HAPPY : EYES_NORMAL;
+            *brows = k < 1.0f ? 3 : 0;
+        } else {
+            *mouth = k < 2.2f ? MOUTH_SMILE : MOUTH_GRIN;
+            *style = k >= 2.2f && k < 3.2f ? EYES_HAPPY : EYES_NORMAL;
+            *brows = k < 2.2f ? 1 : 0;
+        }
+        break;
+    case MUSE_ACT_MAIL:
+        k = fmodf(at, 4.4f);
+        *style = k >= 1.4f && k < 1.8f ? EYES_WIDE : EYES_NORMAL;
+        *mouth = k >= 1.4f && k < 1.8f ? MOUTH_O : MOUTH_SMILE;
+        *brows = k >= 1.8f ? 2 : 0;
+        break;
+    case MUSE_ACT_CALC:
+        *brows = 1;
+        *mouth = fracf(at / 1.6f) > 0.8f ? MOUTH_GRIN : MOUTH_HMM;
+        *style = fracf(at / 1.6f) > 0.8f ? EYES_HAPPY : EYES_NORMAL;
+        break;
+    case MUSE_ACT_TOOLS:
+        k = fmodf(at, 3.8f);
+        *style = k >= 2.2f && k < 3.3f ? EYES_HAPPY : EYES_NORMAL;
+        *mouth = k >= 2.2f && k < 3.3f ? MOUTH_GRIN : k < 1.6f ? MOUTH_HMM : MOUTH_O;
+        *brows = k < 1.6f ? 3 : 0;
+        break;
+    case MUSE_ACT_WEATHER:
+        k = fmodf(at, 6.0f);
+        *style = k >= 3.8f ? EYES_HAPPY : EYES_NORMAL;
+        *mouth = k >= 3.8f ? MOUTH_GRIN : MOUTH_O;
+        *brows = k >= 3.8f ? 0 : 2;
+        break;
+    case MUSE_ACT_MAP:
+        *mouth = MOUTH_HMM;
+        *brows = 1;
+        break;
+    case MUSE_ACT_MUSIC:
+        *style = EYES_HAPPY;
+        *mouth = fracf(at / 1.0f) < 0.5f ? MOUTH_O : MOUTH_SMILE;   /* la, la */
+        break;
+    case MUSE_ACT_WRITE:
+        *open = 0.85f * (1.0f - blink);
+        *brows = 1;
+        break;
+    case MUSE_ACT_MEMORY:
+        k = fmodf(at, 3.4f);
+        *style = k >= 2.2f && k < 3.0f ? EYES_HAPPY : EYES_NORMAL;
+        *mouth = k >= 2.2f && k < 3.0f ? MOUTH_GRIN : MOUTH_HMM;
+        *brows = k < 1.2f ? 1 : 0;
+        break;
+    case MUSE_ACT_RESPOND:
+        *style = EYES_WIDE;
+        *mouth = fracf(at / 1.2f) < 0.5f ? MOUTH_O : MOUTH_SMILE;   /* a breath in */
+        *brows = 2;
+        break;
+    default:
+        break;
+    }
+}
+
+/* The paw at the end of arm `a`. */
+static void work_paw(const work_t *w, const limb_t arms[2], int a)
+{
+    int hx, hy;
+    paw_of(&arms[a], a ? w->srx : w->slx, w->shy, &hx, &hy);
+    draw_paw(hx, hy);
+}
+
+/* Its props, over him; where they are, for the puff when they go (*ax, *ay). */
+static void work_draw(const work_t *w, const limb_t arms[2], float *ax, float *ay)
+{
+    const avatar_t *j = w->j;
+    float at = w->at, t = w->t, in = pop_in(at), k;
+    int drop = iround((1.0f - in) * 8.0f);   /* coming up into place */
+    *ax = 50;
+    *ay = 30;
+    switch (w->a) {
+    case MUSE_ACT_NEWS: {
+        k = fmodf(at, 3.6f);
+        int x0 = iround(j->cx) - 12, y0 = iround(w->ey) + 3 + drop;
+        draw_newspaper(x0, y0, 25, 15, k >= 2.9f ? seg(k, 2.9f, 3.5f) : 0.0f);
+        work_paw(w, arms, 0);
+        work_paw(w, arms, 1);
+        *ax = j->cx;
+        *ay = y0 + 7;
+        break;
+    }
+    case MUSE_ACT_CALENDAR: {
+        int x0 = 43, y0 = 16 + drop, page = (int)(at / 1.6f);
+        k = fmodf(at, 1.6f);
+        float flip = seg(k, 1.15f, 1.5f);
+        box_fill(x0, y0, x0 + 14, y0 + 17, C_WHITE, C_OUT);
+        box_fill(x0, y0, x0 + 14, y0 + 5, C_HEART, C_OUT);
+        for (int x = x0 + 4; x <= x0 + 10; x++) {
+            px(x, y0 + 3, C_WHITE);   /* the month */
+        }
+        int circled = (page * 5 + 3) % 12;
+        int under = flip >= 1.0f ? (page * 5 + 8) % 12 : circled;
+        for (int d = 0; d < 12; d++) {
+            int dx = x0 + 2 + (d % 4) * 3, dy = y0 + 8 + (d / 4) * 3;
+            px(dx, dy, C_MUGD);
+            px(dx + 1, dy, C_MUGD);
+            if (d == under) {
+                for (int r = -1; r <= 1; r++) {
+                    px(dx - 1, dy + r, C_HEART);
+                    px(dx + 2, dy + r, C_HEART);
+                }
+                px(dx, dy - 1, C_HEART);
+                px(dx + 1, dy - 1, C_HEART);
+                px(dx, dy + 1, C_HEART);
+                px(dx + 1, dy + 1, C_HEART);
+            }
+        }
+        if (flip > 0 && flip < 1) {
+            /* The page going over the top: its front shrinking up, then its back. */
+            if (flip < 0.5f) {
+                int h = iround((1.0f - flip * 2.0f) * 12.0f);
+                box_fill(x0, y0 + 5, x0 + 14, y0 + 5 + h, C_WHITE, C_OUT);
+            } else {
+                int h = iround((flip * 2.0f - 1.0f) * 9.0f);
+                box_fill(x0 + 1, y0 + 1 - h, x0 + 13, y0 + 1, C_MUG, C_OUT);
+                if (h > 3) {
+                    draw_sparkle(x0 + 15, y0 - h + 1, 0.6f, true);   /* flutter */
+                }
+            }
+        }
+        for (int r = 0; r < 2; r++) {
+            px(x0 + 3 + r * 8, y0 - 1, C_OUT2);   /* its rings */
+            px(x0 + 4 + r * 8, y0 - 1, C_OUT2);
+            px(x0 + 3 + r * 8, y0, C_BUBBLE);
+            px(x0 + 4 + r * 8, y0, C_BUBBLE);
+        }
+        work_paw(w, arms, 1);
+        *ax = x0 + 7;
+        *ay = y0 + 8;
+        break;
+    }
+    case MUSE_ACT_REMINDER: {
+        static const int8_t WALL[3][2] = { { 46, 15 }, { 54, 20 }, { 50, 29 } };
+        if (w->ap >= 1) {
+            /* Crossing one out, crumpling it, and away it goes. */
+            k = fmodf(at, 3.0f);
+            int x0 = 47, y0 = 22 + drop;
+            if (k < 1.5f) {
+                float cr = seg(k, 1.0f, 1.5f);
+                if (cr <= 0) {
+                    draw_sticky(x0, y0, 1.0f, seg(k, 0.1f, 1.0f));
+                } else {
+                    int r = iround(4.5f - cr * 2.0f);   /* screwed up into a ball */
+                    for (int y = -r; y <= r; y++) {
+                        for (int x = -r; x <= r; x++) {
+                            int d = x * x + y * y;
+                            if (d <= r * r) {
+                                px(x0 + 4 + x, y0 + 4 + y, d > (r - 1) * (r - 1) ? C_OUT : (x * 3 + y * 5) % 4 ? C_BOLTL : C_BOLTD);
+                            }
+                        }
+                    }
+                }
+            } else if (k < 2.6f) {
+                float f = seg(k, 1.8f, 2.6f);
+                if (k < 1.8f) {
+                    f = 0;
+                }
+                int bx = iround(45.0f + f * 22.0f), by = iround(26.0f - sinf(f * 3.1416f) * 14.0f + f * 6.0f);
+                for (int y = -2; y <= 2; y++) {
+                    for (int x = -2; x <= 2; x++) {
+                        if (x * x + y * y <= 5) {
+                            px(bx + x, by + y, x * x + y * y > 2 ? C_OUT : C_BOLTL);
+                        }
+                    }
+                }
+            } else {
+                draw_sparkle(x0 + 4, y0 + 4, 1.0f - seg(k, 2.6f, 3.0f), true);   /* gone */
+            }
+            if (k < 1.0f) {
+                /* The red pen, crossing. */
+                float c = seg(k, 0.1f, 1.0f);
+                int px0 = x0 + 1 + iround(fminf(c * 2.0f, 1.0f) * 6.0f) + (c > 0.5f ? 0 : 0);
+                int py0 = c < 0.5f ? y0 + 1 + iround(c * 12.0f) : y0 + 7 - iround((c - 0.5f) * 12.0f);
+                px(px0, py0, C_HEART);
+                px(px0 + 1, py0 + 1, C_HEART);
+                px(px0 + 2, py0 + 2, C_HEART);
+            }
+            work_paw(w, arms, 1);
+            *ax = x0 + 4;
+            *ay = y0 + 4;
+            break;
+        }
+        int n = (int)(at / 4.0f);
+        k = fmodf(at, 4.0f);
+        for (int i = 0; i < 3 && i < n % 4; i++) {
+            draw_sticky(WALL[i][0], WALL[i][1] + drop, 1.0f, 0);   /* up already */
+        }
+        if (n % 4 == 3 && k < 0.4f) {
+            for (int i = 0; i < 3; i++) {
+                draw_sparkle(WALL[i][0] + 4, WALL[i][1] + 4, 1.0f - k / 0.4f, true);   /* cleared off */
+            }
+        }
+        int slot = n % 4 < 3 ? n % 4 : 0;
+        float sx = j->cx + 2.0f, sy = j->cy + 1.0f;
+        if (k < 2.2f) {
+            int ny = iround(sy + (1.0f - ease_pop(k / 0.3f)) * 6.0f);
+            draw_sticky(iround(sx), ny, seg(k, 0.3f, 2.1f), 0);
+            work_paw(w, arms, 0);
+            /* The pencil, writing. */
+            int hx, hy;
+            paw_of(&arms[1], w->srx, w->shy, &hx, &hy);
+            for (int i = 0; i < 4; i++) {
+                px(hx - 1 - i, hy - 1 - i, i == 3 ? C_OUT : i == 0 ? C_HEART : C_BOLT);
+            }
+            draw_paw(hx, hy);
+        } else {
+            float f = smooth(seg(k, 2.2f, 2.5f));
+            float x = sx + (WALL[slot][0] - sx) * f, y = sy + (WALL[slot][1] - sy) * f;
+            draw_sticky(iround(x), iround(y), 1.0f, 0);
+            if (k >= 2.5f && k < 2.8f) {
+                draw_sparkle(iround(x) - 1, iround(y) - 1, 1.0f, true);   /* slap! */
+                draw_sparkle(iround(x) + 10, iround(y) + 9, 0.7f, true);
+            }
+            if (k < 2.6f) {
+                work_paw(w, arms, 1);
+            }
+        }
+        *ax = sx + 4;
+        *ay = sy + 4;
+        break;
+    }
+    case MUSE_ACT_MAIL: {
+        k = fmodf(at, 4.4f);
+        int bx = 42 + (k < 0.9f ? iround(sinf(t * 14.0f) * 0.6f) : 0), by = 43 + drop;
+        /* The bag's back, letters peeking out, his paw in it; then its front. */
+        box_fill(bx + 1, by - 1, bx + 14, by + 2, C_WOODD, C_OUT);
+        draw_envelope(bx + 2, by - 4, false);
+        draw_envelope(bx + 6, by - 3, false);
+        if (k < 0.9f) {
+            work_paw(w, arms, 1);
+        }
+        box_fill(bx, by, bx + 15, by + 13, C_WOOD, C_OUT);
+        box_fill(bx, by, bx + 15, by + 5, C_BOXD, C_OUT);   /* the flap */
+        box_fill(bx + 6, by + 4, bx + 9, by + 7, C_BOLT, C_OUT);   /* the buckle */
+        for (int i = 0; i < 6; i++) {
+            px(bx + 15 - i, by - 2 - i, C_WOODD);   /* the strap */
+        }
+        if (k >= 0.9f && k < 1.8f) {
+            int hx, hy;
+            paw_of(&arms[1], w->srx, w->shy, &hx, &hy);
+            draw_envelope(hx - 4, hy - 6, k >= 1.4f);
+            if (k >= 1.4f && k < 1.6f) {
+                draw_sparkle(hx, hy - 12, 1.0f, true);
+            }
+            draw_paw(hx, hy);
+        } else if (k >= 1.8f && k < 4.0f) {
+            int x0 = iround(j->cx) - 6, y0 = iround(j->cy) - 5;   /* the letter, read */
+            box_fill(x0, y0, x0 + 12, y0 + 11, C_WHITE, C_OUT);
+            for (int l = 0; l < 4; l++) {
+                for (int x = x0 + 2; x < x0 + (l == 3 ? 7 : 11); x++) {
+                    px(x, y0 + 2 + l * 2, C_MUGD);
+                }
+            }
+            px(x0 + 9, y0 + 8, C_HEART);
+            work_paw(w, arms, 0);
+            work_paw(w, arms, 1);
+        } else if (k >= 4.0f) {
+            draw_sparkle(iround(j->cx), iround(j->cy), 1.0f - seg(k, 4.0f, 4.4f), true);
+        }
+        draw_glasses(w);
+        *ax = bx + 8;
+        *ay = by + 6;
+        break;
+    }
+    case MUSE_ACT_CALC: {
+        int x0 = iround(j->cx) + 1, y0 = iround(j->cy) + 1 + drop;
+        box_fill(x0, y0, x0 + 9, y0 + 13, C_PHONE, C_OUT);
+        box_fill(x0 + 1, y0 + 1, x0 + 8, y0 + 4, C_PICHILL, C_BG);
+        int shown = (int)(at / 0.28f);
+        draw_glyph(GLYPHS[shown % 10], x0 + 5, y0 + 1, C_PICHILLD, 1.0f);   /* not quite: 4 rows show */
+        int key = shown;
+        int kx = (int)((uint32_t)key * 2654435761u >> 28) % 3, ky = (int)((uint32_t)key * 40503u >> 7) % 3;
+        bool press = fracf(at / 0.28f) < 0.4f;
+        for (int r = 0; r < 3; r++) {
+            for (int c = 0; c < 3; c++) {
+                uint8_t col = press && r == ky && c == kx ? C_ACC : r == 2 && c == 2 ? C_BOLT : C_BUBBLE;
+                px(x0 + 2 + c * 2 + c / 2, y0 + 7 + r * 2, col);
+            }
+        }
+        /* Sums flying up off it. */
+        static const uint16_t SYMS[4] = { 02720, 05250, 07070, 075717 };   /* + x = 9 */
+        for (int i = 0; i < 4; i++) {
+            float life = fracf(at / 1.4f + i * 0.25f);
+            int g = (int)(at / 1.4f + i * 0.25f) * 4 + i;
+            uint16_t glyph = g % 3 == 0 ? SYMS[g % 4] : GLYPHS[(g * 7) % 10];
+            int gx = iround(x0 + 9 + life * 10.0f + sinf(life * 6.0f + i) * 1.5f);
+            int gy = iround(y0 - 2 - life * 14.0f);
+            uint8_t c = i % 3 == 0 ? C_ACC : i % 3 == 1 ? C_PICSUN : C_PICSKYL;
+            draw_glyph(glyph, gx, gy, c, life < 0.6f ? 1.0f : (1.0f - life) / 0.4f);
+        }
+        work_paw(w, arms, 0);
+        work_paw(w, arms, 1);
+        *ax = x0 + 4;
+        *ay = y0 + 6;
+        break;
+    }
+    case MUSE_ACT_TOOLS: {
+        k = fmodf(at, 3.8f);
+        int bx = 41, by = 47 + drop;
+        box_fill(bx + 1, by - 2, bx + 15, by, C_OUT2, C_OUT);   /* the lid, open behind */
+        if (k < 1.6f) {
+            /* Bits jumping out as he rummages. */
+            for (int i = 0; i < 3; i++) {
+                float f = fracf(k * 1.3f + i * 0.33f);
+                int x = bx + 4 + i * 4, y = by - iround(sinf(f * 3.1416f) * 7.0f);
+                uint8_t c = i == 0 ? C_BUBBLE : i == 1 ? C_BOLT : C_BUBBLED;
+                px(x, y, c);
+                px(x + 1, y, c);
+                px(x, y - 1, i == 1 ? C_BUBBLE : c);
+            }
+            work_paw(w, arms, 1);
+        }
+        box_fill(bx, by, bx + 16, by + 10, C_OFFLINE, C_OUT);
+        for (int x = bx + 1; x < bx + 16; x++) {
+            px(x, by + 1, C_BOLTL);   /* its rim */
+            px(x, by + 9, C_BOXD);
+        }
+        box_fill(bx + 6, by + 4, bx + 10, by + 6, C_BUBBLE, C_OUT);   /* the catch */
+        if (k >= 1.6f) {
+            for (int x = bx + 5; x <= bx + 11; x++) {
+                px(x, by - 3, C_OUT);   /* its handle, folded up */
+            }
+            px(bx + 5, by - 2, C_OUT);
+            px(bx + 11, by - 2, C_OUT);
+        }
+        if (k >= 1.6f && k < 3.8f) {
+            /* The wrench, up. */
+            int hx, hy;
+            paw_of(&arms[1], w->srx, w->shy, &hx, &hy);
+            static const char *const WRENCH[] = {
+                ".##.##....",
+                "#oo#oo#...",
+                "#oo#oo#...",
+                "#ooooo#...",
+                ".#ooo#....",
+                "..#oo#....",
+                "...#oo#...",
+                "....#oo#..",
+                ".....#oo#.",
+                "......##..",
+            };
+            stamp(WRENCH, 10, hx - 6, hy - 8, C_OUT, C_BUBBLE);
+            if (k >= 2.2f && k < 3.3f && fracf(t * 1.5f) < 0.5f) {
+                draw_sparkle(hx - 7, hy - 9, 1.0f, true);   /* a glint */
+            }
+            draw_paw(hx, hy);
+        }
+        *ax = bx + 8;
+        *ay = by + 5;
+        break;
+    }
+    case MUSE_ACT_WEATHER: {
+        k = fmodf(at, 6.0f);
+        float sun = smooth(seg(k, 3.8f, 4.3f)) * (1.0f - smooth(seg(k, 5.5f, 6.0f)));
+        int cx = 51 - iround(sun * 6.0f), cy = 9 + drop;
+        /* The sun, behind; out, its rays turning. */
+        int sx = 55, sy = 11 + drop;
+        if (sun > 0.1f) {
+            for (int r = 0; r < 8; r++) {
+                float a = r * 0.785f + t * 1.5f;
+                px(iround(sx + cosf(a) * 5.0f), iround(sy + sinf(a) * 5.0f), C_BOLTL);
+            }
+        }
+        for (int y = -3; y <= 3; y++) {
+            for (int x = -3; x <= 3; x++) {
+                int d = x * x + y * y;
+                if (d <= 10) {
+                    px(sx + x, sy + y, d > 6 ? C_BOLTD : d < 3 && x < 0 ? C_BOLTL : C_BOLT);
+                }
+            }
+        }
+        static const char *const RAIN[] = {
+            ".....####.......",
+            "...##oooo##.....",
+            "..#oooooooo###..",
+            ".#oooooooooooo#.",
+            "#oooooooooooooo#",
+            "#oooooooooooooo#",
+            ".##############.",
+        };
+        uint8_t body = sun > 0.5f ? C_BUBBLE : C_BUBBLED;
+        stamp(RAIN, 7, cx - 8, cy - 2, C_OUT2, body);
+        if (sun < 0.3f) {
+            /* Rain, onto the umbrella. */
+            for (int i = 0; i < 6; i++) {
+                float f = fracf(t * 1.8f + i * 0.37f);
+                int x = cx - 6 + i * 2 + (i > 2), y = cy + 5 + iround(f * 7.0f);
+                px(x, y, C_PICSKY);
+                px(x, y + 1, C_PICSKYL);
+            }
+        }
+        /* The umbrella, its handle in his paw. */
+        int hx, hy;
+        paw_of(&arms[1], w->srx, w->shy, &hx, &hy);
+        int ux = hx + 1, uy = hy - 14;
+        for (int y = uy; y <= hy; y++) {
+            px(ux, y, C_OUT);
+        }
+        px(ux - 1, hy + 1, C_OUT);
+        px(ux - 2, hy, C_OUT);
+        static const char *const CANOPY[] = {
+            "........###........",
+            ".....###lll###.....",
+            "...##llloooooo##...",
+            "..#lloooooooooooo#.",
+            ".#looooooooooooooo#",
+            "#ooooooooooooooooo#",
+            "#o##o##o##o##o##o##",
+            ".#..#..#..#..#..#..",
+        };
+        const uint8_t cols[] = { C_OUT, C_QUILT, C_QUILTL };
+        stamp_c(CANOPY, 8, ux - 9, uy - 3, "#ol", cols);
+        if (sun < 0.3f && fracf(t * 3.6f) < 0.5f) {
+            px(ux - 10, uy + 3, C_PICSKYL);   /* splashes off it */
+            px(ux + 10, uy + 2, C_PICSKYL);
+        }
+        draw_paw(hx, hy);
+        *ax = ux;
+        *ay = uy;
+        break;
+    }
+    case MUSE_ACT_MAP: {
+        k = fmodf(at, 4.0f);
+        float open = smooth(seg(at, 0.0f, 0.5f));   /* unfolding */
+        float turn = seg(k, 3.2f, 4.0f);
+        int turned = ((int)(at / 4.0f) % 2) ^ (turn >= 0.5f);
+        int w0 = iround(8.0f + open * 19.0f);
+        int h = iround(15.0f * fmaxf(0.15f, fabsf(cosf(turn * 3.1416f))));
+        int x0 = iround(j->cx) - w0 / 2, y0 = iround(w->ey) + 6 + (15 - h) / 2;
+        draw_map(x0, y0, w0, h, turned);
+        work_paw(w, arms, 0);
+        work_paw(w, arms, 1);
+        if (fracf(at / 4.0f) > 0.55f && fracf(at / 4.0f) < 0.8f) {
+            static const char *const WHAT[] = { "###", "..#", ".##", "...", ".#." };
+            stamp(WHAT, 5, iround(j->cx + 14), iround(j->cy - j->b) + 2, C_ACC, C_ACC);   /* ? */
+        }
+        *ax = j->cx;
+        *ay = y0 + 7;
+        break;
+    }
+    case MUSE_ACT_MUSIC: {
+        /* Headphones: the band over the hood, a cup each side. */
+        float top = j->cy - j->b, cupy = w->ey;
+        float half = j->a - 1.0f;
+        for (int i = 0; i <= 24; i++) {
+            float a = i / 24.0f * 3.1416f;
+            int x = iround(j->cx + cosf(a) * half), y = iround(cupy - sinf(a) * (cupy - top + 1.0f));
+            px(x, y, C_PHONE);
+            px(x, y - 1, C_OUT);
+        }
+        for (int s = -1; s <= 1; s += 2) {
+            int cx = iround(j->cx + s * half);
+            box_fill(cx - 2, iround(cupy) - 3, cx + 2, iround(cupy) + 3, C_PHONE, C_OUT);
+            px(cx - s, iround(cupy) - 1, C_HEART);
+            px(cx - s, iround(cupy), C_HEART);
+            px(cx - s, iround(cupy) + 1, C_HEART);
+        }
+        for (int i = 0; i < 3; i++) {
+            float f = fracf(at * 0.45f + i / 3.0f);
+            int x = iround(j->cx + half + 2 + f * 12.0f + sinf(f * 9.0f + i) * 2.0f);
+            int y = iround(cupy - 2 - f * 12.0f);
+            if (f < 0.85f || bayer(x, y) < 0.5f) {
+                draw_note(x, y, i == 0 ? C_ACC : i == 1 ? C_HEART : C_PICSKY, i == 1);
+            }
+        }
+        *ax = j->cx;
+        *ay = top;
+        break;
+    }
+    case MUSE_ACT_WRITE: {
+        int x0 = iround(j->cx) - 8, y0 = iround(j->cy) - 1 + drop;
+        box_fill(x0, y0, x0 + 16, y0 + 10, C_PHONE, C_OUT);
+        box_fill(x0 + 1, y0 + 1, x0 + 15, y0 + 9, C_WHITE, C_BG);
+        int typed = (int)(at / 0.12f);
+        int lines = typed / 12, first = lines > 3 ? lines - 3 : 0;   /* scrolling */
+        for (int l = 0; l < 4; l++) {
+            int line = first + l;
+            if (line > lines) {
+                continue;
+            }
+            int n = line < lines ? 11 - (line * 5) % 4 : typed % 12;
+            for (int c = 0; c < n && c < 13; c++) {
+                if ((c + line) % 5 != 3) {
+                    px(x0 + 2 + c, y0 + 2 + l * 2, line % 3 == 0 ? C_PICSKY : C_OUT2);
+                }
+            }
+            if (line == lines && fracf(t * 2.0f) < 0.6f) {
+                px(x0 + 2 + n, y0 + 2 + l * 2, C_ACC);   /* the cursor */
+            }
+        }
+        /* The keyboard, under it. */
+        for (int r = 0; r < 3; r++) {
+            for (int x = x0 - 1 - r; x <= x0 + 17 + r; x++) {
+                bool e = x == x0 - 1 - r || x == x0 + 17 + r || r == 2;
+                px(x, y0 + 11 + r, e ? C_OUT : (x + r) % 2 ? C_BUBBLE : C_BUBBLED);
+            }
+        }
+        work_paw(w, arms, 0);
+        work_paw(w, arms, 1);
+        if (fracf(at / 0.24f) < 0.15f) {
+            int hx, hy;
+            paw_of(&arms[(int)(at / 0.12f) % 2], (int)(at / 0.12f) % 2 ? w->srx : w->slx, w->shy, &hx, &hy);
+            px(hx + 2, hy - 3, C_WHITE);   /* clack */
+            px(hx - 2, hy - 3, C_WHITE);
+        }
+        *ax = x0 + 8;
+        *ay = y0 + 6;
+        break;
+    }
+    case MUSE_ACT_MEMORY: {
+        k = fmodf(at, 3.4f);
+        int fx = 44, fy = 34 + drop;
+        float openk = smooth(seg(k, 1.2f, 1.5f)) * (1.0f - smooth(seg(k, 2.2f, 2.5f)));
+        int out = iround(openk * 4.0f);
+        box_fill(fx, fy, fx + 13, fy + 23, C_BUBBLED, C_OUT);
+        for (int d = 0; d < 3; d++) {
+            int dy = fy + 1 + d * 7, dx = d == 0 ? fx - out : fx;
+            if (d == 0 && out) {
+                box_fill(fx, dy, fx + 12, dy + 6, C_OUT, C_BG);   /* its inside */
+            }
+            box_fill(dx, dy, dx + 13, dy + 7, C_BUBBLE, C_OUT);
+            for (int x = dx + 5; x <= dx + 8; x++) {
+                px(x, dy + 3, C_OUT2);   /* the handle */
+            }
+            px(dx + 6, dy + 5, C_WHITE);   /* a label */
+            px(dx + 7, dy + 5, C_WHITE);
+        }
+        /* A thought, rising off him, then filed. */
+        int tx = 42, ty = 12 + drop;
+        float bub = k < 1.3f ? 1.0f : 0.0f;
+        if (bub > 0) {
+            px(iround(j->cx + 12), iround(j->cy - j->b) + 10, C_BUBBLE);
+            box_fill(iround(j->cx + 13), iround(j->cy - j->b) + 7, iround(j->cx + 14), iround(j->cy - j->b) + 8, C_BUBBLE, C_BG);
+            static const char *const BUB[] = { "..######..", ".#oooooo#.", "#oooooooo#", "#oooooooo#", ".#oooooo#.", "..######.." };
+            stamp(BUB, 6, tx, ty, C_BUBBLED, C_BUBBLE);
+        }
+        float fly = seg(k, 1.3f, 2.1f);
+        float cx = tx + 2 + (fx - 1 - tx - 2) * fly, cy = ty + 1 + (fy + 2 - ty - 1) * smooth(fly);
+        if (k < 2.1f) {
+            box_fill(iround(cx), iround(cy), iround(cx) + 5, iround(cy) + 3, C_WHITE, C_OUT);
+            px(iround(cx) + 1, iround(cy) + 2, C_MUGD);
+            px(iround(cx) + 2, iround(cy) + 2, C_MUGD);
+            px(iround(cx) + 3, iround(cy) + 2, C_MUGD);
+        }
+        if (k >= 2.5f && k < 2.9f) {
+            draw_sparkle(fx + 13, fy + 2, 1.0f, true);   /* click */
+        }
+        if (k >= 1.2f) {
+            work_paw(w, arms, 1);
+        }
+        *ax = fx + 6;
+        *ay = fy + 10;
+        break;
+    }
+    case MUSE_ACT_RESPOND:
+        draw_typing(iround(j->fx + 9.0f), iround(j->cy - j->b) + 1, t);
+        work_paw(w, arms, 0);
+        work_paw(w, arms, 1);
+        *ax = j->fx + 14;
+        *ay = j->cy - j->b + 4;
+        break;
+    default:
+        break;
+    }
 }
 
 #define MUG_W 10
@@ -2016,6 +3279,74 @@ void muse_pixel_render(const muse_pose_t *p)
     bool hauling = act == MUSE_ACT_PACKAGES || unbox;   /* at the stack, up over the bar */
     float ap = clampf(p->act_progress, 0, 2);            /* UNBOX, ASSEMBLE: how far through */
     float pull = phone ? ease_pop(at / 0.3f) : 0.0f;   /* the phone out, and up */
+    bool paint = act == MUSE_ACT_PAINT, cloud = act == MUSE_ACT_CLOUD, search = act == MUSE_ACT_SEARCH;
+    bool work = act >= WORK_FIRST && act < MUSE_ACT_COUNT;   /* a prop for what he's at */
+    float toss = paint && p->act_progress >= 0 ? clampf(p->act_progress, 0, 1) : -1.0f;   /* PAINT: made, tossing it */
+
+    /* Painting: the dab under way (and the patches on), the brush's tip
+     * going to it, dabbing, and back. All on, he touches it up, now and
+     * then stepping back to admire it. Then the last sweep across it. */
+    int dabs = 0;
+    float tip_x = CV_X - 2.0f, tip_y = CV_Y + 9.0f;   /* the brush's tip; at rest, by the canvas */
+    uint8_t tip_col = C_PICSKY;
+    bool dab = false, splat = false, admire = false, swept = false;
+    if (paint) {
+        float st = (at - PT_READY) / PT_STROKE;
+        int k = st < 0 ? -1 : (int)st;
+        float u = st < 0 ? 0.0f : st - k;
+        int want = k, prev = k - 1;
+        if (k >= PT_N) {
+            admire = (k - PT_N) % 6 < 2;
+            want = (int)((uint32_t)k * 2654435761u >> 16) % PT_N;   /* a touch here and there */
+            prev = (int)((uint32_t)(k - 1) * 2654435761u >> 16) % PT_N;
+        }
+        dabs = k < 0 ? 0 : k < PT_N ? k + (u >= 0.45f) : PT_N;
+        if (k >= 0 && !admire) {
+            float wx = CV_X + 2.0f + PT_DABS[want][1], wy = CV_Y + 2.0f + PT_DABS[want][0];
+            float fx = prev >= 0 ? CV_X + 2.0f + PT_DABS[prev][1] - 2.0f : tip_x;
+            float fy = prev >= 0 ? CV_Y + 2.0f + PT_DABS[prev][0] + 2.0f : tip_y;
+            tip_col = pic_col(PT_DABS[want][0], PT_DABS[want][1]);
+            if (u < 0.35f) {
+                float e = u / 0.35f;
+                e = e * e * (3 - 2 * e);
+                tip_x = fx + (wx - fx) * e;
+                tip_y = fy + (wy - fy) * e - sinf(e * 3.1416f) * 2.0f;   /* an arc over to it */
+            } else if (u < 0.85f) {
+                float d = (u - 0.35f) / 0.5f;
+                tip_x = wx + sinf(d * 25.0f) * 1.0f;   /* dab, dab */
+                tip_y = wy + (d - 0.5f) * 2.0f;
+                dab = true;
+                splat = k < PT_N && u >= 0.45f && u < 0.6f;
+            } else {
+                float d = (u - 0.85f) / 0.15f;
+                tip_x = wx - 2.0f * d;
+                tip_y = wy + 2.0f * d;
+            }
+        } else if (admire) {
+            tip_x = CV_X - 4.0f;
+            tip_y = CV_Y + 14.0f;   /* the brush down at his side */
+        }
+        if (toss >= 0 && toss < PT_FLOURISH) {
+            /* The last sweep: a zigzag up across it, all of it on behind. */
+            float e = toss / PT_FLOURISH;
+            tip_x = CV_X + 2.0f + e * 10.0f;
+            tip_y = CV_Y + 12.0f - e * 11.0f + sinf(e * 3.1416f * 4.0f) * 1.5f;
+            int all = (int)(PT_N * e * 1.5f);
+            dabs = all > dabs ? (all < PT_N ? all : PT_N) : dabs;
+            tip_col = e < 0.5f ? C_PICHILL : C_PICSUN;
+            swept = true;
+        } else if (toss >= PT_FLOURISH) {
+            dabs = PT_N;
+        }
+    }
+    /* Waiting on the cloud: hands on hips tapping a foot, looking up at it;
+     * a glance out ("any moment now"); a paw up under it, ready. */
+    float cp = cloud ? fmodf(at, 4.4f) : 0.0f;
+    bool cloud_glance = cloud && cp >= 2.2f && cp < 3.0f, cloud_ready = cloud && cp >= 3.0f;
+    /* Searching: peering through the glass to one side, the other, up, and out at us. */
+    float sp = search ? fmodf(at, 4.8f) : 0.0f;
+    float lens_gx = sp < 1.6f ? -1.0f : sp < 3.2f ? 1.0f : sp < 4.0f ? -0.6f : 0.0f;
+    float lens_gy = sp < 1.6f ? 0.2f : sp < 3.2f ? 0.4f : sp < 4.0f ? -1.0f : 0.0f;
 
     /* Talking into it: chatter in bursts, and now and then a laugh. */
     float chat = 0;
@@ -2029,6 +3360,9 @@ void muse_pixel_render(const muse_pose_t *p)
      * ("mm-hm"), then looks about, tapping a foot. */
     float lp = fmodf(at, 4.6f), mmhm = 0, tap = 0;
     bool typing = false;
+    if (cloud && cp < 2.2f) {
+        tap = fmaxf(0, sinf(cp * 3.1416f * 3.0f));
+    }
     if (act == MUSE_ACT_PHONE_LISTEN && at > 0.4f) {
         typing = lp < 2.0f;
         if (lp >= 2.1f && lp < 3.0f) {
@@ -2054,8 +3388,16 @@ void muse_pixel_render(const muse_pose_t *p)
     } else if (act == MUSE_ACT_PHONE_LISTEN) {
         s_look_x = typing ? 0.9f : mmhm > 0 ? 0.0f : lp < 3.8f ? -0.9f : 0.4f;
         s_look_y = typing ? -0.9f : mmhm > 0 ? 0.6f : lp < 3.8f ? 0.2f : -0.4f;
-    } else if (act == MUSE_ACT_PACKAGES || unbox || assemble) {
-        /* s_look_x, s_look_y: set last frame, on the box or the picture. */
+    } else if (act == MUSE_ACT_PACKAGES || unbox || assemble || paint) {
+        /* s_look_x, s_look_y: set last frame, on the box, the picture or the brush. */
+    } else if (cloud) {
+        s_look_x = cloud_glance ? 0.0f : 0.9f;   /* up at the cloud */
+        s_look_y = cloud_glance ? 0.1f : -0.9f;
+    } else if (search) {
+        s_look_x = lens_gx;
+        s_look_y = lens_gy;
+    } else if (work) {
+        work_look(act, at, p->act_progress, &s_look_x, &s_look_y);
     } else if (brace > 0.3f) {
         s_look_x = 0;
         s_look_y = 0;
@@ -2147,6 +3489,24 @@ void muse_pixel_render(const muse_pose_t *p)
     } else if (act == MUSE_ACT_PACKAGES || unbox || assemble) {
         bob = sinf(t * 4.0f) * 0.5f;
         lean = 0;
+    } else if (paint) {
+        bob = sinf(t * 3.0f) * 0.4f;
+        lean = toss >= 0 ? 0.0f : dab ? 0.9f : admire ? -1.3f : 0.3f;   /* into each dab; back to look */
+        if (toss >= PT_LIFT - 0.06f && toss < PT_THROW) {
+            hop -= sinf((toss - PT_LIFT + 0.06f) / (PT_THROW - PT_LIFT + 0.06f) * 3.1416f) * 1.6f;   /* winding up */
+        } else if (toss >= PT_THROW && toss < PT_THROW + 0.16f) {
+            hop += sinf((toss - PT_THROW) / 0.16f * 3.1416f) * 3.0f;   /* and up with it */
+        } else if (toss >= PT_IN) {
+            hop += sinf((toss - PT_IN) / (1.0f - PT_IN) * 3.1416f) * 1.5f;   /* in: a hop for joy */
+        }
+    } else if (cloud) {
+        bob = sinf(t * 2.4f) * 0.5f;
+        lean = 0;
+    } else if (work) {
+        work_body(act, at, t, &bob, &lean, &hop);
+    } else if (search) {
+        bob = sinf(t * 2.0f) * 0.4f;
+        lean = sp < 3.2f ? -1.4f * cosf(sp / 3.2f * 3.1416f) : sp < 3.6f ? 1.4f * (3.6f - sp) / 0.4f : 0.0f;
     }
     /* Braced: crouched, swaying against it. */
     bob *= 1.0f - brace;
@@ -2155,6 +3515,9 @@ void muse_pixel_render(const muse_pose_t *p)
     /* Hauling boxes: the one in the air, if any. */
     static muse_act_t s_last_act;
     float pk_u = act == MUSE_ACT_PACKAGES ? pk_update(at, p->act_progress, s_last_act != MUSE_ACT_PACKAGES) : -1.0f;
+    if (cloud && s_last_act != MUSE_ACT_CLOUD) {
+        s_work.tossed = s_last_act == MUSE_ACT_PAINT;   /* the cloud up already, or still to come */
+    }
     s_last_act = act;
     if (pk_u >= PK_CATCH && pk_u < PK_HOLD) {
         hop -= sinf((pk_u - PK_CATCH) / (PK_HOLD - PK_CATCH) * 3.1416f) * 1.2f;   /* the catch, a dip */
@@ -2162,6 +3525,9 @@ void muse_pixel_render(const muse_pose_t *p)
     /* Downloading: up off the floor for the bar, and over to the left of the stack. */
     s_pk.rise += ((hauling ? 1.0f : 0.0f) - s_pk.rise) * (1.0f - expf(-dt * 8.0f));
     float rise = PK_RISE * s_pk.rise;
+    float side_to = hauling || cloud || (paint && toss >= PT_THROW) ? 5.0f : paint ? PT_SHIFT
+                  : work ? WORK_SIDE[act - WORK_FIRST] : 0.0f;
+    s_work.side += (side_to - s_work.side) * (1.0f - expf(-dt * 8.0f));
 
     /* Boot: the avatar pops up from a squash, then opens their eyes. */
     float boot = mode == MUSE_MODE_BOOT ? clampf(p->mode_t / 1.4f, 0, 1) : 1.0f;
@@ -2174,7 +3540,7 @@ void muse_pixel_render(const muse_pose_t *p)
     j.b = 23.0f * (1 - breathe) * squash * (1.0f - 0.05f * tired + 0.05f * yawn);   /* a slouch; a stretch to yawn */
     j.a *= 1.0f + 0.05f * brace;   /* braced: knees bent, lower and wider */
     j.b *= 1.0f - 0.07f * brace;
-    j.cx = 32.0f + lean - 5.0f * s_pk.rise;
+    j.cx = 32.0f + lean - s_work.side;
     j.cy = 56.5f - j.b + bob * 0.5f - hop - rise;   /* feet stay near the ground */
     if (bed) {
         j.cy += 3.0f * lie - 5.0f * s_rise;   /* down in the bed, or sat up out of it */
@@ -2214,6 +3580,13 @@ void muse_pixel_render(const muse_pose_t *p)
     spk_count += (int)(6.0f * plug + 0.5f);
     spk_count = (int)(spk_count * (1.0f - 0.6f * tired) + 0.5f);   /* tired: fewer */
     draw_sparkles(p, j.cx, j.cy, false, spk_speed, spk_count);
+
+    if (paint && toss < PT_GRAB) {
+        draw_easel(0);
+        draw_canvas(CV_X + CV / 2.0f, CV_Y + CV / 2.0f, 1, 1, dabs);   /* behind his arm */
+    } else if (paint && toss < PT_LIFT + 0.25f) {
+        draw_easel(clampf((toss - PT_GRAB) / (PT_LIFT + 0.25f - PT_GRAB), 0, 1));
+    }
 
     /* ---- limbs ---- */
     float base = j.cy + j.b;
@@ -2291,6 +3664,7 @@ void muse_pixel_render(const muse_pose_t *p)
     bool ub_pop = false;               /* a piece just out */
     float pic_x = 0, pic_y = 0;        /* ASSEMBLE: the picture's pieces' top left */
     float mug_x = 0, mug_y = 0;
+    work_t wk = { 0 };
     float grip_x = PHONE_W / 2.0f, grip_y = PHONE_H - 0.5f;   /* the paw on the phone, from its top left */
     if (phone) {
         /* Up from his side (pull): to the right cheek to talk into it, his
@@ -2383,6 +3757,60 @@ void muse_pixel_render(const muse_pose_t *p)
         }
         s_look_x = 0;
         s_look_y = 0.8f + 0.2f * tuck;   /* down at it */
+    } else if (paint) {
+        /* The palette out at his left; the brush in his right, its handle
+         * down and back from the tip, the shoulder out to reach the canvas. */
+        arms[0] = arm_to(slx, shy, j.cx - 17.0f, j.cy + 1.0f);
+        sh_x[1] = srx + 3.0f;
+        sh_y[1] = shy + 2.0f;
+        arms[1] = arm_to(sh_x[1], sh_y[1], tip_x - 4.0f, tip_y + 4.0f);
+        s_look_x = clampf((tip_x - j.fx) / 9.0f, -1, 1);
+        s_look_y = clampf((tip_y - j.fy) / 9.0f, -1, 1);
+        if (admire) {
+            s_look_x = 1.0f;   /* at it, all of it */
+            s_look_y = 0.0f;
+        }
+        if (toss >= PT_FLOURISH) {
+            /* Down they go, a paw to the canvas; up over his shoulder with
+             * it, a crouch, and up it goes, his arm up after it; in, a cheer. */
+            float cvx, cvy;
+            pt_canvas(toss, &j, &cvx, &cvy);
+            arms[0] = arm_to(slx, shy, j.cx - 16.0f, j.cy + 2.0f);
+            float k = clampf((toss - PT_FLOURISH) / (PT_GRAB - PT_FLOURISH), 0, 1);
+            limb_t grab = arm_to(sh_x[1], sh_y[1], cvx - 6.0f, cvy + 3.0f);
+            if (toss < PT_GRAB) {
+                arms[1] = limb_mix(arms[1], grab, k * k * (3 - 2 * k));
+            } else if (toss < PT_THROW) {
+                arms[1] = arm_to(srx, shy, cvx - 1.0f, cvy + 6.0f);
+            } else if (toss < PT_IN) {
+                arms[1] = arm_to(srx, shy, j.cx + 17.0f, j.cy - 12.0f);   /* up after it */
+            } else {
+                float wig = sinf(t * 14.0f) * 0.25f;
+                arms[0] = (limb_t){ j.cx - adx - 1.0f, j.cy - 4.0f, 2.4f + wig };
+                arms[1] = (limb_t){ j.cx + adx + 1.0f, j.cy - 4.0f, -2.4f - wig };
+            }
+            sh_x[1] = srx;
+            sh_y[1] = shy;
+            if (toss < PT_GRAB) {
+                s_look_x = clampf((tip_x - j.fx) / 9.0f, -1, 1);
+                s_look_y = clampf((tip_y - j.fy) / 9.0f, -1, 1);
+            } else {
+                s_look_x = clampf((cvx - j.fx) / 9.0f, -1, 1);
+                s_look_y = clampf((cvy - j.fy) / 9.0f, -1, 1);
+            }
+        }
+    } else if (cloud) {
+        /* Paws on hips, or one up under the cloud, ready. */
+        arms[0] = arm_to(slx, shy, j.cx - 17.0f, j.cy + 7.0f);
+        arms[1] = cloud_ready ? arm_to(srx, shy, CLOUD_X + (CLOUD_W - BOX_W) / 2 + 0.5f, j.cy - 6.0f + sinf(t * 4.0f))
+                              : arm_to(srx, shy, j.cx + 17.0f, j.cy + 7.0f);
+    } else if (work) {
+        wk = (work_t){ act, at, t, p->act_progress, &j, slx, srx, shy, j.fx + j.fa * 0.48f, j.fy - 0.5f, j.fa * 0.48f };
+        work_arms(&wk, arms);
+    } else if (search) {
+        /* The glass up to his right eye, by its handle; the other paw on his hip. */
+        arms[0] = arm_to(slx, shy, j.cx - 16.0f, j.cy + 2.0f);
+        arms[1] = arm_to(srx, shy, j.fx + j.fa * 0.48f + 9.5f, j.fy + 9.0f);
     } else if (tea) {
         /* The mug by the handle, out at his side where the steam shows; up to his lips for a sip. */
         float rx = j.cx + 15.0f, ry = j.cy - 1.0f;
@@ -2505,6 +3933,32 @@ void muse_pixel_render(const muse_pose_t *p)
         mouth = snap || framed ? MOUTH_GRIN : MOUTH_SMILE;
         open = 1.0f - blink;
         brows = framed ? 2 : 0;
+    } else if (paint && toss < 0) {
+        /* Hard at it, the tip of his tongue out; pleased with each dab, and with it all. */
+        bool pleased = admire || (splat && ((int)((at - PT_READY) / PT_STROKE) % 3 == 1));
+        style = pleased ? EYES_HAPPY : EYES_NORMAL;
+        mouth = pleased ? MOUTH_GRIN : MOUTH_SMILE;
+        open = 0.85f * (1.0f - blink);
+        brows = dab ? 2 : 0;
+    } else if (paint) {
+        bool up = toss >= PT_THROW && toss < PT_IN;
+        bool glee = toss < PT_GRAB || toss >= PT_IN;
+        style = glee ? EYES_HAPPY : up ? EYES_WIDE : EYES_NORMAL;
+        mouth = glee ? MOUTH_GRIN : up || toss >= PT_LIFT ? MOUTH_O : MOUTH_SMILE;
+        open = 1.0f - blink;
+        brows = up || (toss >= PT_LIFT && toss < PT_THROW) ? 2 : 0;
+    } else if (cloud) {
+        style = cloud_ready ? EYES_WIDE : EYES_NORMAL;
+        mouth = cloud_ready ? MOUTH_O : MOUTH_SMILE;
+        open = 1.0f - blink;
+        brows = cloud_glance ? 0 : 2;
+    } else if (work) {
+        work_face(&wk, blink, &style, &mouth, &open, &brows);
+    } else if (search) {
+        style = EYES_NORMAL;
+        open = 0.4f;   /* the other eye screwed up */
+        mouth = MOUTH_HMM;
+        brows = 1;
     } else if (tea) {
         if (sip > 0.6f) {
             open = 0;   /* a sip, eyes shut */
@@ -2561,6 +4015,12 @@ void muse_pixel_render(const muse_pose_t *p)
     draw_blush(iround(j.fx + j.fa * 0.72f), iround(eye_y + 2), blush);
 
     draw_mouth(iround(j.fx), iround(eye_y + 3), mouth, mouth_open);
+    if (paint && toss < 0 && !admire && mouth == MOUTH_SMILE) {
+        px(iround(j.fx) + 2, iround(eye_y + 4), C_TONGUE);   /* concentrating */
+    }
+    if (paint) {
+        draw_beret(iround(j.cx + 1.0f), iround(j.cy - j.b + 2.0f));
+    }
     if (p->pajamas) {
         draw_nightcap(&j, t, asleep ? 1.0f : 0.35f);
     }
@@ -2610,7 +4070,7 @@ void muse_pixel_render(const muse_pose_t *p)
                 draw_paw(hx, hy);
             }
         }
-        draw_cloud(t, 0);   /* over the box coming out of it */
+        draw_cloud(t, 0, false);   /* over the box coming out of it */
         draw_progress(9, 56, 59, p->act_progress, t);
     }
     if (unbox) {
@@ -2648,7 +4108,7 @@ void muse_pixel_render(const muse_pose_t *p)
             }
         }
         /* The cloud off, and the bar shrinking away. */
-        draw_cloud(t, clampf(ap / 0.45f, 0, 1));
+        draw_cloud(t, clampf(ap / 0.45f, 0, 1), false);
         float bar = clampf((ap - 0.1f) / 0.3f, 0, 1);
         if (bar < 1) {
             draw_progress(9 + iround(bar * 23.0f), 56 - iround(bar * 23.0f), 59, 1.0f, t);
@@ -2707,6 +4167,79 @@ void muse_pixel_render(const muse_pose_t *p)
                 draw_paw(hx, hy);
             }
         }
+    }
+    if (paint) {
+        int hx, hy;
+        if (toss < PT_FLOURISH + 0.04f) {
+            paw_of(&arms[0], slx, shy, &hx, &hy);
+            draw_palette(hx, hy);
+            draw_paw(hx, hy);
+            paw_of(&arms[1], sh_x[1], sh_y[1], &hx, &hy);
+            draw_brush(hx, hy, tip_x, tip_y, tip_col);
+            draw_paw(hx, hy);
+            if (splat || (swept && fracf(toss * 25.0f) < 0.5f)) {
+                draw_sparkle(iround(tip_x + 1), iround(tip_y - 1), 0.6f, true);   /* a dab of paint on */
+            }
+        }
+        float cvx, cvy;
+        pt_canvas(toss, &j, &cvx, &cvy);
+        if (toss >= PT_GRAB && toss < PT_THROW) {
+            draw_canvas(cvx, cvy, 1, 1, PT_N);   /* in his paw */
+            paw_of(&arms[1], srx, shy, &hx, &hy);
+            draw_paw(hx, hy);
+        }
+        if (toss >= PT_FLOURISH) {
+            /* The cloud coming down for it; the canvas flipping up into it, smaller. */
+            float in = clampf((toss - PT_FLOURISH) / (PT_THROW - PT_FLOURISH), 0, 1);
+            float k = clampf((toss - PT_THROW) / (PT_IN - PT_THROW), 0, 1);
+            bool behind = k > 0.8f;
+            if (toss >= PT_THROW && toss < PT_IN && behind) {
+                draw_canvas(cvx, cvy, (1 - 0.7f * k * k) * fmaxf(0.15f, fabsf(cosf(k * TAU))), 1 - 0.7f * k * k, PT_N);
+            }
+            draw_cloud(t, 1.0f - in, true);
+            if (toss >= PT_THROW && toss < PT_IN && !behind) {
+                draw_canvas(cvx, cvy, (1 - 0.7f * k * k) * fmaxf(0.15f, fabsf(cosf(k * TAU))), 1 - 0.7f * k * k, PT_N);
+            }
+            if (toss >= PT_IN) {
+                float g = (toss - PT_IN) / (1.0f - PT_IN);   /* in: a puff of sparkles off it */
+                draw_sparkle(CLOUD_X - 1, CLOUD_Y + 3, 1.0f - g, true);
+                draw_sparkle(CLOUD_X + CLOUD_W, CLOUD_Y + 5, 1.1f - g, true);
+                draw_sparkle(CLOUD_X + CLOUD_W / 2, CLOUD_Y + CLOUD_H + 1, 0.9f - g, true);
+            }
+        }
+    }
+    if (cloud) {
+        float in = s_work.tossed ? 1.0f : clampf(at / 0.45f, 0, 1);
+        draw_cloud(t, 1.0f - in, true);
+        if (cloud_ready) {
+            int hx, hy;
+            paw_of(&arms[1], srx, shy, &hx, &hy);
+            draw_paw(hx, hy);
+        }
+    }
+    if (work) {
+        work_draw(&wk, arms, &s_work.gone_x, &s_work.gone_y);
+    }
+    if (s_work.last != act) {
+        bool prop = s_work.last == MUSE_ACT_SEARCH || (s_work.last >= WORK_FIRST && s_work.last < MUSE_ACT_COUNT);
+        s_work.gone_t = prop ? t : -1.0f;   /* its prop goes in a puff */
+        s_work.last = act;
+    }
+    if (s_work.gone_t > 0 && t - s_work.gone_t < 0.35f && t >= s_work.gone_t) {
+        float k = (t - s_work.gone_t) / 0.35f;
+        for (int i = 0; i < 3; i++) {
+            float a = i * 2.094f + 0.5f;
+            draw_sparkle(iround(s_work.gone_x + cosf(a) * (2.0f + k * 5.0f)), iround(s_work.gone_y + sinf(a) * (2.0f + k * 5.0f)),
+                         1.0f - k, true);
+        }
+    }
+    if (search) {
+        float k = ease_pop(at / 0.3f);   /* up it comes */
+        float lx = j.fx + eye_dx, ly = eye_y + (1.0f - k) * 10.0f;
+        draw_magnifier(lx, ly, lens_gx, lens_gy, t);
+        s_work.gone_x = lx;
+        s_work.gone_y = ly;
+        draw_paw(iround(lx + 9.5f), iround(ly + 9.5f));
     }
     if (tea) {
         draw_mug(iround(mug_x), iround(mug_y), sip < 0.5f);

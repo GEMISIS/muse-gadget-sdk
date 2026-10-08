@@ -20,7 +20,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
-#include "sdkconfig.h"
+#include "muse_activity.h"
 
 /*
  * Bring up the display and build the UI: the avatar on the first tile,
@@ -55,15 +55,19 @@ typedef enum {
     MUSE_UI_BENCH_PHONE,            /* talking into his phone */
     MUSE_UI_BENCH_LISTEN_PHONE,     /* the phone to his ear */
     MUSE_UI_BENCH_PACKAGES,         /* hauling boxes, the count going round */
-    MUSE_UI_BENCH_DOWNLOAD,         /* an image's whole way in, made up: phone, boxes, unboxing, the picture */
+    MUSE_UI_BENCH_DOWNLOAD,         /* a made image's whole way in, made up: painting, tossed up, the cloud, boxes, unboxing, the picture */
     MUSE_UI_BENCH_UNBOX,            /* opening the boxes, held part way */
     MUSE_UI_BENCH_ASSEMBLE,         /* the picture put together, held */
     MUSE_UI_BENCH_TEA,
     MUSE_UI_BENCH_PAJAMAS,
     MUSE_UI_BENCH_BRACE,
+    MUSE_UI_BENCH_TOSS,             /* painting a moment, the canvas tossed up, then waiting on the cloud */
+    MUSE_UI_BENCH_ACTIVITY,         /* at what muse_ui_bench_activity says, as if Muse had said so */
 } muse_ui_bench_t;
 
 void muse_ui_bench_pose(muse_ui_bench_t what);
+/* MUSE_UI_BENCH_ACTIVITY, at `what` (muse_activity.h; IMAGE paints). Any task. */
+void muse_ui_bench_activity(muse_activity_t what);
 
 /* The functions below run in the LVGL task (or with the display lock held). */
 
@@ -102,10 +106,3 @@ void muse_ui_camera_hint(bool visible);
 
 /* Bench testing, from any task: streams the screen over USB serial. */
 void muse_ui_request_snapshot(void);
-#if CONFIG_LV_USE_SNAPSHOT
-/* Bench-only, from any task: select the touch tile without pretending a/s
- * are touch-menu navigation. No effect on non-touch boards. */
-void muse_ui_bench_page(bool settings);
-/* Display-only demo name for privacy-safe screenshots; no provisioning changes. */
-void muse_ui_bench_demo(bool enabled);
-#endif

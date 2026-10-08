@@ -20,6 +20,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "muse_activity.h"
+
 /*
  * Shared state between the voice pipeline (writer) and the UI (reader).
  * Scalars are plain word-sized stores; the caption is guarded by a spinlock.
@@ -60,6 +62,12 @@ typedef enum {
 
 void muse_state_set_turn(muse_turn_t turn);
 muse_turn_t muse_state_turn(void);
+
+/* What Muse says he's at work on in the turn (muse_activity.h), for the face
+ * to act out: set by the chat session from agent.status, NONE between
+ * turns. Any task. */
+void muse_state_set_activity(muse_activity_t activity);
+muse_activity_t muse_state_activity(void);
 
 /* Live audio level (mic while listening, playback while speaking), 0..1. */
 void muse_state_set_level(float level);
