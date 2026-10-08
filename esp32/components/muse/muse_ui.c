@@ -2564,6 +2564,29 @@ static void pose_battery(muse_pose_t *pose, float now)
 #define PHONE_TALK_S 1.2f
 #define BENCH_BOXES_S 6.0f      /* ">face=packages": the boxes' count goes round this often */
 
+/* The download (MUSE_ACT_PACKAGES) wants the room above him for its cloud,
+ * and has the empty space under him to spare: he eases down ACT_DROP_PX for
+ * it, and back up before reaching for the photo. */
+#define ACT_DROP_PX 48
+#define ACT_DROP_S 0.35f
+
+static void act_drop(const muse_pose_t *pose, float now)
+{
+    static float drop, last;
+    static int shown;
+    float dt = now - last;
+    last = now;
+    dt = dt < 0 || dt > 0.2f ? 0.05f : dt;
+    bool want = CORNERS && pose->act == MUSE_ACT_PACKAGES && pose->reach <= 0.0f && !pose->holding;
+    drop += want ? dt / ACT_DROP_S : -dt / ACT_DROP_S;
+    drop = drop < 0 ? 0 : drop > 1 ? 1 : drop;
+    int px = (int)lroundf(ease_in_out(drop) * ACT_DROP_PX);
+    if (px != shown) {
+        lv_obj_set_style_translate_y(s_canvas, px, 0);
+        shown = px;
+    }
+}
+
 static void pose_act(muse_pose_t *pose, muse_mode_t mode, float mode_t, float now)
 {
 #if CORNERS
@@ -2769,6 +2792,7 @@ static void frame_tick(lv_timer_t *timer)
     pose_battery(&pose, now);
     pose.offline = s_offline;
     pose_act(&pose, mode, mode_t, now);
+    act_drop(&pose, now);
     pose_time(&pose, mode);
     /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
      * (or an earthquake, or being plugged in). */
