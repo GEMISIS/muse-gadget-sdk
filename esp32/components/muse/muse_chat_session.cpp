@@ -207,6 +207,9 @@ static char s_sub_sid[MUSE_CHAT_SID_MAX + 1];
 /* The subscription for s_sub_sid came back 404: a side chat the Muse only
  * starts with its first message. It's opened again once one is taken. */
 static bool s_sub_missing;
+/* A new chat whose first message was a voice note: its title will be the
+ * audio file's, so it's asked for a real one (muse_gadget_mode_retitle). */
+static char s_voice_new_sid[MUSE_CHAT_SID_MAX + 1];
 
 /* ---- Streams on the connection ---- */
 
@@ -1264,6 +1267,9 @@ static bool open_note(void)
     }
     char sid[MUSE_CHAT_SID_MAX + 1], head[MUSE_CHAT_NOTE_HEAD_MAX];
     muse_settings_chat_sid(sid);
+    if (muse_settings_chat_untitled(sid)) {
+        strlcpy(s_voice_new_sid, sid, sizeof(s_voice_new_sid));   /* titled after the audio: retitle it */
+    }
     /* The mode goes as the text with the audio. */
     int mode = -1;
     const char *ctx = muse_gadget_mode_context(sid, &mode);
@@ -1760,10 +1766,18 @@ static void on_event(cJSON *line)
         const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(session, "session_id"));
         const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(session, "title"));
         bool started = false;
-        if (sid && title && title[0] && muse_settings_chat_retitle(sid, title, &started)
-            && (!strncasecmp(title, "Transcribe", 10) || !strcasecmp(title, "Generate session title"))) {
-            /* Titled after the audio file, or a titler's placeholder: not what was asked. */
-            muse_gadget_mode_retitle(sid);
+        if (sid && title && title[0] && muse_settings_chat_retitle(sid, title, &started)) {
+            /* A chat started by voice is titled after the audio file, in
+             * words that vary ("Transcribe audio file", "Summarize audio file
+             * content"): ask for a real title whatever it says. After that,
+             * only a title that still reads like a placeholder asks again. */
+            bool by_voice = started && !strcmp(sid, s_voice_new_sid);
+            if (by_voice || strcasestr(title, "audio file") || strcasestr(title, "session title")) {
+                muse_gadget_mode_retitle(sid);
+            }
+            if (by_voice) {
+                s_voice_new_sid[0] = '\0';
+            }
         }
         return;
     }
