@@ -20,6 +20,7 @@
 
 #include "driver/i2c_master.h"
 #include "esp_err.h"
+#include "sdkconfig.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,6 +40,16 @@ esp_err_t muse_rtc_init(i2c_master_bus_handle_t bus);
 /* Once a second from the extras task: starts SNTP when Wi-Fi first connects,
  * writes each sync back to the RTC, and sounds the alarm when it's due. */
 void muse_rtc_tick(void);
+
+#if CONFIG_MUSE_GADGET_ALARM
+/* The daily alarm's time, in minutes after local midnight, and whether it's
+ * on (*on may be NULL). Any task. */
+int muse_rtc_alarm(bool *on);
+/* Sets it and saves it in the "gadget" NVS namespace ("alarm_min",
+ * "alarm_on"): from a task whose stack is internal RAM (the LVGL one). It
+ * rings at the new time from the next minute on. */
+void muse_rtc_set_alarm(int minute, bool on);
+#endif
 
 #ifdef __cplusplus
 }

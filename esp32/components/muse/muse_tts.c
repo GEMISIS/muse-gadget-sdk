@@ -351,6 +351,11 @@ bool muse_tts_caption(const char *text, size_t played, char *out, size_t cap)
     return muse_hatch_caption_at(text, at, out, cap);
 }
 
+size_t muse_tts_caption_frames(const char *text)
+{
+    return (size_t)((uint64_t)strlen(text) * PICOTTS_SAMPLE_RATE / CHARS_PER_S);
+}
+
 void muse_tts_replay_last(void)
 {
     if (s_task && s_last && s_last[0]) {

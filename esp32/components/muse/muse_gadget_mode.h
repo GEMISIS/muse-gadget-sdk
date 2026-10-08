@@ -32,10 +32,11 @@ extern "C" {
  * carries the mode's contract after the words (muse_gadget_mode_context). A
  * change sends nothing by itself.
  *
- * With the clock set (year 2025 or later), the schedule picks Night from 21:00
- * to 05:00 and Desk otherwise, checked every minute in local time. A mode
- * picked by hand (settings, the set_mode command) holds until the schedule's
- * next boundary. Joined to a network other than the saved home one, the face
+ * With the clock set (year 2025 or later), the schedule picks Night from its
+ * start to its end (21:00 to 05:00 unless set in Settings > General > Mode,
+ * to the minute, across midnight or not) and Desk otherwise, checked every
+ * minute in local time. A mode picked by hand (settings, the set_mode
+ * command) holds until the schedule's next boundary. Joined to a network other than the saved home one, the face
  * offers On-the-go once per network; it never switches on its own.
  *
  * Night dims the screen and On-the-go turns it all the way up; neither speaks
@@ -54,8 +55,14 @@ void muse_gadget_mode_start(void);
 
 /* All of these are safe from any task. */
 muse_gadget_mode_t muse_gadget_mode(void);
-/* By hand: holds until the next 05:00 or 21:00. */
+/* By hand: holds until Night's next start or end. */
 void muse_gadget_mode_pick(muse_gadget_mode_t mode);
+/* The Night window, in minutes after local midnight (muse_settings_night). */
+void muse_gadget_mode_night(int *from_min, int *to_min);
+/* Saves a new window (writes flash: a task whose stack is internal RAM, such
+ * as the LVGL one). Within two seconds a picked mode's hold moves to the new
+ * next boundary and the schedule takes over if it's due. */
+void muse_gadget_mode_set_night(int from_min, int to_min);
 /*
  * What a message to chat `sid` ("" the main chat) carries after its words:
  * the current mode's contract ("[gadget mode: DESK] ..."), or NULL if that

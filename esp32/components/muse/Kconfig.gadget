@@ -73,9 +73,11 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
         depends on MUSE_GADGET_EXTRAS
         default y
         help
-            At the time below (local), wakes the screen and chirps. The
-            "alarm_min" key (minutes after midnight, -1 for off) in the
-            "gadget" NVS namespace overrides it once set.
+            At the time below (local), wakes the screen and chirps. Its
+            time and an on/off switch are under Settings > General > Mode
+            on the device, saved as the "alarm_min" (minutes after
+            midnight) and "alarm_on" keys in the "gadget" NVS namespace,
+            which override these once set.
 
     config MUSE_GADGET_ALARM_HOUR
         int "Alarm hour (0-23)"
@@ -90,7 +92,7 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
         default 0
 
     config MUSE_GADGET_IMU
-        bool "QMI8658 motion: wake on lift or double tap, shake to replay, steps"
+        bool "QMI8658 motion: wake on lift or double tap, shake for an earthquake, steps"
         depends on MUSE_GADGET_EXTRAS
         default y
 
@@ -124,6 +126,19 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
             Muse, smaller and lower, sleeps tucked up in bed. It sits up to
             listen and answer, and goes back to sleep after. Needs
             LV_FONT_MONTSERRAT_48 for the clock.
+
+    config MUSE_GADGET_UP_NEXT
+        bool "Up next: a line on the face of what to get ready for"
+        depends on MUSE_GADGET_HOME_EXTRAS && MUSE_HATCH
+        default y
+        help
+            One dim line above the battery saying what's next today, from
+            your calendar and plans as the Muse knows them. The gadget asks
+            in the background, in a hidden chat of its own (never the one
+            picked, and nothing on screen or spoken), at most once an hour
+            while idle and in reach and once each morning, and hides an
+            answer over three hours old (muse_up_next.c). ">brief" on the
+            serial console asks now, ">brief?" prints what it has.
 
     config MUSE_GADGET_CHATS
         bool "Chats screen: swipe right from Muse to pick a chat"

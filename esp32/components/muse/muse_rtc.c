@@ -198,25 +198,55 @@ static void sound_alarm(int minute)
     }
 }
 
-/* Minutes after local midnight, or -1 for none; "alarm_min" in NVS overrides. */
-static int alarm_minute(void)
+/*
+ * The alarm's time in minutes after local midnight, and whether it's on:
+ * "alarm_min" and "alarm_on" in NVS override the Kconfig time. An older
+ * "alarm_min" of -1 (off) leaves it off at the Kconfig time. Read once, then
+ * kept here; -2 until then.
+ */
+static atomic_int s_alarm_min = -2;
+static atomic_bool s_alarm_on;
+
+static void load_alarm(void)
 {
+    if (atomic_load(&s_alarm_min) != -2) {
+        return;
+    }
     int def = CONFIG_MUSE_GADGET_ALARM_HOUR * 60 + CONFIG_MUSE_GADGET_ALARM_MINUTE;
     int m = (int)muse_extras_get_i32("alarm_min", def);
-    return m >= 0 && m < 24 * 60 ? m : -1;
+    bool on = muse_extras_get_i32("alarm_on", 1) != 0 && m >= 0;
+    atomic_store(&s_alarm_on, on);
+    atomic_store(&s_alarm_min, m >= 0 && m < 24 * 60 ? m : def);
+    if (on) {
+        ESP_LOGI(TAG, "daily alarm at %02d:%02d", atomic_load(&s_alarm_min) / 60, atomic_load(&s_alarm_min) % 60);
+    }
+}
+
+int muse_rtc_alarm(bool *on)
+{
+    load_alarm();
+    if (on) {
+        *on = atomic_load(&s_alarm_on);
+    }
+    return atomic_load(&s_alarm_min);
+}
+
+void muse_rtc_set_alarm(int minute, bool on)
+{
+    minute = minute < 0 ? 0 : minute >= 24 * 60 ? 24 * 60 - 1 : minute;
+    atomic_store(&s_alarm_min, minute);
+    atomic_store(&s_alarm_on, on);
+    muse_extras_set_i32("alarm_min", minute);
+    muse_extras_set_i32("alarm_on", on);
+    ESP_LOGI(TAG, "daily alarm %s at %02d:%02d", on ? "on" : "off", minute / 60, minute % 60);
 }
 
 static void check_alarm(void)
 {
     static int rang_on = -1;    /* year * 1000 + day of the year it last rang */
-    static int alarm = -2;
-    if (alarm == -2) {
-        alarm = alarm_minute();
-        if (alarm >= 0) {
-            ESP_LOGI(TAG, "daily alarm at %02d:%02d", alarm / 60, alarm % 60);
-        }
-    }
-    if (alarm < 0 || !muse_time_valid()) {
+    bool on;
+    int alarm = muse_rtc_alarm(&on);
+    if (!on || !muse_time_valid()) {
         return;
     }
     time_t now = time(NULL);

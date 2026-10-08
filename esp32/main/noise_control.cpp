@@ -1370,8 +1370,9 @@ static char *build_register_json(void) {
                 "Switch the gadget mode: desk (full detail, replies spoken), "
                 "night (dim screen, nothing spoken) or on_the_go (bright "
                 "screen, captions only). Holds until the next scheduled "
-                "switch, at 05:00 or 21:00. Each chat is told it with its "
-                "next message.",
+                "switch, when Night starts or ends (21:00 and 05:00 unless "
+                "set on the gadget). Each chat is told it with its next "
+                "message.",
                 mode_required, nullptr);
     cJSON *chat_optional = cJSON_CreateObject();
     cJSON_AddItemToObject(chat_optional, "session_id",

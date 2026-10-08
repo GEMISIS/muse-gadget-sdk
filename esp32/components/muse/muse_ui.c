@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -50,6 +51,9 @@
 #include "muse_settings_ui.h"
 #include "muse_state.h"
 #include "muse_text.h"
+#if CONFIG_MUSE_TTS_PICO
+#include "muse_tts.h"
+#endif
 #include "muse_wifi.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
@@ -163,6 +167,9 @@ static float s_level;
 static int s_shown_state = -1;
 static const char *s_shown_name;
 static const char *s_idle_name = "READY";   /* idle's label: set by the Wi-Fi state */
+/* Idle in a chat other than the main one, its name stands in for READY. */
+EXT_RAM_BSS_ATTR static char s_chat_label[MUSE_CHAT_NAME_MAX + 1];
+static uint32_t s_chat_label_gen = UINT32_MAX;
 static int s_shown_lit = -1;
 static uint32_t s_shown_accent;
 static bool s_meter_visible = true;
@@ -188,7 +195,7 @@ typedef struct {
     int cols, lines;          /* the reply's page */
     int w, h, top;            /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[6];       /* what it covers */
+    lv_obj_t *hides[7];       /* what it covers: three of the read layout's own, and add_hides' four */
 } answer_layout_t;
 
 enum { ANSWER_HEARD, ANSWER_READ };
@@ -530,10 +537,20 @@ static void update_flip(float now)
     lv_obj_invalidate(lv_screen_active());   /* with the layers over it */
 }
 
+/*
+ * A pat: Muse hops for joy, and between turns says its last reply again
+ * (shown again, if replies aren't spoken now). Asleep, the cover takes the
+ * tap and only wakes the screen.
+ */
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
     muse_state_make_happy();
+#if CONFIG_MUSE_TTS_PICO
+    if (muse_state_mode(NULL) == MUSE_MODE_IDLE && !muse_hatch_turn_busy()) {
+        muse_tts_replay_last();
+    }
+#endif
 }
 
 static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compact)
@@ -757,7 +774,7 @@ static void add_hides(answer_layout_t *l, int n)
         .x1 = s_w / 2 - l->w / 2, .y1 = s_h / 2 + l->top,
         .x2 = s_w / 2 + l->w / 2 - 1, .y2 = s_h / 2 + l->top + l->h - 1,
     };
-    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_corner() };
+    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_corner(), muse_home_extras_up_next() };
     for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]); i++) {
         if (!hints[i]) {
             continue;   /* no such icon on this board */
@@ -1000,6 +1017,15 @@ static void build_screen(void)
     s_state_lbl = make_label(face, CORNERS ? &lv_font_montserrat_20 : s_small ? &lv_font_unscii_8 : &lv_font_unscii_16,
                              0xffffff);
     lv_obj_set_style_text_letter_space(s_state_lbl, s_small || CORNERS ? 1 : 2, 0);
+    /* A fixed width, so a long chat's name (chat_label) ends in dots. */
+    int state_w = s_w - (s_small ? 4 : CORNERS ? 120 : 32);
+    if (!s_small && muse_board->round) {
+        int r = (s_w < s_h ? s_w : s_h) / 2 - 10, dy = s_h / 2 - (STATE_Y + s_dy + 20);
+        state_w = dy < r ? 2 * (int)sqrtf((float)(r * r - dy * dy)) - 24 : state_w;
+    }
+    lv_obj_set_width(s_state_lbl, state_w);
+    lv_label_set_long_mode(s_state_lbl, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(s_state_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 22 : STATE_Y + s_dy);
     lv_obj_set_flag(s_state_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
@@ -1297,6 +1323,38 @@ static const char *idle_name(muse_wifi_state_t wifi)
     }
 }
 
+/*
+ * What idle's label says in the chat picked now, or NULL in the main chat:
+ * the chat's name, in capitals like the states. Rebuilt only when the chats
+ * or the pick change; a new label clears s_shown_name so it's redrawn.
+ */
+static const char *chat_label(void)
+{
+    uint32_t gen = muse_settings_chats_gen();
+    if (gen != s_chat_label_gen) {
+        s_chat_label_gen = gen;
+        char sid[MUSE_CHAT_SID_MAX + 1], gadget[MUSE_CHAT_SID_MAX + 1];
+        muse_settings_chat_sid(sid);
+        muse_settings_gadget_chat_sid(gadget);
+        if (!sid[0]) {
+            s_chat_label[0] = '\0';
+        } else if (!strcmp(sid, gadget)) {
+            strlcpy(s_chat_label, "GADGET CHAT", sizeof(s_chat_label));
+        } else if (muse_settings_chat_untitled(sid)) {
+            strlcpy(s_chat_label, "NEW CHAT", sizeof(s_chat_label));
+        } else if (muse_settings_chat_name(sid, s_chat_label)) {
+            muse_text_to_ascii(s_chat_label, sizeof(s_chat_label));   /* the font's own letters */
+            for (char *c = s_chat_label; *c; c++) {
+                *c = *c >= 'a' && *c <= 'z' ? *c - 'a' + 'A' : *c;
+            }
+        } else {
+            strlcpy(s_chat_label, "OTHER CHAT", sizeof(s_chat_label));
+        }
+        s_shown_name = NULL;
+    }
+    return s_chat_label[0] ? s_chat_label : NULL;
+}
+
 static void update_chrome(float now)
 {
     if (now < s_next_settings_tick) {
@@ -1339,6 +1397,9 @@ static void update_chrome(float now)
         lv_label_set_text(s_wifi_icon, wifi);
     }
     s_idle_name = idle_name(w.state);
+    if (s_idle_name == MODE_NAMES[MUSE_MODE_IDLE] && chat_label()) {
+        s_idle_name = s_chat_label;   /* ready, in a chat other than the main one */
+    }
     muse_ble_status_t b;
     muse_ble_status(&b);
     /* In the corner, only while a phone's connected: on its own, Bluetooth
@@ -1587,6 +1648,51 @@ static void update_night(void)
 #endif
 }
 
+/*
+ * The earthquake (muse_ui_quake): Muse jitters around where it stands, less
+ * and less, then stays dizzy a moment. A request is only taken at a frame
+ * that draws the face, idle; otherwise it's dropped.
+ */
+#define QUAKE_S 1.5f
+#define DIZZY_S 2.3f            /* dizzy from the start until this */
+#define QUAKE_PX 12
+
+static volatile bool s_quake_req;
+static float s_quake_at = -100.0f;
+static bool s_quaking;
+
+void muse_ui_quake(void)
+{
+    s_quake_req = true;
+}
+
+/* Moves Muse for the quake; returns how dizzy it is, 0..1. */
+static float update_quake(muse_mode_t mode, float now, bool asked)
+{
+    if (asked && mode == MUSE_MODE_IDLE) {
+        s_quake_at = now;
+    }
+    float qt = now - s_quake_at;
+    if (mode == MUSE_MODE_IDLE && qt < QUAKE_S) {
+        float left = 1.0f - qt / QUAKE_S;
+        int a = (int)(QUAKE_PX * left * left) + 1;
+        int dx = (int)lv_rand(0, 2 * a) - a, dy = (int)lv_rand(0, a) - a / 2;
+        lv_obj_align(s_canvas, LV_ALIGN_CENTER, dx, s_muse_y + dy);
+        s_quaking = true;
+    } else if (s_quaking) {
+        s_quaking = false;
+        lv_obj_align(s_canvas, LV_ALIGN_CENTER, 0, s_muse_y);
+    }
+    if (mode != MUSE_MODE_IDLE) {
+        s_quake_at = -100.0f;   /* a turn ends it */
+        return 0.0f;
+    }
+    if (qt >= DIZZY_S) {
+        return 0.0f;
+    }
+    return qt < QUAKE_S ? 1.0f : 1.0f - (qt - QUAKE_S) / (DIZZY_S - QUAKE_S);
+}
+
 static volatile bool s_snapshot;
 
 /* Streams the screen over the USB cable as base64 RGB565 (bench testing; needs
@@ -1635,6 +1741,8 @@ static void frame_tick(lv_timer_t *timer)
     }
     (void)timer;
     image_sync();
+    bool quake = s_quake_req;   /* now or never: dropped unless the face draws this frame */
+    s_quake_req = false;
     float mode_t;
     muse_mode_t mode = muse_state_mode(&mode_t);
     float now = (float)esp_timer_get_time() / 1e6f;
@@ -1678,9 +1786,11 @@ static void frame_tick(lv_timer_t *timer)
         .level = s_level,
         .happy = muse_state_happiness(),
         .bed = s_night,
+        .dizzy = update_quake(mode, now, quake),
     };
-    /* Asleep in bed while idle; it sits up to listen and answer, or to a pat. */
-    pose.sleepy = s_night && mode == MUSE_MODE_IDLE && pose.happy < 0.05f;
+    /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
+     * (or an earthquake). */
+    pose.sleepy = s_night && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f;
     muse_pixel_render(&pose);
     invalidate_muse();
 

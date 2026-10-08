@@ -30,6 +30,11 @@ esp_err_t muse_ui_start(void);
 /* From any task: the screen has gone dark for sleep (and not yet woken). */
 bool muse_ui_dark(void);
 
+/* From any task (the IMU's shake): an earthquake on the face, if it's on
+ * screen and idle at the next frame. Muse jitters about for 1.5 s, settling,
+ * and is dizzy for a moment after. */
+void muse_ui_quake(void);
+
 /* The functions below run in the LVGL task (or with the display lock held). */
 
 /* Slide back to the face (e.g. when a talk starts). */

@@ -34,6 +34,9 @@
 #include "muse_input.h"
 #include "muse_keypad.h"
 #include "muse_link.h"
+#if CONFIG_MUSE_GADGET_ALARM
+#include "muse_rtc.h"
+#endif
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_text.h"
@@ -1246,6 +1249,149 @@ static void on_mode_pick(lv_event_t *e)
     lv_obj_scroll_to_view(box, LV_ANIM_ON);
 }
 
+/* ---- Mode: Night's times and the alarm's, set with a picker over the page ---- */
+
+enum { TIME_NIGHT_FROM, TIME_NIGHT_TO, TIME_ALARM, TIME_COUNT };
+static const char *const TIME_TITLES[TIME_COUNT] = { "NIGHT STARTS", "NIGHT ENDS", "ALARM" };
+static lv_obj_t *s_time_vals[TIME_COUNT];
+static lv_obj_t *s_time_box, *s_time_title, *s_time_h, *s_time_m;
+static int s_time_which;
+#if CONFIG_MUSE_GADGET_ALARM
+static lv_obj_t *s_alarm_sw;
+#endif
+
+/* The time `which` is set to, in minutes after local midnight. */
+static int time_get(int which)
+{
+    int from, to;
+    muse_gadget_mode_night(&from, &to);
+#if CONFIG_MUSE_GADGET_ALARM
+    if (which == TIME_ALARM) {
+        return muse_rtc_alarm(NULL);
+    }
+#endif
+    return which == TIME_NIGHT_TO ? to : from;
+}
+
+static void time_set(int which, int min)
+{
+    int from, to;
+    muse_gadget_mode_night(&from, &to);
+    if (which == TIME_NIGHT_FROM) {
+        muse_gadget_mode_set_night(min, to);
+    } else if (which == TIME_NIGHT_TO) {
+        muse_gadget_mode_set_night(from, min);
+    }
+#if CONFIG_MUSE_GADGET_ALARM
+    if (which == TIME_ALARM) {
+        muse_rtc_set_alarm(min, true);   /* setting its time turns it on */
+        lv_obj_add_state(s_alarm_sw, LV_STATE_CHECKED);
+    }
+#endif
+}
+
+/* 21:00, or 9:00 PM, as the face's clock shows the time. */
+static void time_text(int min, char *out, size_t cap)
+{
+    int h = min / 60, m = min % 60;
+    if (muse_home_extras_24h()) {
+        snprintf(out, cap, "%02d:%02d", h, m);
+    } else {
+        snprintf(out, cap, "%d:%02d %s", h % 12 ? h % 12 : 12, m, h < 12 ? "AM" : "PM");
+    }
+}
+
+static void on_time_pick(lv_event_t *e)
+{
+    s_time_which = (int)(intptr_t)lv_event_get_user_data(e);
+    int min = time_get(s_time_which);
+    int step = (min % 60 + 2) / 5;   /* the nearest 5 minutes */
+    lv_roller_set_selected(s_time_h, min / 60, LV_ANIM_OFF);
+    lv_roller_set_selected(s_time_m, step > 11 ? 11 : step, LV_ANIM_OFF);
+    set_text(s_time_title, TIME_TITLES[s_time_which]);
+    lv_obj_remove_flag(s_time_box, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_time_box);
+}
+
+static void on_time_done(lv_event_t *e)
+{
+    if (lv_event_get_user_data(e)) {
+        time_set(s_time_which, (int)lv_roller_get_selected(s_time_h) * 60 + (int)lv_roller_get_selected(s_time_m) * 5);
+    }
+    lv_obj_add_flag(s_time_box, LV_OBJ_FLAG_HIDDEN);
+}
+
+#if CONFIG_MUSE_GADGET_ALARM
+static void on_alarm_sw(lv_event_t *e)
+{
+    muse_rtc_set_alarm(muse_rtc_alarm(NULL), lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+#endif
+
+static lv_obj_t *time_roller(lv_obj_t *box, const char *options, int x)
+{
+    lv_obj_t *r = lv_roller_create(box);
+    lv_roller_set_options(r, options, LV_ROLLER_MODE_NORMAL);
+    lv_roller_set_visible_row_count(r, 3);
+    lv_obj_set_width(r, 112);
+    lv_obj_set_style_text_font(r, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(r, lv_color_hex(COLOR_DIM), 0);
+    lv_obj_set_style_text_align(r, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_bg_color(r, lv_color_hex(COLOR_CARD), 0);
+    lv_obj_set_style_bg_opa(r, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(r, 0, 0);
+    lv_obj_set_style_radius(r, 18, 0);
+    lv_obj_set_style_bg_color(r, lv_color_hex(COLOR_ACCENT), LV_PART_SELECTED);
+    lv_obj_set_style_bg_opa(r, LV_OPA_COVER, LV_PART_SELECTED);
+    lv_obj_set_style_text_color(r, lv_color_hex(COLOR_TEXT), LV_PART_SELECTED);
+    lv_obj_align(r, LV_ALIGN_CENTER, x, -16);
+    return r;
+}
+
+static void time_button(lv_obj_t *box, const char *text, uint32_t color, int x, bool ok)
+{
+    lv_obj_t *b = lv_button_create(box);
+    lv_obj_remove_style_all(b);
+    lv_obj_set_size(b, 140, ROW_H + 6);
+    lv_obj_set_style_radius(b, 18, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_CARD), 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_CARD_PRESSED), LV_STATE_PRESSED);
+    lv_obj_align(b, LV_ALIGN_CENTER, x, 118);
+    lv_obj_add_event_cb(b, on_time_done, LV_EVENT_CLICKED, ok ? (void *)1 : NULL);
+    lv_obj_center(label(b, &lv_font_montserrat_20, color, text));
+}
+
+/* A time picker over the whole page: hours and minutes (in fives) to roll,
+ * OK and Cancel; on_time_pick opens it for a row. */
+static void build_time_picker(lv_obj_t *p)
+{
+    s_time_box = lv_obj_create(p);
+    lv_obj_remove_style_all(s_time_box);
+    lv_obj_set_size(s_time_box, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(s_time_box, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_time_box, LV_OPA_COVER, 0);
+    lv_obj_add_flag(s_time_box, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);   /* taps stop here */
+    lv_obj_remove_flag(s_time_box, LV_OBJ_FLAG_SCROLLABLE);
+    s_time_title = label(s_time_box, &lv_font_unscii_16, COLOR_ACCENT, "");
+    lv_obj_set_style_text_letter_space(s_time_title, 2, 0);
+    lv_obj_align(s_time_title, LV_ALIGN_TOP_MID, 0, 44);
+    char opts[80];   /* 24 two-digit lines */
+    int n = 0;
+    for (int h = 0; h < 24; h++) {
+        n += snprintf(opts + n, sizeof(opts) - n, h ? "\n%02d" : "%02d", h);
+    }
+    s_time_h = time_roller(s_time_box, opts, -68);
+    n = 0;
+    for (int m = 0; m < 60; m += 5) {
+        n += snprintf(opts + n, sizeof(opts) - n, m ? "\n%02d" : "%02d", m);
+    }
+    s_time_m = time_roller(s_time_box, opts, 68);
+    lv_obj_align(label(s_time_box, &lv_font_montserrat_28, COLOR_TEXT, ":"), LV_ALIGN_CENTER, 0, -18);
+    time_button(s_time_box, "Cancel", COLOR_DIM, -78, false);
+    time_button(s_time_box, LV_SYMBOL_OK "  OK", COLOR_ACCENT, 78, true);
+}
+
 /* A row showing a network, tapped for the list of saved ones beneath it. */
 static lv_obj_t *mode_net_row(lv_obj_t *list, const char *text, int which)
 {
@@ -1273,8 +1419,20 @@ static void build_mode_page(lv_obj_t *tile)
             (void *)(intptr_t)m);
         lv_obj_set_style_text_color(s_mode_checks[m], lv_color_hex(COLOR_ACCENT), 0);
     }
-    note(list, "Night runs 21:00 to 05:00 and Desk the rest of the day, once the clock is set. "
+    for (int i = TIME_NIGHT_FROM; i <= TIME_NIGHT_TO; i++) {
+        row(list, LV_SYMBOL_EYE_CLOSE, i == TIME_NIGHT_FROM ? "Night starts" : "Night ends", &s_time_vals[i],
+            on_time_pick, (void *)(intptr_t)i);
+        lv_obj_set_style_text_color(s_time_vals[i], lv_color_hex(COLOR_ACCENT), 0);
+    }
+    note(list, "Night runs between these times and Desk the rest of the day, once the clock is set. "
                "A mode picked here holds until the next switch.");
+#if CONFIG_MUSE_GADGET_ALARM
+    bool alarm_on;
+    muse_rtc_alarm(&alarm_on);
+    s_alarm_sw = switch_row(list, "Morning alarm", alarm_on, on_alarm_sw);
+    row(list, LV_SYMBOL_BELL, "Alarm time", &s_time_vals[TIME_ALARM], on_time_pick, (void *)(intptr_t)TIME_ALARM);
+    lv_obj_set_style_text_color(s_time_vals[TIME_ALARM], lv_color_hex(COLOR_ACCENT), 0);
+#endif
     s_mode_home = mode_net_row(list, "Home Wi-Fi", PICK_HOME);
     button(list, LV_SYMBOL_WIFI "  Set current as home", COLOR_ACCENT, on_mode_home, NULL);
     s_mode_away = mode_net_row(list, "On-the-go Wi-Fi", PICK_AWAY);
@@ -1287,6 +1445,7 @@ static void build_mode_page(lv_obj_t *tile)
     note(list, "Off shows the 12-hour clock, as 9:30 PM.");
 #endif
     back_row(list, "Back");
+    build_time_picker(s_mode);
 }
 
 static void tick_mode(void)
@@ -1300,6 +1459,13 @@ static void tick_mode(void)
     set_text(s_mode_home, home[0] ? home : "Not set");
     muse_settings_away_ssid(home);
     set_text(s_mode_away, home[0] ? home : "Not set");
+    for (int i = 0; i < TIME_COUNT; i++) {
+        if (s_time_vals[i]) {
+            char t[16];
+            time_text(time_get(i), t, sizeof(t));
+            set_text(s_time_vals[i], t);
+        }
+    }
 }
 
 /* ---------- Battery ---------- */
