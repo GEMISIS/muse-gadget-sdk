@@ -39,6 +39,22 @@ typedef enum {
     MUSE_ACT_PACKAGES,
     MUSE_ACT_UNBOX,
     MUSE_ACT_ASSEMBLE,
+    MUSE_ACT_SEARCH,
+    MUSE_ACT_PAINT,
+    MUSE_ACT_CLOUD,
+    MUSE_ACT_NEWS,
+    MUSE_ACT_CALENDAR,
+    MUSE_ACT_REMINDER,
+    MUSE_ACT_MAIL,
+    MUSE_ACT_CALC,
+    MUSE_ACT_TOOLS,
+    MUSE_ACT_WEATHER,
+    MUSE_ACT_MAP,
+    MUSE_ACT_MUSIC,
+    MUSE_ACT_WRITE,
+    MUSE_ACT_MEMORY,
+    MUSE_ACT_RESPOND,
+    MUSE_ACT_COUNT,
 } muse_act_t;
 
 typedef struct {
@@ -96,8 +112,25 @@ typedef struct {
      * 0..1 through it. ASSEMBLE: the pieces fit together into a little framed
      * picture in his hands, act_progress 0..1 through it, held at 1 till the
      * photo's ready, then 1..2 tucking it into his pocket, which the photo
-     * comes out of (reach). Each plays in full, however quick the image. A
-     * renderer may leave them alone. */
+     * comes out of (reach). Each plays in full, however quick the image.
+     * What Muse says he's at work on (muse_activity.h), each looping as long
+     * as it lasts, its prop popping in and going in a puff: SEARCH, peering
+     * about through a magnifying glass; NEWS, reading a newspaper; CALENDAR,
+     * flipping a little wall calendar; REMINDER, writing sticky notes and
+     * slapping them up (act_progress 1: crossing one out, crumpling it and
+     * tossing it); MAIL, pulling letters out of a mail bag and reading them
+     * in little glasses; CALC, tapping a calculator, sums flying off it;
+     * TOOLS, rummaging in a toolbox for a wrench; WEATHER, under an umbrella,
+     * a rain cloud and the sun by turns; MAP, puzzling over a map, turning
+     * it round; MUSIC, headphones on, bopping, notes floating up; WRITE,
+     * typing on a little laptop; MEMORY, a thought filed away in a cabinet;
+     * RESPOND, done, turning to us, about to talk. PAINT, Muse is making
+     * the image: in a beret at an easel, palette in one paw, dabbing the
+     * picture onto the canvas with a brush (act_progress -1, as long as it
+     * takes); then, made, 0..1 through a flourish and tossing the canvas up
+     * into the cloud the boxes will come out of. CLOUD: that cloud up, its
+     * arrow pulsing, and him waiting on it, tapping a foot, till the bytes
+     * start coming (PACKAGES). A renderer may leave them alone. */
     muse_act_t act;
     float act_t;
     float act_progress;

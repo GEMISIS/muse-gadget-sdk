@@ -147,10 +147,16 @@ For bench testing, `MUSE_BENCH=1 tools/muse/board.sh build|flash ...` adds
 turns on screenshots: `tools/muse/snap.py PORT KEYS OUT.png` sends bench keys
 and saves the screen, and `>face=thinking` (or `idle`, `listening`,
 `speaking`, `error`, `boot`, `off`, `happy`) in KEYS picks the avatar mode first.
-On the 2.16, `>face=phone`, `listen_phone`, `packages`, `unbox` or `assemble`
-(thinking) and `tea`, `pajamas` or `brace` (idle) hold what Muse is up to until
-the next `>face=`; `>face=download` plays a made-up image's whole way in
-(phone, boxes, unboxing, the picture put together).
+On the 2.16, `>face=phone`, `listen_phone`, `packages`, `unbox`, `assemble`,
+`paint` or `toss` (thinking) and `tea`, `pajamas` or `brace` (idle) hold what
+Muse is up to until the next `>face=`; `>face=act:NAME` shows him at one of
+the things Muse says he's at (`search`, `news`, `calendar`, `reminder`,
+`reminder_cancel`, `mail`, `calc`, `tools`, `weather`, `map`, `music`,
+`write`, `memory`, `respond`, `image`: `components/muse/muse_activity.h`),
+and `>activity=TEXT` as if Muse had said TEXT, printing what it's taken for.
+`>face=download` plays a made-up generated image's whole way in (painting it,
+tossing it up into the cloud, waiting on it, the boxes, unboxing, the picture
+put together).
 Screenshots are off in normal builds because each one takes a buffer the size
 of the screen. `>face=` works in any build. Or run `idf.py` directly:
 

@@ -1785,11 +1785,37 @@ static bool photo_out_again(float now, const char *why)
 
 static volatile muse_ui_bench_t s_bench;   /* muse_ui_bench_pose */
 EXT_RAM_BSS_ATTR static volatile float s_bench_at;   /* when it was set */
+EXT_RAM_BSS_ATTR static volatile int s_bench_activity;   /* muse_ui_bench_activity */
+
+#if CORNERS
+/* What Muse says he's at (muse_state_activity), or the bench's made-up one. */
+#define BENCH_PAINT_S 3.0f      /* ">face=download": painting, */
+#define BENCH_CLOUD_S 3.0f      /* tossed up (UNBOX_TOSS_S), and the cloud this long before the bytes */
+static muse_activity_t ui_activity(float now)
+{
+    float bt = now - s_bench_at;
+    switch (s_bench) {
+    case MUSE_UI_BENCH_ACTIVITY:
+        return (muse_activity_t)s_bench_activity;
+    case MUSE_UI_BENCH_TOSS:
+        return bt < 1.0f ? MUSE_ACTIVITY_IMAGE : MUSE_ACTIVITY_IMAGE_MADE;
+    case MUSE_UI_BENCH_DOWNLOAD:
+        return bt < BENCH_PAINT_S ? MUSE_ACTIVITY_IMAGE : MUSE_ACTIVITY_IMAGE_MADE;
+    default:
+        return muse_state_activity();
+    }
+}
+#endif
 
 #if CORNERS && CONFIG_MUSE_HATCH
 /*
- * A reply's image, acted out (with the photo layout): on the phone while it
- * isn't coming yet (pose_act, muse_present_phase's WAITING), then hauling
+ * A reply's image, acted out (with the photo layout). Made by Muse (he says
+ * he's generating it: MUSE_ACTIVITY_IMAGE), he paints it at an easel
+ * (UNBOX_PAINT) as long as that takes; made, he tosses the canvas up into
+ * the cloud (UNBOX_TOSS) and waits on it (UNBOX_CLOUD) while Muse writes out
+ * the push (muse_present_pushing), which comes all at once a minute or more
+ * later. Else on the phone while it isn't coming yet, or at whatever he says
+ * he's at (pose_act, muse_present_phase's WAITING). Then hauling
  * boxes as its bytes come (UNBOX_BOXES, the stack after them), opening them
  * (UNBOX_OPEN), fitting the pieces into a little framed picture (UNBOX_FIT,
  * held there till the photo's ready) and tucking it into his pocket as he
@@ -1803,10 +1829,11 @@ EXT_RAM_BSS_ATTR static volatile float s_bench_at;   /* when it was set */
 #define UNBOX_OPEN_S 1.0f       /* MUSE_ACT_UNBOX */
 #define UNBOX_FIT_S 0.9f        /* MUSE_ACT_ASSEMBLE, to framed */
 #define UNBOX_TUCK_S 0.35f      /* into the pocket, coming back up (ACT_DROP_S) */
-#define BENCH_WAIT_S 2.0f       /* ">face=download": on the phone, */
-#define BENCH_FETCH_S 3.0f      /* then the bytes coming, then never the photo */
+#define UNBOX_TOSS_S 1.8f       /* MUSE_ACT_PAINT's toss, act_progress 0..1 */
+#define UNBOX_CLOUD_S 0.6f      /* the cloud up at least this long before the boxes come */
+#define BENCH_FETCH_S 0.3f      /* ">face=download": the push all at once, then never the photo */
 
-typedef enum { UNBOX_NONE, UNBOX_BOXES, UNBOX_OPEN, UNBOX_FIT, UNBOX_TUCK } unbox_stage_t;
+typedef enum { UNBOX_NONE, UNBOX_BOXES, UNBOX_OPEN, UNBOX_FIT, UNBOX_TUCK, UNBOX_PAINT, UNBOX_TOSS, UNBOX_CLOUD } unbox_stage_t;
 
 EXT_RAM_BSS_ATTR static struct {
     unbox_stage_t stage;
@@ -1828,10 +1855,9 @@ static muse_present_phase_t unbox_phase(float now, float *progress)
     if (s_bench != MUSE_UI_BENCH_DOWNLOAD) {
         return muse_present_phase(progress);
     }
-    float bt = now - s_bench_at;
-    *progress = bt < BENCH_WAIT_S ? -1.0f : fminf(1.0f, (bt - BENCH_WAIT_S) / BENCH_FETCH_S);
-    return bt < BENCH_WAIT_S ? MUSE_PRESENT_WAITING
-         : bt < BENCH_WAIT_S + BENCH_FETCH_S ? MUSE_PRESENT_FETCHING : MUSE_PRESENT_DECODING;
+    float bt = now - s_bench_at, wait = BENCH_PAINT_S + UNBOX_TOSS_S + BENCH_CLOUD_S;
+    *progress = bt < wait ? -1.0f : 1.0f;
+    return bt < wait ? MUSE_PRESENT_WAITING : bt < wait + BENCH_FETCH_S ? MUSE_PRESENT_FETCHING : MUSE_PRESENT_DECODING;
 }
 
 /* Each frame, before photo_tick: moves the stages on. */
@@ -1854,17 +1880,53 @@ static void unbox_tick(muse_mode_t mode, float now)
     xSemaphoreGive(s_image_mutex);
     /* Not coming after all (a web fetch failed over to Muse, a decode failed): back to waiting. */
     bool gone = !coming && (phase == MUSE_PRESENT_WAITING || phase == MUSE_PRESENT_NONE);
+    bool bytes = coming || phase == MUSE_PRESENT_FETCHING || phase == MUSE_PRESENT_DECODING;
+    /* Before them: Muse making it, or writing out the push, in a turn or waited for. */
+    muse_activity_t activity = ui_activity(now);
+    bool pushing = !bench && muse_present_pushing() && phase == MUSE_PRESENT_WAITING;
+    bool turn = mode == MUSE_MODE_THINKING || phase == MUSE_PRESENT_WAITING;
+    bool made = activity == MUSE_ACTIVITY_IMAGE_MADE || pushing;
     unbox_stage_t was = s_unbox.stage;
     if (!s_photo_card || mode == MUSE_MODE_LISTENING) {
         s_unbox.stage = UNBOX_NONE;   /* a new turn, or no photo layout */
     }
     switch (s_unbox.stage) {
     case UNBOX_NONE:
-        if (s_photo_card && mode != MUSE_MODE_LISTENING && s_photo.phase == PHOTO_NONE
-            && (coming || phase == MUSE_PRESENT_FETCHING || phase == MUSE_PRESENT_DECODING)) {
-            s_unbox.stage = UNBOX_BOXES;
-            s_unbox.fill = 0;
-            s_unbox.full_at = -1;
+        if (s_photo_card && mode != MUSE_MODE_LISTENING && s_photo.phase == PHOTO_NONE) {
+            if (bytes) {
+                s_unbox.stage = UNBOX_BOXES;
+                s_unbox.fill = 0;
+                s_unbox.full_at = -1;
+            } else if (turn && activity == MUSE_ACTIVITY_IMAGE && !pushing) {
+                s_unbox.stage = UNBOX_PAINT;
+            } else if (turn && made) {
+                s_unbox.stage = UNBOX_CLOUD;   /* named, not made here: the cloud comes down */
+            }
+        }
+        break;
+    case UNBOX_PAINT:
+        if (bytes || made || activity != MUSE_ACTIVITY_IMAGE) {
+            s_unbox.stage = bytes || made ? UNBOX_TOSS : UNBOX_NONE;   /* made: up it goes */
+        } else if (!turn) {
+            s_unbox.stage = UNBOX_NONE;
+        }
+        break;
+    case UNBOX_TOSS:
+        if (now - s_unbox.at >= UNBOX_TOSS_S) {
+            s_unbox.stage = UNBOX_CLOUD;
+        }
+        break;
+    case UNBOX_CLOUD:
+        if (bytes) {
+            if (now - s_unbox.at >= UNBOX_CLOUD_S) {
+                s_unbox.stage = UNBOX_BOXES;
+                s_unbox.fill = 0;
+                s_unbox.full_at = -1;
+            }
+        } else if (activity == MUSE_ACTIVITY_IMAGE && !pushing) {
+            s_unbox.stage = UNBOX_PAINT;   /* another */
+        } else if (!turn || !made) {
+            s_unbox.stage = UNBOX_NONE;
         }
         break;
     case UNBOX_BOXES: {
@@ -1909,7 +1971,8 @@ static void unbox_tick(muse_mode_t mode, float now)
         break;
     }
     if (s_unbox.stage != was) {
-        static const char *const NAMES[] = { "done", "boxes coming", "unboxing", "putting it together", "into the pocket" };
+        static const char *const NAMES[] = { "done", "boxes coming", "unboxing", "putting it together", "into the pocket",
+                                             "painting it", "tossing it up", "waiting on the cloud" };
         ESP_LOGI(TAG, "image: %s after %.1f s%s", NAMES[s_unbox.stage], (double)(now - s_unbox.at),
                  s_unbox.stage == UNBOX_NONE && was != UNBOX_TUCK ? " (not coming after all)" : "");
         s_unbox.at = now;
@@ -1933,6 +1996,15 @@ static muse_act_t unbox_act(float now, float *progress)
     case UNBOX_TUCK:
         *progress = 1.0f + fminf(1.0f, st / UNBOX_TUCK_S);
         return MUSE_ACT_ASSEMBLE;
+    case UNBOX_PAINT:
+        *progress = -1.0f;
+        return MUSE_ACT_PAINT;
+    case UNBOX_TOSS:
+        *progress = fminf(1.0f, st / UNBOX_TOSS_S);
+        return MUSE_ACT_PAINT;
+    case UNBOX_CLOUD:
+        *progress = -1.0f;
+        return MUSE_ACT_CLOUD;
     default:
         return MUSE_ACT_NONE;
     }
@@ -2665,6 +2737,12 @@ void muse_ui_bench_pose(muse_ui_bench_t what)
     s_bench = what;
 }
 
+void muse_ui_bench_activity(muse_activity_t what)
+{
+    s_bench_activity = what;
+    muse_ui_bench_pose(MUSE_UI_BENCH_ACTIVITY);
+}
+
 /* How braced Muse is, 0..1; *shaken while it's being shaken now. */
 static float update_brace(muse_mode_t mode, float now, bool *shaken)
 {
@@ -2818,8 +2896,9 @@ static void pose_battery(muse_pose_t *pose, float now)
 
 /* The download (MUSE_ACT_PACKAGES) wants the room above him for its cloud,
  * and has the empty space under him to spare: he eases down ACT_DROP_PX for
- * it, stays down to unbox it and put it together, and comes back up as he
- * tucks it into his pocket, before reaching for the photo. */
+ * it (from tossing the canvas up into it, painted, and waiting on it), stays
+ * down to unbox it and put it together, and comes back up as he tucks it
+ * into his pocket, before reaching for the photo. */
 #define ACT_DROP_PX 48
 #define ACT_DROP_S 0.35f
 
@@ -2830,7 +2909,8 @@ static void act_drop(const muse_pose_t *pose, float now)
     float dt = now - last;
     last = now;
     dt = dt < 0 || dt > 0.2f ? 0.05f : dt;
-    bool act = pose->act == MUSE_ACT_PACKAGES || pose->act == MUSE_ACT_UNBOX
+    bool act = pose->act == MUSE_ACT_PACKAGES || pose->act == MUSE_ACT_UNBOX || pose->act == MUSE_ACT_CLOUD
+               || (pose->act == MUSE_ACT_PAINT && pose->act_progress >= 0.0f)   /* tossing it up */
                || (pose->act == MUSE_ACT_ASSEMBLE && pose->act_progress <= 1.0f);
     bool want = CORNERS && act && pose->reach <= 0.0f && !pose->holding;
     drop += want ? dt / ACT_DROP_S : -dt / ACT_DROP_S;
@@ -2841,6 +2921,28 @@ static void act_drop(const muse_pose_t *pose, float now)
         shown = px;
     }
 }
+
+#if CORNERS
+/* The act for what Muse says he's at (an image is unbox_tick's), and its act_progress. */
+static muse_act_t activity_act(muse_activity_t a, float *progress)
+{
+    static const uint8_t ACTS[MUSE_ACTIVITY_COUNT] = {
+        [MUSE_ACTIVITY_SEARCH] = MUSE_ACT_SEARCH,     [MUSE_ACTIVITY_NEWS] = MUSE_ACT_NEWS,
+        [MUSE_ACTIVITY_CALENDAR] = MUSE_ACT_CALENDAR, [MUSE_ACTIVITY_REMINDER] = MUSE_ACT_REMINDER,
+        [MUSE_ACTIVITY_REMINDER_CANCEL] = MUSE_ACT_REMINDER,
+        [MUSE_ACTIVITY_MAIL] = MUSE_ACT_MAIL,         [MUSE_ACTIVITY_CALC] = MUSE_ACT_CALC,
+        [MUSE_ACTIVITY_TOOLS] = MUSE_ACT_TOOLS,       [MUSE_ACTIVITY_WEATHER] = MUSE_ACT_WEATHER,
+        [MUSE_ACTIVITY_MAP] = MUSE_ACT_MAP,           [MUSE_ACTIVITY_MUSIC] = MUSE_ACT_MUSIC,
+        [MUSE_ACTIVITY_WRITE] = MUSE_ACT_WRITE,       [MUSE_ACTIVITY_MEMORY] = MUSE_ACT_MEMORY,
+        [MUSE_ACTIVITY_RESPOND] = MUSE_ACT_RESPOND,
+    };
+    if (a < 0 || a >= MUSE_ACTIVITY_COUNT) {
+        return MUSE_ACT_NONE;
+    }
+    *progress = a == MUSE_ACTIVITY_REMINDER_CANCEL ? 1.0f : -1.0f;   /* crossing one out */
+    return (muse_act_t)ACTS[a];
+}
+#endif
 
 static void pose_act(muse_pose_t *pose, muse_mode_t mode, float mode_t, float now)
 {
@@ -2858,6 +2960,8 @@ static void pose_act(muse_pose_t *pose, muse_mode_t mode, float mode_t, float no
 #endif
     if (want == MUSE_ACT_NONE && mode == MUSE_MODE_THINKING && pose->reach <= 0.0f && !pose->holding) {
         muse_turn_t turn = muse_state_turn();
+        muse_act_t doing = activity_act(ui_activity(now), &progress);
+        bool told = bench == MUSE_UI_BENCH_ACTIVITY;   /* the bench's, straight away */
         if (bench == MUSE_UI_BENCH_PACKAGES) {
             want = MUSE_ACT_PACKAGES;
             progress = fmodf(now / BENCH_BOXES_S, 1.0f);
@@ -2869,12 +2973,14 @@ static void pose_act(muse_pose_t *pose, muse_mode_t mode, float mode_t, float no
             progress = 1.0f;
         } else if (bench == MUSE_UI_BENCH_PHONE) {
             want = MUSE_ACT_PHONE_TALK;
-        } else if (bench == MUSE_UI_BENCH_LISTEN_PHONE || waiting) {
-            want = MUSE_ACT_PHONE_LISTEN;   /* Muse finding or making it, or writing it out */
-        } else if (turn == MUSE_TURN_SENDING || (turn == MUSE_TURN_SENT && mode_t < PHONE_TALK_S)) {
-            want = MUSE_ACT_PHONE_TALK;
-        } else if (turn == MUSE_TURN_SENT) {
+        } else if (bench == MUSE_UI_BENCH_LISTEN_PHONE) {
             want = MUSE_ACT_PHONE_LISTEN;
+        } else if (!waiting && !told && (turn == MUSE_TURN_SENDING || (turn == MUSE_TURN_SENT && mode_t < PHONE_TALK_S))) {
+            want = MUSE_ACT_PHONE_TALK;
+        } else if (doing != MUSE_ACT_NONE) {
+            want = doing;   /* what Muse says he's at */
+        } else if (waiting || turn == MUSE_TURN_SENT) {
+            want = MUSE_ACT_PHONE_LISTEN;   /* Muse finding or making it, or writing it out */
         }
     }
     if (want != act) {
