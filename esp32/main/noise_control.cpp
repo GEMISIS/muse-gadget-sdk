@@ -1449,12 +1449,13 @@ static char *build_register_json(void) {
     cJSON_AddItemToObject(image_optional, "size",
                           typed_param("integer", "Whole image's bytes, if known."));
     add_command(commands, "display.show_image",
-                "Show the user an image on this gadget's screen, privately: "
-                "send the JPEG's bytes base64-encoded in "
-                "chunks of up to 16 KiB, in order from offset 0, final=true "
-                "on the last. A baseline JPEG of 480x480 or smaller is best. "
-                "Never make public links or use display.draw_url for the "
-                "user's pictures. Returns received, complete and shown.",
+                "Show the user an image on this gadget's screen, privately. "
+                "Use it whenever you show the user an image, in the same "
+                "turn. Best: a 200x200 baseline JPEG under 12 KB, sent "
+                "base64-encoded in one chunk (offset 0, final=true); larger "
+                "goes in chunks of up to 16 KiB, in order. Never make public "
+                "links or use display.draw_url for the user's pictures. "
+                "Returns received, complete and shown.",
                 image_required, image_optional);
 #endif
 

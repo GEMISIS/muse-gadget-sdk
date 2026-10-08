@@ -219,6 +219,33 @@ static void load_told(const char *key, int8_t *out)
     }
 }
 
+/* What chats were told under older words (MUSE_SETTINGS_CONTRACTS_VERSION):
+ * forgotten, once, so each hears the new ones with its next message. */
+static void forget_old_told(void)
+{
+    uint8_t v = 1;   /* builds before the version was kept */
+    nvs_get_u8(s_nvs, "told_ver", &v);
+    if (v == MUSE_SETTINGS_CONTRACTS_VERSION) {
+        return;
+    }
+    s.told_main = s.told_gadget = -1;
+    nvs_erase_key(s_nvs, "told_main");
+    nvs_erase_key(s_nvs, "told_gadget");
+    bool named = false;
+    for (int i = 0; i < s.chats_n; i++) {
+        named |= s.chats[i].told_mode != -1;
+        s.chats[i].told_mode = -1;
+    }
+    nvs_set_u8(s_nvs, "told_ver", MUSE_SETTINGS_CONTRACTS_VERSION);
+    if (named) {
+        save_chats();   /* commits */
+    } else {
+        nvs_commit(s_nvs);
+    }
+    ESP_LOGI(TAG, "mode contracts v%d (were v%u): every chat hears them again", MUSE_SETTINGS_CONTRACTS_VERSION,
+             (unsigned)v);
+}
+
 static int find_chat_sid(const char *sid)
 {
     for (int i = 0; i < s.chats_n; i++) {
@@ -322,6 +349,7 @@ esp_err_t muse_settings_init(void)
     load_chats();
     load_told("told_main", &s.told_main);
     load_told("told_gadget", &s.told_gadget);
+    forget_old_told();
 
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
