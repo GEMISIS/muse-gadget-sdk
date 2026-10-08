@@ -127,6 +127,7 @@ static void speak(unsigned r)
     size_t pos = 0;
     size_t frames = 0;
     int64_t t0 = esp_timer_get_time();
+    int64_t first_us = 0;   /* the first speech out: how long the words took to start */
     bool ok = true;
     while (ok && !stopped(r)) {
         /* Final before length: the length is set first, so it's complete once final is. */
@@ -155,6 +156,11 @@ static void speak(unsigned r)
         do {
             size_t n = 0;
             step = picotts_engine_get(pcm, STEP_FRAMES, &n);
+            if (n && !first_us) {
+                first_us = esp_timer_get_time();
+                ESP_LOGI(TAG, "first speech %lld ms after the text (%u chars)", (long long)(first_us - t0) / 1000,
+                         (unsigned)len);
+            }
             if (n && !emit(r, pcm, n)) {
                 break;
             }
