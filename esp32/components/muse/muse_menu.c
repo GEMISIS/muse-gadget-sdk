@@ -33,18 +33,19 @@
 #include "muse_link.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#include "muse_style.h"
 #include "muse_text.h"
 #include "muse_voice.h"
 #include "muse_wifi.h"
 
 static const char *TAG = "muse_menu";
 
-#define COLOR_TEXT 0xf2efff
-#define COLOR_DIM 0x8b84a8
-#define COLOR_ACCENT 0xa77dff
-#define COLOR_SELECTED 0x2e2552
-#define COLOR_RULE 0x2a2345
-#define COLOR_DANGER 0xff5c5c
+#define COLOR_TEXT MUSE_COLOR_TEXT
+#define COLOR_DIM MUSE_COLOR_DIM
+#define COLOR_ACCENT MUSE_COLOR_ACCENT
+#define COLOR_SELECTED MUSE_COLOR_CARD_PRESSED
+#define COLOR_RULE MUSE_COLOR_TRACK
+#define COLOR_DANGER MUSE_COLOR_DANGER
 
 /* 128 px screens want a smaller face than the 14 px every board has. */
 #if LV_FONT_MONTSERRAT_12

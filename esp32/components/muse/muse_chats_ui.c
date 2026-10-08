@@ -35,21 +35,11 @@
 #include "muse_chat_delete.h"
 #include "muse_dialog.h"
 #include "muse_settings.h"
+#include "muse_style.h"
 #include "muse_ui.h"
 
-#define LIST_W 330
-#define LIST_TOP 84
-#define ROW_H 70        /* the settings rows' height on this board (muse_settings_ui.c) */
-#define GUTTER 12       /* either side of the rows; the scrollbar runs down the right one */
-#define TICK_W 24       /* the tick's room on the right, kept whether or not it shows */
 #define NOTE_MAX 96
 #define NOTE_US 4000000   /* how long a note stays */
-
-#define COLOR_TEXT 0xf2efff
-#define COLOR_DIM 0x8b84a8
-#define COLOR_CARD 0x1a1530
-#define COLOR_CARD_PRESSED 0x2e2552
-#define COLOR_ACCENT 0xa77dff
 
 /* Delete from Muse needs the Muse's own chat session (CONFIG_MUSE_HATCH). */
 #define CAN_DELETE (CONFIG_MUSE_HATCH && CONFIG_MUSE_GADGET_CHATS)
@@ -68,15 +58,6 @@ static char s_forget_sid[MUSE_CHAT_SID_MAX + 1];   /* the chat the forget card i
 #if CAN_DELETE
 static uint32_t s_delete_gen;   /* the muse_chat_delete_status shown */
 #endif
-
-static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, const char *text)
-{
-    lv_obj_t *l = lv_label_create(parent);
-    lv_obj_set_style_text_font(l, font, 0);
-    lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
-    lv_label_set_text(l, text);
-    return l;
-}
 
 static void set_text(lv_obj_t *l, const char *text)
 {
@@ -104,61 +85,31 @@ static void expire_note(void)
 }
 
 /*
- * Scrolls only when its content doesn't fit, with no bounce when it does,
- * and a scrollbar while it doesn't: dim on black, by the right edge, its
- * bottom end `bottom` px up (clear of a curve or a rounded corner).
- */
-static void scroll_column(lv_obj_t *o, int bottom)
-{
-    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLL_ELASTIC);
-    lv_obj_set_scroll_dir(o, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(o, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_set_style_width(o, 6, LV_PART_SCROLLBAR);
-    lv_obj_set_style_radius(o, 3, LV_PART_SCROLLBAR);
-    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, LV_PART_SCROLLBAR);
-    lv_obj_set_style_bg_color(o, lv_color_hex(COLOR_DIM), LV_PART_SCROLLBAR);
-    lv_obj_set_style_pad_right(o, 3, LV_PART_SCROLLBAR);
-    lv_obj_set_style_pad_top(o, 8, LV_PART_SCROLLBAR);
-    lv_obj_set_style_pad_bottom(o, bottom, LV_PART_SCROLLBAR);
-}
-
-/*
  * Tappable row: an icon, the text over a smaller dim line (sub, if not NULL),
  * and room for a tick on the right. The text keeps its width either way, and
  * a long one ends in "...".
  */
 static lv_obj_t *row(const char *icon, const char *text, const char *sub, lv_event_cb_t cb, void *user)
 {
-    lv_obj_t *c = lv_button_create(s_list);
-    lv_obj_remove_style_all(c);
-    lv_obj_set_size(c, lv_pct(100), ROW_H);
-    lv_obj_set_style_radius(c, 18, 0);
-    lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(c, lv_color_hex(COLOR_CARD), 0);
-    lv_obj_set_style_bg_color(c, lv_color_hex(COLOR_CARD_PRESSED), LV_STATE_PRESSED);
-    lv_obj_set_style_pad_hor(c, 16, 0);
-    lv_obj_set_style_pad_column(c, 12, 0);
-    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
-    label(c, &lv_font_montserrat_24, COLOR_ACCENT, icon);
+    lv_obj_t *c = muse_style_row(s_list, true, false);
+    muse_style_label(c, MUSE_FONT_ROW, MUSE_COLOR_ACCENT, icon);
     lv_obj_t *col = lv_obj_create(c);
     lv_obj_remove_style_all(col);
     lv_obj_remove_flag(col, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);   /* taps go to the row */
     lv_obj_set_height(col, LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(col, 1);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-    lv_obj_t *t = label(col, &lv_font_montserrat_24, COLOR_TEXT, text);
+    lv_obj_t *t = muse_style_label(col, MUSE_FONT_ROW, MUSE_COLOR_TEXT, text);
     lv_obj_set_width(t, lv_pct(100));
     lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_DOTS);
     if (sub) {
-        lv_obj_t *s = label(col, &lv_font_montserrat_16, COLOR_DIM, sub);
+        lv_obj_t *s = muse_style_label(col, MUSE_FONT_NOTE, MUSE_COLOR_DIM, sub);
         lv_obj_set_width(s, lv_pct(100));
         lv_label_set_long_mode(s, LV_LABEL_LONG_MODE_DOTS);
     }
     lv_obj_add_event_cb(c, cb, LV_EVENT_ALL, user);
-    lv_obj_t *v = label(c, &lv_font_montserrat_20, COLOR_ACCENT, "");
-    lv_obj_set_width(v, TICK_W);
+    lv_obj_t *v = muse_style_label(c, MUSE_FONT_VALUE, MUSE_COLOR_ACCENT, "");
+    lv_obj_set_width(v, MUSE_TICK_W);
     lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
     return v;
 }
@@ -235,9 +186,10 @@ static void rebuild(void)
         s_values[i] = row(icon, name, told, on_chat, (void *)(intptr_t)i);
     }
     /* A short word on what a tap just did; the "?" explains the rest. */
-    s_note = label(s_list, &lv_font_montserrat_16, COLOR_DIM, s_note_text);
+    s_note = muse_style_label(s_list, MUSE_FONT_NOTE, MUSE_COLOR_DIM, s_note_text);
     lv_obj_set_width(s_note, lv_pct(100));
     lv_label_set_long_mode(s_note, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_set_style_text_align(s_note, LV_TEXT_ALIGN_CENTER, 0);   /* as the settings pages' notes */
 }
 
 /* ---------- cards over the list: help, and forgetting a chat ---------- */
@@ -251,9 +203,9 @@ static void help_tip(lv_obj_t *body, const char *icon, const char *text)
     lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(r, 12, 0);
     lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_t *i = label(r, &lv_font_montserrat_16, COLOR_ACCENT, icon);
+    lv_obj_t *i = muse_style_label(r, MUSE_FONT_NOTE, MUSE_COLOR_ACCENT, icon);
     lv_obj_set_width(i, 20);
-    lv_obj_t *t = label(r, &lv_font_montserrat_16, COLOR_TEXT, text);
+    lv_obj_t *t = muse_style_label(r, MUSE_FONT_NOTE, MUSE_COLOR_TEXT, text);
     lv_obj_set_flex_grow(t, 1);
     lv_obj_set_style_text_line_space(t, 2, 0);
     lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_WRAP);
@@ -334,43 +286,37 @@ static void on_help(lv_event_t *e)
     open_help();
 }
 
-/* "?" in the top left corner, level with the title: 48 px to tap. */
+/* "?" in the top left corner, level with the title (muse_style_help_button,
+ * as in a dialog's corner). */
 static void build_help_button(lv_obj_t *tile)
 {
     s_tile = tile;
-    lv_obj_t *b = lv_button_create(tile);
-    lv_obj_remove_style_all(b);
-    lv_obj_set_size(b, 48, 48);
-    lv_obj_align(b, LV_ALIGN_TOP_LEFT, 20, 28);
-    lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_CARD), 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_CARD_PRESSED), LV_STATE_PRESSED);
+    lv_obj_t *b = muse_style_help_button(tile);
+    lv_obj_align(b, LV_ALIGN_TOP_LEFT, 20, MUSE_TITLE_Y + lv_font_get_line_height(MUSE_FONT_TITLE) / 2 - MUSE_HELP_D / 2);
     lv_obj_add_event_cb(b, on_help, LV_EVENT_CLICKED, NULL);
-    lv_obj_center(label(b, &lv_font_montserrat_20, COLOR_ACCENT, "?"));
 }
 
+/* Laid out as a settings page is (muse_settings_ui.c's page()), from the
+ * same sizes (muse_style.h). */
 void muse_chats_ui_build(lv_obj_t *tile)
 {
     lv_obj_set_style_bg_color(tile, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
     lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *t = label(tile, &lv_font_unscii_16, COLOR_ACCENT, "CHATS");
-    lv_obj_set_style_text_letter_space(t, 2, 0);
-    lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 44);
+    muse_style_title(tile, "CHATS");
 
     s_list = lv_obj_create(tile);
     lv_obj_remove_style_all(s_list);
-    lv_obj_set_size(s_list, LIST_W + 2 * GUTTER, muse_board->height - LIST_TOP);
-    lv_obj_align(s_list, LV_ALIGN_TOP_MID, 0, LIST_TOP);
+    lv_obj_set_size(s_list, MUSE_LIST_W + 2 * MUSE_LIST_GUTTER, muse_board->height - MUSE_LIST_TOP);
+    lv_obj_align(s_list, LV_ALIGN_TOP_MID, 0, MUSE_LIST_TOP);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(s_list, 10, 0);
-    lv_obj_set_style_pad_hor(s_list, GUTTER, 0);
+    lv_obj_set_style_pad_row(s_list, MUSE_ROW_GAP, 0);
+    lv_obj_set_style_pad_hor(s_list, MUSE_LIST_GUTTER, 0);
     /* Clear of the page dots, or a round screen's bottom curve; no more, or
      * a list that fits would scroll. */
-    lv_obj_set_style_pad_bottom(s_list, muse_board->round ? 110 : 40, 0);
-    scroll_column(s_list, muse_board->round ? 90 : 16);
+    lv_obj_set_style_pad_bottom(s_list, muse_board->round ? 110 : MUSE_LIST_PAD_BOTTOM, 0);
+    muse_style_scroll_column(s_list, 6, 3, 8, muse_board->round ? 90 : 16);
     build_help_button(tile);
 }
 
