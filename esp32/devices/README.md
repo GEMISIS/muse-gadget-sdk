@@ -88,6 +88,9 @@ and is not a Muse input while the display runs.
 The Waveshare 2.16-inch board's top-right key (GPIO18) is push-to-talk.
 BOOT and PWR both act as its second key (sleep, hold to power off). PWR is
 wired only to the AXP2101, so Muse reads it from the power chip, not a GPIO.
+In Night and On-the-go modes its screen turns over with the board, from the
+IMU, so it reads right way up when charging stood on its keys. At night the
+face shows a big clock and Muse asleep in bed, sitting up to listen and answer.
 
 The SenseCAP Indicator's sensors hang off its RP2040, which passes the
 readings to the ESP32-S3. The D1S and D1Pro have CO2 and tVOC sensors built

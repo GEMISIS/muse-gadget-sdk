@@ -39,12 +39,15 @@ bool muse_home_extras_24h(void);
 void muse_home_extras_set_24h(bool on);
 /* The clock label, for muse_ui.c to hide while a reply takes the top. */
 lv_obj_t *muse_home_extras_clock(void);
+/* The Night face's big clock (CONFIG_MUSE_GADGET_NIGHT_FACE), or the usual. */
+void muse_home_extras_set_night(bool night);
 #else
 static inline void muse_home_extras_build(lv_obj_t *face) { (void)face; }
 static inline void muse_home_extras_tick(float now) { (void)now; }
 static inline lv_obj_t *muse_home_extras_clock(void) { return NULL; }
 static inline bool muse_home_extras_24h(void) { return false; }
 static inline void muse_home_extras_set_24h(bool on) { (void)on; }
+static inline void muse_home_extras_set_night(bool night) { (void)night; }
 #endif
 
 #ifdef __cplusplus

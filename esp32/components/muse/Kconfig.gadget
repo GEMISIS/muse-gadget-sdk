@@ -121,4 +121,14 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
         depends on MUSE_GADGET_EXTRAS
         default y
 
+    config MUSE_GADGET_NIGHT_FACE
+        bool "Night face: a big clock, and Muse asleep in bed"
+        depends on MUSE_GADGET_HOME_EXTRAS
+        default y
+        help
+            In Night mode the clock grows to fill the top of the face and
+            Muse, smaller and lower, sleeps tucked up in bed. It sits up to
+            listen and answer, and goes back to sleep after. Needs
+            LV_FONT_MONTSERRAT_48 for the clock.
+
 endmenu

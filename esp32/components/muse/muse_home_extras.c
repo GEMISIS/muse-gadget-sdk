@@ -19,7 +19,7 @@
  * bezel ring is a 236 px circle about the centre; everything here stays
  * outside it: battery and steps in the bottom right corner, the top corners
  * being left to the button icons, as the keys are on the top edge. The clock
- * goes above Muse instead (CLOCK_Y).
+ * goes above Muse instead (CLOCK_Y), and grows big on the Night face.
  */
 #include "muse_home_extras.h"
 
@@ -43,6 +43,13 @@
  * under the status line and the state, above Muse's head; once paired that
  * row is empty. Offsets are for a 466 px tall screen, as muse_ui.c's are. */
 #define CLOCK_Y 60
+/* The Night face's: big, over Muse in bed, which muse_ui.c moves lower. */
+#define CLOCK_NIGHT_Y 84
+#if LV_FONT_MONTSERRAT_48
+#define FONT_NIGHT (&lv_font_montserrat_48)
+#else
+#define FONT_NIGHT (&lv_font_montserrat_28)
+#endif
 
 static lv_obj_t *s_clock;
 static lv_obj_t *s_batt;
@@ -99,6 +106,12 @@ void muse_home_extras_set_24h(bool on)
 lv_obj_t *muse_home_extras_clock(void)
 {
     return s_clock;
+}
+
+void muse_home_extras_set_night(bool night)
+{
+    lv_obj_set_style_text_font(s_clock, night ? FONT_NIGHT : &lv_font_montserrat_20, 0);
+    lv_obj_align(s_clock, LV_ALIGN_TOP_MID, 0, (night ? CLOCK_NIGHT_Y : CLOCK_Y) + (muse_board->height - 466) / 2);
 }
 
 static void set_text(lv_obj_t *l, const char *text)

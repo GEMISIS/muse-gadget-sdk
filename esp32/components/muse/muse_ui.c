@@ -66,6 +66,7 @@ static const char *TAG = "muse_ui";
 #define SPEAKER_PX 64
 #define SPEAKER_GROW_PX 8       /* how much the speaker button swells while held */
 #define SPEAKER_HOLD_MS 400     /* LVGL's long press */
+#define NIGHT_CELL_PX 3         /* Muse's grid cells in bed on the Night face */
 
 #define COLOR_DIM 0x8b84a8
 #define COLOR_CAPTION 0xd8d2ff
@@ -169,6 +170,10 @@ static int s_answer = -1;       /* the layout showing, or -1 */
 static int s_page_for = -1;     /* the layout the reply's page is sized for */
 static int s_big_y;             /* Muse's centre at full size */
 static int s_muse_y;            /* and now */
+/* The Night face (CONFIG_MUSE_GADGET_NIGHT_FACE): Muse smaller and lower, in
+ * bed, under a big clock. Its reply heard stays there if it clears the page. */
+static bool s_night;
+static int s_night_y, s_night_heard_y;
 static int s_from_px, s_from_y, s_to_px, s_to_y;
 
 static const char *const MODE_NAMES[MUSE_MODE_COUNT] = {
@@ -672,7 +677,13 @@ static void set_answer(int which)
         lv_obj_align(s_reply_lbl, LV_ALIGN_CENTER, 0, l->top + l->h / 2);
         lv_obj_set_style_text_align(s_reply_lbl, l->align, 0);
     }
-    move_muse(l ? l->px : s_canvas_px, l ? l->y : s_big_y);
+    int px = l ? l->px : s_canvas_px, y = l ? l->y : s_big_y;
+    if (s_night && which != ANSWER_READ) {
+        /* In bed it sits up where it is (muse_pixel.c) rather than growing. */
+        px = MUSE_PX_W * NIGHT_CELL_PX;
+        y = l ? s_night_heard_y : s_night_y;
+    }
+    move_muse(px, y);
 }
 
 /* Whether a reply `w` px wide fits across the screen `y` px from the centre. */
@@ -764,6 +775,8 @@ static void build_answer(lv_obj_t *face, int ring_in)
     if (l->top < art_bottom + 6) {
         l->y -= art_bottom + 6 - l->top;   /* no room under Muse: it moves up */
     }
+    int night_bottom = s_night_y + MUSE_PX_W * NIGHT_CELL_PX / 2 - ART_BLANK_ROWS * NIGHT_CELL_PX;
+    s_night_heard_y = s_night_y - (night_bottom + 6 > l->top ? night_bottom + 6 - l->top : 0);
 
     l = &s_answers[ANSWER_READ];
     int status_bottom = 20 + s_dy + 16 - s_h / 2;
@@ -905,6 +918,8 @@ static void build_screen(void)
     int meter_y = cap_top - 6 - METER_SEG_PX / 2;
     int art_bottom = meter_y - METER_SEG_PX / 2 - 4;
     s_big_y = s_small ? 0 : art_bottom - (s_canvas_px / 2 - ART_BLANK_ROWS * (s_canvas_px / MUSE_PX_W));
+    /* In bed, its foot on the same line. */
+    s_night_y = art_bottom - (MUSE_PX_W * NIGHT_CELL_PX / 2 - ART_BLANK_ROWS * NIGHT_CELL_PX);
 
     /* The character. */
     muse_image_init();
@@ -1500,6 +1515,24 @@ static void update_status(muse_mode_t mode, float now)
     update_power(now);
 }
 
+/*
+ * The Night face, in the full layout of a board that has it: on the way in
+ * and out, the clock changes size and Muse moves to or from its bed (or, in
+ * the middle of a reply, to where that reply's layout has it at night).
+ */
+static void update_night(void)
+{
+#if CONFIG_MUSE_GADGET_NIGHT_FACE
+    bool night = !s_small && muse_gadget_mode() == MUSE_GADGET_NIGHT;
+    if (night == s_night) {
+        return;
+    }
+    s_night = night;
+    muse_home_extras_set_night(night);
+    set_answer(s_answer);
+#endif
+}
+
 static volatile bool s_snapshot;
 
 /* Streams the screen over the USB cable as base64 RGB565 (bench testing; needs
@@ -1583,13 +1616,17 @@ static void frame_tick(lv_timer_t *timer)
     float level = muse_state_level();
     s_level += (level - s_level) * (level > s_level ? 0.6f : 0.2f);
 
+    update_night();
     muse_pose_t pose = {
         .mode = mode,
         .t = now,
         .mode_t = mode_t,
         .level = s_level,
         .happy = muse_state_happiness(),
+        .bed = s_night,
     };
+    /* Asleep in bed while idle; it sits up to listen and answer, or to a pat. */
+    pose.sleepy = s_night && mode == MUSE_MODE_IDLE && pose.happy < 0.05f;
     muse_pixel_render(&pose);
     invalidate_muse();
 
