@@ -243,7 +243,9 @@ static void on_help(lv_event_t *e)
     lv_obj_t *card;
     s_help = backdrop(s_parent, &card);
     para(card, &lv_font_montserrat_20, COLOR_TEXT, s_title);
-    para(card, &lv_font_montserrat_16, COLOR_TEXT, s_help_text);
+    lv_obj_t *t = para(card, &lv_font_montserrat_16, COLOR_TEXT, s_help_text);
+    lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_LEFT, 0);   /* a few lines, read down the left */
+    lv_obj_set_style_pad_bottom(t, 4, 0);
     lv_obj_add_event_cb(card_button(card, "Got it", MUSE_DIALOG_ACCENT), on_help_done, LV_EVENT_CLICKED, NULL);
 }
 

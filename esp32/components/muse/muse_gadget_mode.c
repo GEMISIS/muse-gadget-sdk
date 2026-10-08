@@ -29,6 +29,7 @@
 #include "sdkconfig.h"
 
 #include "muse_chat.h"
+#include "muse_dialog.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_wifi.h"
@@ -537,4 +538,34 @@ void muse_gadget_mode_ui_tick(float now)
         && (now > s_toast_until || mode == MUSE_GADGET_ON_THE_GO)) {
         lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+static void on_mode_option(void *user)
+{
+    muse_gadget_mode_pick((muse_gadget_mode_t)(intptr_t)user);
+}
+
+void muse_mode_dialog_open(void)
+{
+    static const char *const ICONS[MUSE_GADGET_MODE_COUNT] = {
+        [MUSE_GADGET_DESK] = LV_SYMBOL_HOME,
+        [MUSE_GADGET_NIGHT] = LV_SYMBOL_EYE_CLOSE,
+        [MUSE_GADGET_ON_THE_GO] = LV_SYMBOL_GPS,
+    };
+    muse_dialog_option_t options[MUSE_GADGET_MODE_COUNT];
+    muse_gadget_mode_t cur = muse_gadget_mode();
+    for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
+        options[m] = (muse_dialog_option_t){ NAMES[m], ICONS[m], (int)cur == m, on_mode_option, (void *)(intptr_t)m };
+    }
+    const muse_dialog_t d = {
+        .title = "Mode",
+        .help = "Desk: full detail, and replies are spoken.\n"
+                "Night: quiet and dim; Muse works on things in the background.\n"
+                "On-the-go: short replies, as captions only.\n\n"
+                "Muse switches by itself, by the time of day and the Wi-Fi it's on. "
+                "A mode you pick holds until the next switch.",
+        .options = options,
+        .option_count = MUSE_GADGET_MODE_COUNT,
+    };
+    muse_dialog_open(NULL, &d);
 }
