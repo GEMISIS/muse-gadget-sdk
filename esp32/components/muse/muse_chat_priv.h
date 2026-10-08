@@ -75,7 +75,7 @@ static inline void muse_chat_reject(muse_chat_rejected_t *rejected, const char *
 #define MUSE_HATCH_NOTE_HEAD "{\"message\":\"" MUSE_HATCH_NOTE_REST
 #define MUSE_HATCH_NOTE_TAIL "\"}]}"
 /* The longest message a note's head carries (the gadget mode's contract), in bytes. */
-#define MUSE_CHAT_NOTE_MESSAGE_MAX 320
+#define MUSE_CHAT_NOTE_MESSAGE_MAX 640   /* a mode contract, and a new chat's retitle ask ahead of it */
 /* Room for NOTE_HEAD with a session_id and a message (muse_chat_note_head), and for a subscribe body. */
 #define MUSE_CHAT_NOTE_HEAD_MAX (sizeof(MUSE_HATCH_NOTE_HEAD) + 96 + 2 * MUSE_CHAT_NOTE_MESSAGE_MAX)
 #define MUSE_CHAT_SUB_BODY_MAX 96
