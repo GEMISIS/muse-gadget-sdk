@@ -45,6 +45,7 @@ API (muse_pixel.h, unchanged; implement exactly these)
       float dizzy;    // optional: 0..1 shaken by an earthquake, easing out
       float reach;    // optional: 0..1 reaching into a pocket on the body's right side
       bool holding;   // optional: holding a reply's image up; the UI draws the arms
+      float plugged;  // optional: 0..1 just plugged in to charge, easing out over ~2 s
   } muse_pose_t;
   uint32_t muse_pixel_accent(muse_mode_t mode);    // 0xRRGGBB accent for the UI around the avatar
   void muse_pixel_render(const muse_pose_t *pose); // draw one frame into the 64x64 grid
@@ -56,11 +57,11 @@ API (muse_pixel.h, unchanged; implement exactly these)
 KEEP FROM THE ORIGINAL (reuse its code verbatim where it fits)
 - Framebuffer: uint8_t palette indices, 64x64, black background (index 0 is
   0x000000; the round screen's bezel is black).
-- Palette: an enum of colour roles, at most 40 entries (the default has 36, the
+- Palette: an enum of colour roles, at most 40 entries (the default has 39, the
   background included): outline, dark/mid/light/highlight body tones, face
   tones, eye, shine, blush, mouth, tongue, a 4-step per-mode glow ramp,
-  aura x2, sparkle, accent, shadow, heart, white, and the bed's pillow x2,
-  quilt x3 and wood x2. Fixed avatar colours go in
+  aura x2, sparkle, accent, shadow, heart, white, the bed's pillow x2,
+  quilt x3 and wood x2, and a lightning bolt's yellow x3. Fixed avatar colours go in
   one table. A per-mode scheme table (glow ramp and accent) blends toward
   the current mode with 1 - expf(-dt * 7). Precompute RGB565 and a 0.72x
   "dim" copy of every entry once per frame.
@@ -131,6 +132,11 @@ ANIMATION BEATS (every one of these, adapted to your body)
   the image is held up over the head and the UI draws the arms from the
   shoulders (grid (18, 34) and (46, 34)) to its corners, so draw no arms of
   your own; look up a little and pleased (more blush).
+- plugged > 0 (optional; the board was just plugged in to charge, IDLE
+  only): 1 at the plug, easing to 0 over ~2 s. Happy hops with arms up, ^^
+  eyes and a grin, more blush, a faster whirl of extra sparkles, and a small
+  yellow lightning bolt (about 7x9, outlined) popping up beside the head at
+  the top right, with a pulsing dithered glow, that flickers out below 0.25.
 - Keep it readable at 64x64: expressions come from 2-5 px shapes, so
   exaggerate. The face needs strong contrast against the body.
 

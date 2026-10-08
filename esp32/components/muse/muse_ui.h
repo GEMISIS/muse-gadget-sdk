@@ -36,6 +36,11 @@ bool muse_ui_dark(void);
  * and is dizzy for a moment after. */
 void muse_ui_quake(void);
 
+/* From any task (just plugged in to charge, muse_input.c): Muse cheers for
+ * about two seconds (muse_pose_t.plugged), if the face is drawn and idle
+ * within a moment, the screen waking meanwhile; otherwise it's dropped. */
+void muse_ui_plugged(void);
+
 /* The functions below run in the LVGL task (or with the display lock held). */
 
 /* Slide back to the face (e.g. when a talk starts). */

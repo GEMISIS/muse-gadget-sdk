@@ -55,6 +55,11 @@ typedef struct {
      * while either is on. A renderer may leave both alone. */
     float reach;
     bool holding;
+    /* 0..1: just plugged in to charge (muse_ui_plugged), 1 at the plug and
+     * easing to 0 over about two seconds. A happy hop with arms up, a whirl
+     * of sparkles, and a lightning bolt popping up beside the head, glowing,
+     * that flickers out. Idle only. A renderer may leave it alone. */
+    float plugged;
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */

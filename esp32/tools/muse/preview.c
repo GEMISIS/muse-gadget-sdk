@@ -73,5 +73,6 @@ int main(int argc, char **argv)
     shot(dir, "dizzy", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 120.3f, .mode_t = 9, .dizzy = 1 });
     shot(dir, "reach", (muse_pose_t){ .mode = MUSE_MODE_SPEAKING, .t = 130.2f, .mode_t = 2, .level = 0.3f, .reach = 1 });
     shot(dir, "holding", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 140.6f, .mode_t = 9, .holding = true });
+    shot(dir, "plugged", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 150.2f, .mode_t = 9, .plugged = 0.8f });
     return 0;
 }

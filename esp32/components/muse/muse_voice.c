@@ -179,29 +179,11 @@ static void idle_capture(void)
     s_pre_fill = s_pre_fill < PRE_CHUNKS ? s_pre_fill + 1 : PRE_CHUNKS;
 }
 
-/*
- * Plays an earcon (muse_voice.h) through s_chunk, which is free between
- * reads: a sine gliding from f0 to f1 with a quick attack and a fast decay.
- * Nothing with the speaker off; half as loud at night. Returns whether it
- * played, so a caller can skip the echo it leaves in the capture.
- */
-static bool earcon_play(muse_earcon_t which)
+/* One earcon note through s_chunk: a sine gliding from f0 to f1 over ms, with a quick attack and a fast decay. */
+static void earcon_note(float f0, float f1, int ms, float level)
 {
-    static const struct {
-        uint16_t ms, f0, f1;
-    } SHAPES[] = {
-        [MUSE_EARCON_TICK] = { 25, 1800, 1700 },
-        [MUSE_EARCON_LISTEN] = { 70, 880, 1320 },
-        [MUSE_EARCON_STOP] = { 70, 740, 440 },
-        [MUSE_EARCON_CLICK] = { 15, 2400, 1600 },
-    };
-    if ((unsigned)which >= sizeof(SHAPES) / sizeof(SHAPES[0]) || !muse_settings_speaker_on()
-        || !muse_settings_volume()) {
-        return false;
-    }
-    float level = EARCON_LEVEL * (muse_gadget_mode() == MUSE_GADGET_NIGHT ? 0.5f : 1.0f);
-    int n = MUSE_AUDIO_RATE * SHAPES[which].ms / 1000;
-    float f0 = SHAPES[which].f0, df = (float)SHAPES[which].f1 - f0, phase = 0;
+    int n = MUSE_AUDIO_RATE * ms / 1000;
+    float df = f1 - f0, phase = 0;
     for (int at = 0; at < n; at += MUSE_AUDIO_CHUNK) {
         int len = n - at < MUSE_AUDIO_CHUNK ? n - at : MUSE_AUDIO_CHUNK;
         for (int i = 0; i < len; i++) {
@@ -212,6 +194,42 @@ static bool earcon_play(muse_earcon_t which)
         }
         muse_audio_write(s_chunk, len);
     }
+}
+
+/*
+ * Plays an earcon (muse_voice.h) through s_chunk, which is free between
+ * reads: one note (earcon_note), or the charge jingle's few. Nothing with
+ * the speaker off; half as loud at night. Returns whether it played, so a
+ * caller can skip the echo it leaves in the capture.
+ */
+static bool earcon_play(muse_earcon_t which)
+{
+    static const struct {
+        uint16_t ms, f0, f1;
+    } SHAPES[] = {
+        [MUSE_EARCON_TICK] = { 25, 1800, 1700 },
+        [MUSE_EARCON_LISTEN] = { 70, 880, 1320 },
+        [MUSE_EARCON_STOP] = { 70, 740, 440 },
+        [MUSE_EARCON_CLICK] = { 15, 2400, 1600 },
+        [MUSE_EARCON_CHARGE] = { 0, 0, 0 },   /* CHARGE, below */
+    };
+    /* Plugged in: E5 G#5 B5 plucked, up to an E6 that rings on, 0.5 s in all. */
+    static const struct {
+        uint16_t ms, f;
+    } CHARGE[] = { { 75, 659 }, { 75, 831 }, { 75, 988 }, { 275, 1319 } };
+    if ((unsigned)which >= sizeof(SHAPES) / sizeof(SHAPES[0]) || !muse_settings_speaker_on()
+        || !muse_settings_volume()) {
+        return false;
+    }
+    float level = EARCON_LEVEL * (muse_gadget_mode() == MUSE_GADGET_NIGHT ? 0.5f : 1.0f);
+    if (which == MUSE_EARCON_CHARGE) {
+        for (size_t k = 0; k < sizeof(CHARGE) / sizeof(CHARGE[0]); k++) {
+            /* A touch of upward glide on each, and softer than a key's: it goes on longer. */
+            earcon_note(CHARGE[k].f, CHARGE[k].f * 1.01f, CHARGE[k].ms, level * 0.8f);
+        }
+        return true;
+    }
+    earcon_note(SHAPES[which].f0, SHAPES[which].f1, SHAPES[which].ms, level);
     return true;
 }
 
