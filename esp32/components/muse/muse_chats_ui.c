@@ -29,6 +29,8 @@
 
 #include <string.h>
 
+#include "esp_timer.h"
+
 #include "muse_board.h"
 #include "muse_chat_delete.h"
 #include "muse_dialog.h"
@@ -41,6 +43,7 @@
 #define GUTTER 12       /* either side of the rows; the scrollbar runs down the right one */
 #define TICK_W 24       /* the tick's room on the right, kept whether or not it shows */
 #define NOTE_MAX 96
+#define NOTE_US 4000000   /* how long a note stays */
 
 #define COLOR_TEXT 0xf2efff
 #define COLOR_DIM 0x8b84a8
@@ -54,6 +57,7 @@
 static lv_obj_t *s_list;
 static lv_obj_t *s_note;
 static char s_note_text[NOTE_MAX];   /* kept for s_note across rebuilds */
+static int64_t s_note_us;            /* when it was set */
 static muse_chat_item_t s_items[MUSE_CHAT_ITEMS_MAX];
 static lv_obj_t *s_values[MUSE_CHAT_ITEMS_MAX];
 static int s_count;
@@ -81,11 +85,22 @@ static void set_text(lv_obj_t *l, const char *text)
     }
 }
 
-/* A short word under the list on what just happened, kept until the next. */
+/* A short word under the list on what just happened, for a few seconds. */
 static void set_note(const char *text)
 {
     strlcpy(s_note_text, text, sizeof(s_note_text));
     set_text(s_note, s_note_text);
+    s_note_us = esp_timer_get_time();
+}
+
+/* A note goes after a few seconds, but "Deleting from Muse..." stays until
+ * how it went replaces it. */
+static void expire_note(void)
+{
+    if (s_note_text[0] && strncmp(s_note_text, "Deleting", 8) != 0
+        && esp_timer_get_time() - s_note_us >= NOTE_US) {
+        set_note("");
+    }
 }
 
 /*
@@ -378,6 +393,7 @@ void muse_chats_ui_tick(bool visible)
         set_note(status);
     }
 #endif
+    expire_note();
     uint32_t gen = muse_settings_chats_gen();
     if (gen != s_gen) {
         s_gen = gen;
