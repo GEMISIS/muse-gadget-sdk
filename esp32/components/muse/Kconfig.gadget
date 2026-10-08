@@ -23,7 +23,7 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
         default y
         help
             The 2.16's PCF85063 real-time clock, QMI8658 IMU and microSD
-            slot, and a clock, battery and step count on the face. One
+            slot, and a clock and battery on the face. One
             low-priority task polls them (muse_extras.c).
 
     config MUSE_GADGET_TZ
@@ -110,14 +110,8 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
             the picture and touch turn 180 degrees so they read right way
             up (muse_orient.c). Desk mode always keeps it upright.
 
-    config MUSE_GADGET_STEP_GOAL
-        int "Daily step goal"
-        depends on MUSE_GADGET_IMU
-        range 100 100000
-        default 10000
-
     config MUSE_GADGET_HOME_EXTRAS
-        bool "Clock, battery and steps in the face's top corners"
+        bool "Clock and battery on the face"
         depends on MUSE_GADGET_EXTRAS
         default y
 

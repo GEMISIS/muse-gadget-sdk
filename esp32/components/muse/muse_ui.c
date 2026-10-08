@@ -80,6 +80,22 @@ static const char *TAG = "muse_ui";
 #define COLOR_LIT 0xf2efff
 #define SETTINGS_TICK_S 0.25f
 
+/*
+ * With the face's readouts (muse_home_extras.h, a square screen): the clock
+ * on top, the state under it in bigger type, the connectivity icons in the
+ * top right corner and the battery in the bottom right one, so no power
+ * label. Offsets are for a 466 px tall screen, as the rest are.
+ */
+#if CONFIG_MUSE_GADGET_HOME_EXTRAS
+#define CORNERS 1
+#define STATE_Y 52          /* under the clock (muse_home_extras.c's CLOCK_Y) */
+#define NAME_Y 82
+#else
+#define CORNERS 0
+#define STATE_Y 40
+#define NAME_Y 60
+#endif
+
 /* Text on 128 px screens, as in the button menu (muse_menu.c). */
 #if LV_FONT_MONTSERRAT_12
 #define FONT_COMPACT (&lv_font_montserrat_12)
@@ -172,7 +188,7 @@ typedef struct {
     int cols, lines;          /* the reply's page */
     int w, h, top;            /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[5];       /* what it covers */
+    lv_obj_t *hides[6];       /* what it covers */
 } answer_layout_t;
 
 enum { ANSWER_HEARD, ANSWER_READ };
@@ -433,7 +449,7 @@ static lv_obj_t *make_mic(lv_obj_t *parent, int size)
 
 static void set_mic_color(uint32_t color)
 {
-    for (uint32_t i = 0; i < lv_obj_get_child_count(s_mic_icon); i++) {
+    for (uint32_t i = 0; s_mic_icon && i < lv_obj_get_child_count(s_mic_icon); i++) {
         lv_obj_t *part = lv_obj_get_child(s_mic_icon, i);
         lv_obj_set_style_bg_color(part, lv_color_hex(color), 0);
         lv_obj_set_style_arc_color(part, lv_color_hex(color), LV_PART_MAIN);
@@ -470,9 +486,13 @@ static void place_hint(lv_obj_t *icon, const muse_button_hint_t *h)
 static void build_button_icons(lv_obj_t *face)
 {
     const muse_button_hint_t *t = &muse_board->talk_hint, *a = &muse_board->aux_hint;
-    s_mic_icon = make_mic(face, s_tall ? 24 : s_small ? 12 : 26);
-    place_hint(s_mic_icon, t);
-    set_mic_color(COLOR_DIM);
+    /* A board that leaves talk_hint out has no mic icon either (the 2.16's,
+     * by the top edge, read as a status rather than a key). */
+    if (t->align != LV_ALIGN_DEFAULT) {
+        s_mic_icon = make_mic(face, s_tall ? 24 : s_small ? 12 : 26);
+        place_hint(s_mic_icon, t);
+        set_mic_color(COLOR_DIM);
+    }
 
     /* Without touch the aux button opens the menu rather than sleeping. A board
      * that leaves aux_hint out has no button to put an icon beside. */
@@ -489,8 +509,8 @@ static void build_button_icons(lv_obj_t *face)
  * touch on the board's side, then everything redrawn the new way round.
  * LVGL draws as ever; only the icons beside the keys move, the keys now
  * being along the bottom. Their spot was checked against the reply pages
- * the right way up (add_hides); turned, the 2.16's talk icon goes to the
- * bottom left corner, clear of the pages and the captions.
+ * the right way up (add_hides); turned, an icon by the top edge goes to
+ * the bottom one.
  */
 static void update_flip(float now)
 {
@@ -500,7 +520,9 @@ static void update_flip(float now)
     }
     s_flipped = flip;
     muse_board->set_flip(flip);
-    place_hint(s_mic_icon, &muse_board->talk_hint);
+    if (s_mic_icon) {
+        place_hint(s_mic_icon, &muse_board->talk_hint);
+    }
     if (s_aux_icon) {
         place_hint(s_aux_icon, &muse_board->aux_hint);
     }
@@ -728,17 +750,17 @@ static void set_reply_box(answer_layout_t *l, int cols, int lines, int top, int 
     l->top = top;
 }
 
-/* The hint icons a layout's reply would cover go while it's up. */
+/* The hint icons, and the readouts' corner, a layout's reply would cover go while it's up. */
 static void add_hides(answer_layout_t *l, int n)
 {
     lv_area_t box = {
         .x1 = s_w / 2 - l->w / 2, .y1 = s_h / 2 + l->top,
         .x2 = s_w / 2 + l->w / 2 - 1, .y2 = s_h / 2 + l->top + l->h - 1,
     };
-    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon };
-    for (size_t i = 0; i < 2; i++) {
+    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_corner() };
+    for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]); i++) {
         if (!hints[i]) {
-            continue;   /* no aux icon on this board */
+            continue;   /* no such icon on this board */
         }
         lv_area_t a;
         lv_obj_get_coords(hints[i], &a);
@@ -951,7 +973,7 @@ static void build_screen(void)
     build_button_icons(face);
     muse_home_extras_build(face);
 
-    /* Status line: connectivity icons + power. */
+    /* Status line: connectivity icons + power; in the corner, just the icons. */
     lv_obj_t *status = lv_obj_create(face);
     lv_obj_remove_style_all(status);
     lv_obj_remove_flag(status, LV_OBJ_FLAG_SCROLLABLE);
@@ -959,19 +981,25 @@ static void build_screen(void)
     lv_obj_set_flex_flow(status, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(status, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(status, s_small ? 4 : 8, 0);
-    lv_obj_align(status, LV_ALIGN_TOP_MID, 0, s_small ? 1 : 20 + s_dy);
+    if (CORNERS) {
+        lv_obj_align(status, LV_ALIGN_TOP_RIGHT, -20, 20 + s_dy);
+    } else {
+        lv_obj_align(status, LV_ALIGN_TOP_MID, 0, s_small ? 1 : 20 + s_dy);
+    }
     s_wifi_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
     s_ble_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
-    s_power_lbl = make_label(status, &lv_font_unscii_8, COLOR_DIM);
-    if (!s_small) {
-        muse_gadget_mode_build_chip(status);
+    if (!CORNERS) {
+        s_power_lbl = make_label(status, &lv_font_unscii_8, COLOR_DIM);
     }
+    /* No mode chip: the Night face and the brightness show the mode, and
+     * the settings' Mode page names it (muse_gadget_mode_build_chip). */
 
     /* The compact layout leaves the state to the avatar and the caption,
      * unless the screen is tall enough to fit it in small type above Muse. */
-    s_state_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, 0xffffff);
-    lv_obj_set_style_text_letter_space(s_state_lbl, s_small ? 1 : 2, 0);
-    lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 22 : 40 + s_dy);
+    s_state_lbl = make_label(face, CORNERS ? &lv_font_montserrat_20 : s_small ? &lv_font_unscii_8 : &lv_font_unscii_16,
+                             0xffffff);
+    lv_obj_set_style_text_letter_space(s_state_lbl, s_small || CORNERS ? 1 : 2, 0);
+    lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 22 : STATE_Y + s_dy);
     lv_obj_set_flag(s_state_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
     /* This gadget's own name, dim under the state while it's unpaired: with
@@ -979,7 +1007,7 @@ static void build_screen(void)
      * Muse app. update_chrome() fills it in, shortens it to the hex tail on a
      * screen too narrow for the whole thing, and empties it once paired. */
     s_name_lbl = make_label(face, s_small ? &lv_font_unscii_8 : &lv_font_unscii_16, COLOR_DIM);
-    lv_obj_align(s_name_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 32 : 60 + s_dy);
+    lv_obj_align(s_name_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 32 : NAME_Y + s_dy);
     /* Same rule as the state label: a square 128 px screen centres Muse over
      * these rows, so there's nowhere to put this without covering the face. */
     lv_obj_set_flag(s_name_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
@@ -1312,7 +1340,9 @@ static void update_chrome(float now)
     s_idle_name = idle_name(w.state);
     muse_ble_status_t b;
     muse_ble_status(&b);
-    const char *ble = b.state != MUSE_BLE_OFF ? LV_SYMBOL_BLUETOOTH : "";
+    /* In the corner, only while a phone's connected: on its own, Bluetooth
+     * being on (for setup) says nothing worth a glance. */
+    const char *ble = (CORNERS ? b.state == MUSE_BLE_CONNECTED : b.state != MUSE_BLE_OFF) ? LV_SYMBOL_BLUETOOTH : "";
     if (strcmp(ble, lv_label_get_text(s_ble_icon)) != 0) {
         lv_label_set_text(s_ble_icon, ble);
         lv_obj_set_style_text_color(s_ble_icon, lv_color_hex(b.state == MUSE_BLE_CONNECTED ? COLOR_ACCENT : COLOR_DIM), 0);
@@ -1376,7 +1406,7 @@ static void update_chrome(float now)
     }
     /* Unpaired, a press only says "SET UP MUSE FIRST", so the mic goes too.
      * While a reply's layout is up it decides; that's only ever paired. */
-    if (s_answer < 0 && (paired && muse_board->audio_init) == lv_obj_has_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN)) {
+    if (s_mic_icon && s_answer < 0 && (paired && muse_board->audio_init) == lv_obj_has_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_set_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN, !paired || !muse_board->audio_init);
     }
 }
@@ -1412,8 +1442,8 @@ static void set_meter_visible(bool visible)
 
 static void update_power(float now)
 {
-    if (now < s_next_power_update) {
-        return;
+    if (!s_power_lbl || now < s_next_power_update) {
+        return;   /* or the battery's in the corner (muse_home_extras.c) */
     }
     s_next_power_update = now + 1.0f;
 
