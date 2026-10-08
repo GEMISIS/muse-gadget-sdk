@@ -64,9 +64,7 @@ bool muse_orient_flipped(float now)
     float g[3];
     bool known = muse_imu_gravity(g);
     bool flipped = s_flipped;
-    if (mode != MUSE_GADGET_NIGHT && mode != MUSE_GADGET_ON_THE_GO) {
-        flipped = false;   /* Desk: always upright */
-    } else if (known) {
+    if (known) {   /* every mode: whichever way up the board stands */
         /* Up or down within the screen's plane, however far it leans back:
          * propped on a stand, gravity splits about evenly with the face axis. */
         float up = FLIP_SIGN * g[FLIP_AXIS];

@@ -26,8 +26,8 @@ extern "C" {
 
 /*
  * Which way up the Waveshare 2.16's screen should be (CONFIG_MUSE_GADGET_AUTO_FLIP):
- * in Night and On-the-go, turned 180 degrees when the IMU says the board
- * rests stood on its keys; in Desk, and lying flat, as it was.
+ * turned 180 degrees when the IMU says the board stands on its keys; lying
+ * flat, as it was.
  */
 #if CONFIG_MUSE_GADGET_AUTO_FLIP
 /* LVGL task, every frame; `now` in seconds. True: upside down. */
