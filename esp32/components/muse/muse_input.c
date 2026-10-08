@@ -811,6 +811,10 @@ static bool console_command(char *line, bool whole)
         s_nap_now = true;
         return true;
     }
+    if (!strcmp(line, "quake")) {
+        muse_ui_quake();   /* as a shake of the board would */
+        return true;
+    }
     if (!strncmp(line, "face=", 5)) {
         set_face(line + 5);
         return true;
@@ -850,7 +854,8 @@ static bool console_command(char *line, bool whole)
  * the BLE CMD characteristic, or one of the console's own: "status" prints
  * the device's state, "power" the battery meter (muse_battery.h) and
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
- * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
+ * two minutes asleep on battery would; 'w' rejoins), "quake" shakes Muse
+ * up as a shake of the board does, "face=" shows a face
  * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and "chat_sid=", "chat_new=" and "chats" pick
  * the chat it goes to and list the named ones (see chat_sid_command).

@@ -43,6 +43,10 @@ typedef struct {
      * or answer. A renderer that doesn't draw a bed may leave both alone. */
     bool bed;
     bool sleepy;
+    /* 0..1: shaken about by an earthquake (a shake of the board), easing
+     * out after. Swirly eyes, a wobbly mouth, stars round the head. A
+     * renderer may leave it alone. */
+    float dizzy;
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */

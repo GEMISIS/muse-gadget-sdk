@@ -1647,6 +1647,51 @@ static void update_night(void)
 #endif
 }
 
+/*
+ * The earthquake (muse_ui_quake): Muse jitters around where it stands, less
+ * and less, then stays dizzy a moment. A request is only taken at a frame
+ * that draws the face, idle; otherwise it's dropped.
+ */
+#define QUAKE_S 1.5f
+#define DIZZY_S 2.3f            /* dizzy from the start until this */
+#define QUAKE_PX 12
+
+static volatile bool s_quake_req;
+static float s_quake_at = -100.0f;
+static bool s_quaking;
+
+void muse_ui_quake(void)
+{
+    s_quake_req = true;
+}
+
+/* Moves Muse for the quake; returns how dizzy it is, 0..1. */
+static float update_quake(muse_mode_t mode, float now, bool asked)
+{
+    if (asked && mode == MUSE_MODE_IDLE) {
+        s_quake_at = now;
+    }
+    float qt = now - s_quake_at;
+    if (mode == MUSE_MODE_IDLE && qt < QUAKE_S) {
+        float left = 1.0f - qt / QUAKE_S;
+        int a = (int)(QUAKE_PX * left * left) + 1;
+        int dx = (int)lv_rand(0, 2 * a) - a, dy = (int)lv_rand(0, a) - a / 2;
+        lv_obj_align(s_canvas, LV_ALIGN_CENTER, dx, s_muse_y + dy);
+        s_quaking = true;
+    } else if (s_quaking) {
+        s_quaking = false;
+        lv_obj_align(s_canvas, LV_ALIGN_CENTER, 0, s_muse_y);
+    }
+    if (mode != MUSE_MODE_IDLE) {
+        s_quake_at = -100.0f;   /* a turn ends it */
+        return 0.0f;
+    }
+    if (qt >= DIZZY_S) {
+        return 0.0f;
+    }
+    return qt < QUAKE_S ? 1.0f : 1.0f - (qt - QUAKE_S) / (DIZZY_S - QUAKE_S);
+}
+
 static volatile bool s_snapshot;
 
 /* Streams the screen over the USB cable as base64 RGB565 (bench testing; needs
@@ -1695,6 +1740,8 @@ static void frame_tick(lv_timer_t *timer)
     }
     (void)timer;
     image_sync();
+    bool quake = s_quake_req;   /* now or never: dropped unless the face draws this frame */
+    s_quake_req = false;
     float mode_t;
     muse_mode_t mode = muse_state_mode(&mode_t);
     float now = (float)esp_timer_get_time() / 1e6f;
@@ -1738,9 +1785,11 @@ static void frame_tick(lv_timer_t *timer)
         .level = s_level,
         .happy = muse_state_happiness(),
         .bed = s_night,
+        .dizzy = update_quake(mode, now, quake),
     };
-    /* Asleep in bed while idle; it sits up to listen and answer, or to a pat. */
-    pose.sleepy = s_night && mode == MUSE_MODE_IDLE && pose.happy < 0.05f;
+    /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
+     * (or an earthquake). */
+    pose.sleepy = s_night && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f;
     muse_pixel_render(&pose);
     invalidate_muse();
 

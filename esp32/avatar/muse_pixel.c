@@ -643,6 +643,8 @@ typedef enum {
     EYES_WIDE,
     EYES_HAPPY,
     EYES_X,
+    EYES_SWIRL_A,   /* dizzy (pose->dizzy): a spiral, and its mirror, in turn */
+    EYES_SWIRL_B,
 } eye_style_t;
 
 /* The eyes are small glossy black beads. */
@@ -658,6 +660,13 @@ static void draw_eye(float ex, float ey, float openness, eye_style_t style, floa
     if (style == EYES_X) {
         static const char *const XS[] = { "#..#", ".##.", ".##.", "#..#" };
         stamp(XS, 4, iround(ex) - 2, iround(ey) - 1, C_IRIS, C_IRIS);
+        return;
+    }
+    if (style == EYES_SWIRL_A || style == EYES_SWIRL_B) {
+        /* Flipped back and forth, the spiral seems to turn. */
+        static const char *const SWIRL_A[] = { ".###.", "#...#", "#.#.#", "#..#.", ".##.." };
+        static const char *const SWIRL_B[] = { ".###.", "#...#", "#.#.#", ".#..#", "..##." };
+        stamp(style == EYES_SWIRL_A ? SWIRL_A : SWIRL_B, 5, iround(ex) - 2, iround(ey) - 2, C_IRIS, C_IRIS);
         return;
     }
     if (openness < 0.3f) {
@@ -698,6 +707,7 @@ typedef enum {
     MOUTH_TALK,
     MOUTH_GRIN,
     MOUTH_FLAT,
+    MOUTH_WOBBLE,   /* dizzy: a zigzag, its phase flipped by `open` */
 } mouth_t;
 
 static void draw_mouth(int x, int y, mouth_t m, float open)
@@ -738,6 +748,11 @@ static void draw_mouth(int x, int y, mouth_t m, float open)
     case MOUTH_FLAT: {
         static const char *const S[] = { "##" };
         stamp(S, 1, x - 1, y + 1, C_MOUTH, C_MOUTH);
+        break;
+    }
+    case MOUTH_WOBBLE: {
+        static const char *const S[] = { ".#.#.", "#.#.#", ".#.#." };
+        stamp(S + (open > 0.5f), 2, x - 2, y, C_MOUTH, C_MOUTH);
         break;
     }
     }
@@ -839,6 +854,35 @@ static void draw_alert(int x, int y)
 {
     static const char *const BANG[] = { ".##.", ".##.", ".##.", ".##.", "....", ".##." };
     stamp(BANG, 6, x - 2, y, C_ACC, C_ACC);
+}
+
+/* Dizzy (pose->dizzy): stars circling the head. */
+static void draw_stars(float cx, float top, float t, float amount)
+{
+    int n = amount > 0.5f ? 3 : 2;
+    for (int i = 0; i < n; i++) {
+        float a = t * 6.0f + i * TAU / n;
+        int x = iround(cx + cosf(a) * 12.0f);
+        int y = iround(top - 1 + sinf(a) * 2.5f);
+        draw_sparkle(x, y, sinf(a) > 0 ? 0.9f : 0.5f, sinf(a) > 0);
+    }
+}
+
+/* The earthquake itself: grit shaken down from above. */
+static void draw_dust(float t, float amount)
+{
+    for (int i = 0; i < 8; i++) {
+        float ph = fracf(t * 1.1f + i * 0.37f);
+        if (ph > amount) {
+            continue;
+        }
+        int x = 3 + (i * 23) % 58;
+        int y = iround(ph * 62.0f);
+        px(x, y, i & 1 ? C_SPK : C_ACC);
+        if (i % 3 == 0) {
+            px(x, y - 1, C_AURA2);
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -1076,6 +1120,9 @@ void muse_pixel_render(const muse_pose_t *p)
     if (happy > 0) {
         hop = fabsf(sinf(t * 9.0f)) * 3.0f * happy;
     }
+    /* Dizzy: reeling from side to side, slowing as it comes round. */
+    float dizzy = mode == MUSE_MODE_ERROR || mode == MUSE_MODE_OFF ? 0.0f : clampf(p->dizzy, 0, 1);
+    lean += sinf(t * 11.0f) * 2.2f * dizzy;
 
     /* Boot: the avatar pops up from a squash, then opens their eyes. */
     float boot = mode == MUSE_MODE_BOOT ? clampf(p->mode_t / 1.4f, 0, 1) : 1.0f;
@@ -1209,6 +1256,11 @@ void muse_pixel_render(const muse_pose_t *p)
         style = EYES_HAPPY;
         mouth = MOUTH_GRIN;
     }
+    if (dizzy > 0.05f) {
+        style = fracf(t * 6.0f) < 0.5f ? EYES_SWIRL_A : EYES_SWIRL_B;
+        mouth = MOUTH_WOBBLE;
+        mouth_open = fracf(t * 4.0f) < 0.5f ? 0.0f : 1.0f;
+    }
     if (asleep && s_rise < 0.5f) {
         style = EYES_NORMAL;
         open = 0;
@@ -1254,6 +1306,16 @@ void muse_pixel_render(const muse_pose_t *p)
     }
     if (mode == MUSE_MODE_ERROR) {
         draw_alert(iround(j.cx + 18), iround(top - 1));
+    }
+    if (dizzy > 0.05f) {
+        draw_stars(j.cx, top, t, dizzy);
+    }
+    if (dizzy >= 1.0f) {
+        /* Still shaking: grit coming down, and an alarmed "!". */
+        draw_dust(t, 0.85f);
+        if (fracf(t * 2.0f) < 0.6f) {
+            draw_alert(iround(j.cx + 18), iround(top + 1));
+        }
     }
     if (asleep && s_rise < 0.5f) {
         draw_zs(j.cx + 10, top + 1, t);
