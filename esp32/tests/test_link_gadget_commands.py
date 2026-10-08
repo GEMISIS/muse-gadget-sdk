@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 JSON = Path(os.environ.get(
     "CJSON_SOURCE_DIR", ROOT / "managed_components/espressif__cjson/cJSON"
 ))
-COMMANDS = ("show_text", "set_mode", "set_chat")
+COMMANDS = ("show_text", "set_mode", "set_chat", "list_chats")
 
 
 class LinkGadgetCommandsTest(unittest.TestCase):
@@ -70,10 +70,21 @@ class LinkGadgetCommandsTest(unittest.TestCase):
         start = cmake.index("if(CONFIG_MUSE_ENABLED)")
         self.assertIn('"gadget_commands.c"', cmake[start:cmake.index("endif()", start)])
 
-    def test_chat_id_limit_matches_the_firmware(self):
-        # The harness fakes muse_settings.h with this limit, the Muse's own.
+    def test_chat_limits_match_the_firmware(self):
+        # The harness fakes muse_settings.h with these: a UUID's length, and
+        # the named chats the device keeps.
         settings = (ROOT / "components/muse/muse_settings.h").read_text()
-        self.assertRegex(settings, r"#define MUSE_CHAT_SID_MAX 64\b")
+        self.assertRegex(settings, r"#define MUSE_CHAT_SID_MAX 36\b")
+        self.assertRegex(settings, r"#define MUSE_CHAT_NAME_MAX 32\b")
+        self.assertRegex(settings, r"#define MUSE_CHATS_MAX 8\b")
+
+    def test_gadget_chat_id_is_a_uuid(self):
+        # The harness's GADGET_SID has the firmware's prefix: "musegadg" as a
+        # v4 UUID, then the MAC.
+        settings = (ROOT / "components/muse/muse_settings.c").read_text()
+        self.assertIn('"6d757365-6761-4467-8000-%02x%02x%02x%02x%02x%02x"', settings)
+        harness = (ROOT / "tests/link_gadget_commands_harness.c").read_text()
+        self.assertIn('#define GADGET_SID "6d757365-6761-4467-8000-', harness)
 
     def test_mode_names_match_the_firmware(self):
         # The harness fakes muse_gadget_mode_parse with these names.

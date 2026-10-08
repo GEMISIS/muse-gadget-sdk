@@ -2003,11 +2003,9 @@ static bool on_http_error(stream_t *s, const ApplicationResponseView &resp)
     memcpy(body, resp.body.data(), n);
     body[n] = '\0';
     ESP_LOGW(TAG, "stream %lld: HTTP %d %s", (long long)s->id, (int)resp.status, body);
-    if (s->kind == K_SUB && s_sub_sid[0] && resp.status >= 400 && resp.status < 500) {
-        /* The subscription doesn't take a session_id after all: fall back to {} until restart. */
-        ESP_LOGW(TAG, "subscribe refused chat %s: subscribing with {} from now on", s_sub_sid);
-        s_sub_with_sid = false;
-    }
+    /* No falling back to a subscription with {} on a refusal: a side chat's
+     * replies only arrive on one that names it, so that would lose them all
+     * (">chat_sub=0" still switches it by hand). */
     return stream_end(s, false);
 }
 

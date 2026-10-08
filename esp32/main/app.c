@@ -1901,6 +1901,9 @@ static cJSON *on_ws_command(
     if (strcmp(command, "set_chat") == 0) {
         return gadget_set_chat_command(params);
     }
+    if (strcmp(command, "list_chats") == 0) {
+        return gadget_list_chats_command(params);
+    }
 #endif
 #if CONFIG_HOMEHUB_VOICE
     if (strcmp(command, "voice.configure") == 0) {

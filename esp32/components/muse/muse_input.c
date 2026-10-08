@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cJSON.h"
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -631,18 +632,98 @@ static void set_face(const char *name)
     fflush(stdout);
 }
 
+/* {"chat":"main|gadget|named|custom","session_id":ID[,"name":NAME]} for the chat picked now. */
+static cJSON *chat_json(void)
+{
+    char sid[MUSE_CHAT_SID_MAX + 1], gadget[MUSE_CHAT_SID_MAX + 1], name[MUSE_CHAT_NAME_MAX + 1];
+    muse_settings_chat_sid(sid);
+    muse_settings_gadget_chat_sid(gadget);
+    bool named = sid[0] && muse_settings_chat_name(sid, name);
+    cJSON *chat = cJSON_CreateObject();
+    cJSON_AddStringToObject(chat, "chat",
+                            !sid[0] ? "main" : !strcmp(sid, gadget) ? "gadget" : named ? "named" : "custom");
+    cJSON_AddStringToObject(chat, "session_id", sid);
+    if (named) {
+        cJSON_AddStringToObject(chat, "name", name);
+    }
+    return chat;
+}
+
+/* Prints "@<tag> <json>" and frees the json. */
+static void print_json(const char *tag, cJSON *json)
+{
+    char *text = json ? cJSON_PrintUnformatted(json) : NULL;
+    if (text) {
+        printf("@%s %s\n", tag, text);
+        cJSON_free(text);
+    }
+    cJSON_Delete(json);
+    fflush(stdout);
+}
+
+static void chat_error(const char *what, const char *why)
+{
+    cJSON *json = cJSON_CreateObject();
+    cJSON_AddStringToObject(json, "input", what);
+    cJSON_AddStringToObject(json, "error", why);
+    print_json("chat_sid.error", json);
+}
+
 /*
- * The Muse chat turns go to: "chat_sid" prints it, "chat_sid=ID" picks a side
- * chat ("chat_sid=" or "=main" the main one, "=gadget" this gadget's own), and
- * "chat_sub=0" or "=1" says whether the reply subscription names it
- * (muse_chat_set_subscribe_session). Each answers with
- *   @chat_sid {"chat":"main|gadget|custom","session_id":ID,"subscribe_session":BOOL}
- * or "@chat_sid.error" and why.
+ * The Muse chat turns go to:
+ *   "chat_sid"            prints it
+ *   "chat_sid=ID"         picks a side chat by its UUID ("chat_sid=" or "=main"
+ *                         the main one, "=gadget" this gadget's own)
+ *   "chat_new=NAME"       keeps a new named chat and picks it (or picks the
+ *                         one with that name)
+ *   "chat_forget=ID|NAME" forgets a named chat (the main one is picked if it
+ *                         was this one)
+ *   "chat_sub=0" or "=1"  whether the reply subscription names it
+ *                         (muse_chat_set_subscribe_session)
+ * Each answers with
+ *   @chat_sid {"chat":"main|gadget|named|custom","session_id":ID,"name":NAME,"subscribe_session":BOOL}
+ * or "@chat_sid.error" {"input":...,"error":...}. "chats" lists the named ones:
+ *   @chats {"current":{...},"chats":[{"name":NAME,"session_id":ID},...]}
  */
 static void chat_sid_command(const char *line)
 {
+    if (!strcmp(line, "chats")) {
+        muse_chat_entry_t chats[MUSE_CHATS_MAX];
+        int n = muse_settings_chats(chats, MUSE_CHATS_MAX);
+        cJSON *json = cJSON_CreateObject();
+        cJSON_AddItemToObject(json, "current", chat_json());
+        cJSON *list = cJSON_AddArrayToObject(json, "chats");
+        for (int i = 0; i < n; i++) {
+            cJSON *chat = cJSON_CreateObject();
+            cJSON_AddStringToObject(chat, "name", chats[i].name);
+            cJSON_AddStringToObject(chat, "session_id", chats[i].sid);
+            cJSON_AddItemToArray(list, chat);
+        }
+        print_json("chats", json);
+        return;
+    }
     if (!strncmp(line, "chat_sub=", 9)) {
         muse_chat_set_subscribe_session(strcmp(line + 9, "0") != 0);
+    } else if (!strncmp(line, "chat_new=", 9)) {
+        esp_err_t err = muse_settings_chat_new(line + 9, NULL);
+        if (err == ESP_ERR_NO_MEM) {
+            chat_error(line + 9, "8 named chats are kept already: forget one first");
+            return;
+        }
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+            chat_error(line + 9, "a name is 1 to 32 bytes, without control characters");
+            return;
+        }
+    } else if (!strncmp(line, "chat_forget=", 12)) {
+        char sid[MUSE_CHAT_SID_MAX + 1];
+        const char *want = line + 12;
+        if (muse_settings_chat_find(want, sid)) {
+            want = sid;
+        }
+        if (!muse_settings_chat_forget(want)) {
+            chat_error(line + 12, "no named chat has that name or id");
+            return;
+        }
     } else if (line[8] == '=') {
         const char *want = line + 9;
         char gadget[MUSE_CHAT_SID_MAX + 1];
@@ -653,19 +734,13 @@ static void chat_sid_command(const char *line)
             want = gadget;
         }
         if (!muse_settings_set_chat_sid(want)) {
-            printf("@chat_sid.error \"%s\": use 1 to %d letters, digits and dashes, main or gadget\n", want,
-                   MUSE_CHAT_SID_MAX);
-            fflush(stdout);
+            chat_error(want, "use main, gadget or a UUID (8-4-4-4-12 hex digits)");
             return;
         }
     }
-    char sid[MUSE_CHAT_SID_MAX + 1], gadget[MUSE_CHAT_SID_MAX + 1];
-    muse_settings_chat_sid(sid);
-    muse_settings_gadget_chat_sid(gadget);
-    printf("@chat_sid {\"chat\":\"%s\",\"session_id\":\"%s\",\"subscribe_session\":%s}\n",
-           !sid[0] ? "main" : !strcmp(sid, gadget) ? "gadget" : "custom", sid,
-           muse_chat_subscribe_session() ? "true" : "false");
-    fflush(stdout);
+    cJSON *json = chat_json();
+    cJSON_AddBoolToObject(json, "subscribe_session", muse_chat_subscribe_session());
+    print_json("chat_sid", json);
 }
 
 /*
@@ -715,7 +790,8 @@ static bool console_command(char *line, bool whole)
         set_face(line + 5);
         return true;
     }
-    if (!strcmp(line, "chat_sid") || !strncmp(line, "chat_sid=", 9) || !strncmp(line, "chat_sub=", 9)) {
+    if (!strcmp(line, "chat_sid") || !strcmp(line, "chats") || !strncmp(line, "chat_sid=", 9)
+        || !strncmp(line, "chat_sub=", 9) || !strncmp(line, "chat_new=", 9) || !strncmp(line, "chat_forget=", 12)) {
         chat_sid_command(line);
         return true;
     }
@@ -751,8 +827,8 @@ static bool console_command(char *line, bool whole)
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
  * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
  * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
- * and tools/muse/chat.py), and "chat_sid=" picks the chat it goes to (see
- * chat_sid_command).
+ * and tools/muse/chat.py), and "chat_sid=", "chat_new=" and "chats" pick
+ * the chat it goes to and list the named ones (see chat_sid_command).
  */
 static void serial_task(void *arg)
 {
