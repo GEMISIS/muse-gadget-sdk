@@ -42,6 +42,8 @@ void muse_up_next_tick(void);
 /* The line to show, in the face's fonts' characters: false (and out empty)
  * with none, or one over three hours old. Any task. */
 bool muse_up_next_line(char *out, size_t cap);
+/* The whole reply the line came from (the kept line itself after a restart). */
+bool muse_up_next_full(char *out, size_t cap);
 /* The serial console's ">brief": asks now, schedule or not (a turn still
  * goes first). Any task. */
 void muse_up_next_refresh(void);
@@ -57,6 +59,11 @@ static inline bool muse_up_next_line(char *out, size_t cap)
         out[0] = '\0';
     }
     return false;
+}
+
+static inline bool muse_up_next_full(char *out, size_t cap)
+{
+    return muse_up_next_line(out, cap);
 }
 
 #endif

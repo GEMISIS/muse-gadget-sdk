@@ -29,6 +29,7 @@
 #include "muse_board.h"
 #include "muse_extras.h"
 #include "muse_state.h"
+#include "muse_dialog.h"
 #include "muse_up_next.h"
 
 #define COLOR_TEXT 0xb9b2d8     /* between muse_ui.c's dim and caption colours */
@@ -73,6 +74,9 @@
 static lv_obj_t *s_clock;
 static lv_obj_t *s_corner;
 static lv_obj_t *s_batt;
+#if CONFIG_MUSE_GADGET_UP_NEXT
+static void on_up_clicked(lv_event_t *e);
+#endif
 static lv_obj_t *s_up;          /* "up next": its box, and the line in it */
 static lv_obj_t *s_up_lbl;
 static float s_next;
@@ -106,7 +110,10 @@ void muse_home_extras_build(lv_obj_t *face)
     lv_obj_remove_style_all(s_up);
     lv_obj_set_size(s_up, LV_SIZE_CONTENT, UP_H);
     lv_obj_align(s_up, LV_ALIGN_BOTTOM_MID, 0, -UP_BOTTOM);
-    lv_obj_remove_flag(s_up, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(s_up, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_up, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(s_up, 10);
+    lv_obj_add_event_cb(s_up, on_up_clicked, LV_EVENT_CLICKED, NULL);
     lv_obj_set_style_radius(s_up, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(s_up, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(s_up, lv_color_hex(COLOR_UP_BG), 0);
@@ -157,6 +164,26 @@ lv_obj_t *muse_home_extras_corner(void)
 static void up_fade(void *obj, int32_t v)
 {
     lv_obj_set_style_opa(obj, (lv_opa_t)v, 0);
+}
+
+static bool s_up_shown;
+
+/* Tapped: the whole of what Muse said, in a dialog. */
+static void on_up_clicked(lv_event_t *e)
+{
+    (void)e;
+    static char full[256];
+    if (!s_up_shown || !muse_up_next_full(full, sizeof(full))) {
+        return;
+    }
+    static const muse_dialog_button_t ok = { "Got it", MUSE_DIALOG_ACCENT, NULL, NULL };
+    const muse_dialog_t d = {
+        .title = "Up next",
+        .text = full,
+        .buttons = &ok,
+        .button_count = 1,
+    };
+    muse_dialog_open(NULL, &d);
 }
 
 /* The label as wide as its line, up to UP_TEXT_W, past which it ends in
@@ -246,9 +273,8 @@ void muse_home_extras_tick(float now)
     uint32_t any = 0;
     muse_state_caption(caption, sizeof(caption), &any);
     bool show = line[0] && muse_state_mode(NULL) == MUSE_MODE_IDLE && !caption[0];
-    static bool shown;
-    if (show != shown) {
-        shown = show;
+    if (show != s_up_shown) {
+        s_up_shown = show;
         up_show(show);
     }
 #endif
