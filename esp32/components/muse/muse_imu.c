@@ -44,6 +44,7 @@
 
 #include "muse_extras.h"
 #include "muse_state.h"
+#include "muse_ui.h"
 
 static const char *TAG = "imu";
 
@@ -112,9 +113,6 @@ static const char *TAG = "imu";
 #define SHAKE_COOLDOWN_MS 4000
 
 #define STEPS_SAVE_MS (5 * 60 * 1000)
-
-/* Replays the last reply; provided by the TTS code if the build has it. */
-__attribute__((weak)) void muse_tts_replay_last(void);
 
 static i2c_master_dev_handle_t s_dev;
 static atomic_int s_steps = -1;     /* today's, for the UI */
@@ -356,12 +354,8 @@ static void on_shake(int64_t now)
         return;   /* not over a recording or a reply */
     }
     wake("shake");
-    if (muse_tts_replay_last) {
-        ESP_LOGI(TAG, "shake: replaying the last reply");
-        muse_tts_replay_last();
-    } else {
-        ESP_LOGI(TAG, "shake (no replay in this build)");
-    }
+    ESP_LOGI(TAG, "shake: earthquake!");
+    muse_ui_quake();
 }
 
 static void motion(const float a[3], bool asleep, int64_t now)

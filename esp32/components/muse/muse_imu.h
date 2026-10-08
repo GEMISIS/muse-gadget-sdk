@@ -32,8 +32,8 @@ extern "C" {
  * tap and pedometer engines; the extras task polls it (no interrupt pins):
  *   - double tap: wakes the screen
  *   - picked up or tilted (CONFIG_MUSE_GADGET_MOTION_WAKE): wakes the screen
- *   - shaken hard while idle: wakes it and replays the last reply, through
- *     muse_tts_replay_last() if the build has one
+ *   - shaken hard while idle: an earthquake on the face (muse_ui_quake):
+ *     Muse jitters about and goes dizzy for a moment
  *   - steps: the chip's count, reset at local midnight, kept in NVS
  */
 
