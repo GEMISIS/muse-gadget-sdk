@@ -112,7 +112,7 @@ void muse_home_extras_build(lv_obj_t *face)
     lv_obj_align(s_up, LV_ALIGN_BOTTOM_MID, 0, -UP_BOTTOM);
     lv_obj_remove_flag(s_up, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_up, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_ext_click_area(s_up, 10);
+    lv_obj_set_ext_click_area(s_up, 14);
     lv_obj_add_event_cb(s_up, on_up_clicked, LV_EVENT_CLICKED, NULL);
     lv_obj_set_style_radius(s_up, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(s_up, LV_OPA_COVER, 0);
@@ -275,6 +275,11 @@ void muse_home_extras_tick(float now)
     bool show = line[0] && muse_state_mode(NULL) == MUSE_MODE_IDLE && !caption[0];
     if (show != s_up_shown) {
         s_up_shown = show;
+        if (show) {
+            /* Over the face's later boxes (the caption's, the reply's), which
+             * would otherwise take the taps on its lower half. */
+            lv_obj_move_foreground(s_up);
+        }
         up_show(show);
     }
 #endif
