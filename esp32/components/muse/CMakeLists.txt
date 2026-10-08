@@ -46,6 +46,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_ble.c")
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
+        list(APPEND srcs "muse_present.c")   # images in replies, held up on the face
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
         if(CONFIG_MUSE_TTS_PICO)
             list(APPEND srcs "muse_tts.c" "muse_tts_text.c")   # replies spoken on the device
