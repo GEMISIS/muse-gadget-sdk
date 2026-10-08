@@ -1909,6 +1909,11 @@ static cJSON *on_ws_command(
         return gadget_list_chats_command(params);
     }
 #endif
+#if CONFIG_MUSE_HATCH
+    if (strcmp(command, "display.show_image") == 0) {
+        return gadget_show_image_command(params);
+    }
+#endif
 #if CONFIG_HOMEHUB_VOICE
     if (strcmp(command, "voice.configure") == 0) {
         return voice_configure_command(params);

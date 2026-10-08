@@ -180,6 +180,7 @@ typedef enum {
     MUSE_CHAT_BG_FOR_NONE,
     MUSE_CHAT_BG_FOR_UP_NEXT,   /* the face's "up next" line (muse_up_next.c) */
     MUSE_CHAT_BG_FOR_DELETE,    /* deleting a chat from Muse (muse_chat_delete.c) */
+    MUSE_CHAT_BG_FOR_IMAGE,     /* asking Muse to push a reply's image (muse_present.c) */
 } muse_chat_bg_for_t;
 
 /* muse_chat_bg_ask for `who`: false, too, while another's request is under

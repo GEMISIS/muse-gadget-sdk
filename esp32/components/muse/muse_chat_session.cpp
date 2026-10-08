@@ -46,9 +46,9 @@
  * heard another gadget mode carries the mode's contract after its words
  * (muse_gadget_mode_context), and the chat counts as told once the Muse takes it.
  *
- * An image in a reply (a delta.presentation event) is fetched on the same
- * connection, or over HTTPS failing that, and handed to muse_present.h, which
- * decodes it for Muse to hold up on the face.
+ * An image in a reply (a delta.presentation event) names a file in Muse's
+ * workspace, which the VM won't serve to the gadget: muse_present.h asks Muse
+ * to push it over Link (display.show_image), and Muse holds it up on the face.
  *
  * A background request (muse_chat_bg_ask, for the face's "up next" line) is a
  * typed message to a chat of the asker's, on streams of its own beside the
@@ -137,7 +137,6 @@ static const char *TAG = "muse_chat_session";
 #define TEXT_REPLY_TIMEOUT_US (5 * 60 * 1000000LL)   /* typed turns: agents can work a while */
 #define TEXT_TURN_CAP_US (15 * 60 * 1000000LL)
 #define TEXT_BUSY_HOLD_US (5 * 60 * 1000000LL)
-#define IMG_MAX (512 * 1024)               /* a reply's image, fetched whole (muse_present.h's limit) */
 #define PRESENT_LATE_US (30 * 1000000LL)   /* an image for the turn's chat may come this long after it */
 /*
  * The VM's streaming dictation has no ASR behind it right now, so each press
@@ -227,7 +226,7 @@ static char s_voice_new_sid[MUSE_CHAT_SID_MAX + 1];
 
 /* ---- Streams on the connection ---- */
 
-enum kind_t : uint8_t { K_NONE, K_SUB, K_DICT, K_CHAT, K_TTS, K_BG_SUB, K_BG_CHAT, K_IMG };   /* K_BG_*: bg_t */
+enum kind_t : uint8_t { K_NONE, K_SUB, K_DICT, K_CHAT, K_TTS, K_BG_SUB, K_BG_CHAT };   /* K_BG_*: bg_t */
 
 struct stream_t {
     int64_t id;
@@ -240,25 +239,13 @@ struct stream_t {
     bool overflow;
 };
 
-/* A reply's image (delta.presentation), being fetched on the connection (img_present). */
-struct img_t {
-    int64_t id;              /* its GET, or 0 */
-    uint8_t *buf;            /* grown up to IMG_MAX */
-    size_t len, cap;
-    size_t byte_len;         /* the size the event gave, or 0 */
-    int64_t start_us;
-    char url[384];           /* variants.original, for the HTTPS fallback; "" if none */
-    char label[48];
-    char last[96];           /* the last presentation's id: a repeat isn't fetched again */
-};
-
-EXT_RAM_BSS_ATTR static img_t s_img;
+/* The last reply image's presentation id (img_present): a repeat isn't asked for again. */
+EXT_RAM_BSS_ATTR static char s_img_last[96];
 
 #define MAX_STREAMS 6
 static stream_t s_streams[MAX_STREAMS];
 
 static void bg_dropped(void);   /* background requests (bg_t), below */
-static void img_dropped(void);  /* a reply's image (img_t), below */
 
 /* ---- The current turn ---- */
 
@@ -827,7 +814,6 @@ static void disconnect(const char *why)
     }
     s_connected = false;
     bg_dropped();
-    img_dropped();
 }
 
 static void forget_vm(void)
@@ -1781,20 +1767,15 @@ static const char *msg_id(cJSON *payload, cJSON *event)
 
 /*
  * An image in a reply comes as a delta.presentation event of kind "image",
- * naming a file in the VM's workspace and the URL the VM serves it at
- * (data.images[0].variants.original). It's fetched with a GET of that URL's
- * path on this connection, which reaches the same server; failing that,
- * from the URL over HTTPS with the VM's token (img_fallback, below). Either
- * way muse_present.h decodes it and Muse holds it up.
+ * naming a file in Muse's workspace (image_path) and the URL the VM serves it
+ * at (data.images[0].variants.original). The VM won't serve it to the gadget:
+ * a GET of that path on this connection answers 403, and the URL's host isn't
+ * public. So Muse is asked, in the background, to push the file over Link
+ * with display.show_image (img_ask, below; muse_present.h), and it shows once
+ * it's all here. Muse's workspace is the same whatever the chat, so the path
+ * names it in the gadget's own chat too.
  */
-static void img_fallback(const char *why);
-
-static void img_free(void)
-{
-    heap_caps_free(s_img.buf);
-    s_img.buf = nullptr;
-    s_img.len = s_img.cap = 0;
-}
+static void img_ask(const char *path, const char *label);
 
 /* Whether an image for chat `sid` (NULL: none named) is this turn's, or came just after it in its chat. */
 static bool img_ours(const char *sid)
@@ -1806,27 +1787,20 @@ static bool img_ours(const char *sid)
     return same && s_turn.last_event_us && now_us() - s_turn.last_event_us < PRESENT_LATE_US;
 }
 
-/* Escapes what can't go in a request's path as is. False if it doesn't fit. */
-static bool path_escape(const char *in, char *out, size_t cap)
+/* The workspace file: image_path, else the image's sandbox:// path, else its URL's after /media/raw/. */
+static const char *img_file(cJSON *payload, cJSON *image)
 {
-    static const char *hex = "0123456789ABCDEF";
-    size_t o = 0;
-    for (; *in; in++) {
-        unsigned char c = *in;
-        bool keep = isalnum(c) || strchr("-._~!$&'()*+,;=:@/%?", c);
-        if (o + (keep ? 1 : 3) >= cap) {
-            return false;
-        }
-        if (keep) {
-            out[o++] = c;
-        } else {
-            out[o++] = '%';
-            out[o++] = hex[c >> 4];
-            out[o++] = hex[c & 15];
-        }
+    const char *file = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "image_path"));
+    if (file && file[0]) {
+        return file;
     }
-    out[o] = '\0';
-    return true;
+    file = cJSON_GetStringValue(cJSON_GetObjectItem(image, "path"));
+    if (file && !strncmp(file, "sandbox://", 10) && file[10]) {
+        return file + 10;
+    }
+    const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(image, "variants"), "original"));
+    file = url ? strstr(url, "/media/raw/") : nullptr;
+    return file && file[11] ? file + 11 : nullptr;
 }
 
 static void img_present(cJSON *payload)
@@ -1843,7 +1817,7 @@ static void img_present(cJSON *payload)
         return;
     }
     const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "id")) ?: "";
-    if (id[0] && !strcmp(id, s_img.last)) {
+    if (id[0] && !strcmp(id, s_img_last)) {
         return;   /* the same one again */
     }
     cJSON *image = cJSON_GetArrayItem(cJSON_GetObjectItem(cJSON_GetObjectItem(payload, "data"), "images"), 0);
@@ -1851,57 +1825,23 @@ static void img_present(cJSON *payload)
         ESP_LOGW(TAG, "image event without an image");
         return;
     }
-    const char *mime = cJSON_GetStringValue(cJSON_GetObjectItem(image, "mime")) ?: "";
-    if (mime[0] && strcmp(mime, "image/jpeg") != 0 && strcmp(mime, "image/jpg") != 0
-        && strcmp(mime, "image/png") != 0) {
-        ESP_LOGW(TAG, "image is %s: only JPEG and PNG are fetched", mime);
-        return;
-    }
     const char *label = cJSON_GetStringValue(cJSON_GetObjectItem(image, "label"));
     if (!label || !label[0]) {
         label = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "display_text")) ?: "image";
     }
-    /* The URL's path, or else the workspace file's under /media/raw/, where the VM serves it. */
-    const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(image, "variants"), "original")) ?: "";
-    const char *scheme = strstr(url, "://");
-    const char *path = scheme ? strchr(scheme + 3, '/') : nullptr;
-    char raw[400];
-    if (!path) {
-        const char *file = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "image_path"));
-        if (!file) {
-            file = cJSON_GetStringValue(cJSON_GetObjectItem(image, "path"));
-            file = file && !strncmp(file, "sandbox://", 10) ? file + 10 : nullptr;
-        }
-        if (file && file[0]) {
-            snprintf(raw, sizeof(raw), "/media/raw/%s", file + (file[0] == '/'));
-            path = raw;
-        }
-    }
-    char escaped[512];
-    if (!path || !path_escape(path, escaped, sizeof(escaped))) {
-        ESP_LOGW(TAG, "image \"%s\": no path to fetch it from", label);
+    const char *file = img_file(payload, image);
+    if (!file) {
+        ESP_LOGW(TAG, "image \"%s\": no workspace file named", label);
         return;
     }
-    if (s_img.id) {
-        send_reset(s_img.id);   /* a newer image replaces it */
-        s_img.id = 0;
-    }
-    img_free();
-    strlcpy(s_img.last, id, sizeof(s_img.last));
-    strlcpy(s_img.url, scheme && strlen(url) < sizeof(s_img.url) ? url : "", sizeof(s_img.url));
-    strlcpy(s_img.label, label, sizeof(s_img.label));
+    strlcpy(s_img_last, id, sizeof(s_img_last));
     cJSON *bytes = cJSON_GetObjectItem(image, "byte_len");
-    s_img.byte_len = cJSON_IsNumber(bytes) && bytes->valuedouble > 0 ? (size_t)bytes->valuedouble : 0;
-    s_img.start_us = now_us();
-    ESP_LOGI(TAG, "image \"%s\" (%u bytes): GET %s on the Noise connection", label, (unsigned)s_img.byte_len,
-             escaped);
+    unsigned byte_len = cJSON_IsNumber(bytes) && bytes->valuedouble > 0 ? (unsigned)bytes->valuedouble : 0;
+    ESP_LOGI(TAG, "image \"%s\" (%u bytes): %s", label, byte_len, file);
     if (s_turn.text) {
-        muse_hatch_console("image", label, "\"bytes\":%u", (unsigned)s_img.byte_len);
+        muse_hatch_console("image", label, "\"bytes\":%u", byte_len);
     }
-    s_img.id = open_stream(K_IMG, "GET", escaped, nullptr, "image/jpeg,image/png,image/*", nullptr, true);
-    if (!s_img.id) {
-        img_fallback("couldn't open the GET");
-    }
+    img_ask(file, label);
 }
 
 static void on_event(cJSON *line)
@@ -2577,83 +2517,18 @@ static void feed_lines(stream_t *s, const uint8_t *data, size_t len, void (*fn)(
     }
 }
 
-/* ---- Images: the GET ---- */
+/* ---- Images: asking for them ---- */
 
-/* The GET failed: the HTTPS fetch is muse_present.h's to try. */
-static void img_fallback(const char *why)
+static void img_ask(const char *path, const char *label)
 {
-    s_img.id = 0;
-    img_free();
-    if (!s_img.url[0]) {
-        ESP_LOGW(TAG, "image \"%s\": the Noise route %s, and there's no URL to try", s_img.label, why);
-        return;
-    }
-    ESP_LOGW(TAG, "image \"%s\": the Noise route %s; trying HTTPS with the VM's token", s_img.label, why);
 #if CONFIG_MUSE_ENABLED
-    muse_present_fetch(s_img.url, s_vm.vm_token, s_img.label, s_img.byte_len);
-#endif
-}
-
-/* The connection went with the GET under way. */
-static void img_dropped(void)
-{
-    if (s_img.id) {
-        img_fallback("lost its connection");
-    }
-}
-
-static void img_data(stream_t *s, ConstByteSpan data)
-{
-    size_t want = s_img.len + data.size();
-    if (want > s_img.cap) {
-        size_t cap = s_img.cap ? s_img.cap * 2 : s_img.byte_len ? s_img.byte_len : 64 * 1024;
-        cap = cap < want ? want : cap;
-        cap = cap < IMG_MAX ? cap : IMG_MAX;
-        uint8_t *grown = nullptr;
-        if (want <= IMG_MAX) {
-            grown = static_cast<uint8_t *>(heap_caps_realloc(s_img.buf, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        }
-        if (!grown) {
-            ESP_LOGW(TAG, "image \"%s\": %s", s_img.label, want > IMG_MAX ? "over 512 KB, dropped" : "out of memory");
-            send_reset(s->id);
-            s_img.id = 0;
-            img_free();
-            return;
-        }
-        s_img.buf = grown;
-        s_img.cap = cap;
-    }
-    memcpy(s_img.buf + s_img.len, data.data(), data.size());
-    s_img.len = want;
-}
-
-static void img_end(stream_t *s, bool ok)
-{
-    int status = s->status;
-    close_stream(s);
-    if (!ok || status != 200 || !s_img.len) {
-        char why[40];
-        if (!ok) {
-            strlcpy(why, "was cut off", sizeof(why));
-        } else if (status != 200) {
-            snprintf(why, sizeof(why), "answered HTTP %d", status);
-        } else {
-            strlcpy(why, "sent nothing", sizeof(why));
-        }
-        img_fallback(why);
-        return;
-    }
-    s_img.id = 0;
-    ESP_LOGI(TAG, "image \"%s\": fetched over the Noise connection: %u bytes in %d ms", s_img.label,
-             (unsigned)s_img.len, (int)((now_us() - s_img.start_us) / 1000));
-#if CONFIG_MUSE_ENABLED
-    muse_present_bytes(s_img.buf, s_img.len, s_img.label);   /* it takes the buffer */
-    s_img.buf = nullptr;
-    s_img.len = s_img.cap = 0;
+    muse_present_ask(path, label);
 #else
-    img_free();
+    (void)path;
+    (void)label;
 #endif
 }
+
 
 static void stream_data(stream_t *s, ConstByteSpan data)
 {
@@ -2681,9 +2556,6 @@ static void stream_data(stream_t *s, ConstByteSpan data)
         if (s->msg == s_turn.tts_msg) {
             tts_data(data.data(), data.size());
         }
-        break;
-    case K_IMG:
-        img_data(s, data);
         break;
     default:
         break;
@@ -2726,9 +2598,6 @@ static bool stream_end(stream_t *s, bool ok)
     case K_BG_CHAT:
         bg_chat_end(s, ok);
         break;
-    case K_IMG:
-        img_end(s, ok);
-        break;
     default:
         break;
     }
@@ -2754,13 +2623,6 @@ static bool on_http_error(stream_t *s, const ApplicationResponseView &resp)
     if (s->kind == K_BG_SUB && resp.status == 404) {
         bg_sub_missing(s);
         return true;
-    }
-    if (s->kind == K_IMG) {
-        close_stream(s);
-        char why[32];
-        snprintf(why, sizeof(why), "answered HTTP %d", (int)resp.status);
-        img_fallback(why);
-        return true;   /* the connection's fine */
     }
     /* No falling back to a subscription with {} on a refusal: a side chat's
      * replies only arrive on one that names it, so that would lose them all
