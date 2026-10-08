@@ -249,17 +249,18 @@ EXT_RAM_BSS_ATTR static struct {
     char label[LABEL_MAX];
 } s_want;
 
-/* The paths asked for lately (with s_ask_lock). */
-static struct {
+/* The paths asked for lately (with s_ask_lock). In PSRAM, as everything
+ * here but the lock: internal RAM is short. */
+EXT_RAM_BSS_ATTR static struct {
     uint32_t hash;
     int64_t us;
 } s_asked[ASKED_KEPT];
-static int s_asked_next;
+EXT_RAM_BSS_ATTR static int s_asked_next;
 
 /* The task's own: the request under way. */
-static bool s_asking;
-static uint32_t s_asking_hash;
-static char s_asking_label[LABEL_MAX];
+EXT_RAM_BSS_ATTR static bool s_asking;
+EXT_RAM_BSS_ATTR static uint32_t s_asking_hash;
+EXT_RAM_BSS_ATTR static char s_asking_label[LABEL_MAX];
 
 static uint32_t path_hash(const char *s)
 {
