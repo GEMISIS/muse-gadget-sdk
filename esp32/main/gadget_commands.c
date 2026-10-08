@@ -318,6 +318,45 @@ static bool jpeg_progressive(const uint8_t *d, size_t len) {
     return false;
 }
 
+// Whether a JPEG holds together as the decoder will walk it: header segments
+// that chain to the scan, a baseline frame header among them, and the end
+// marker near the end. Muse writes the base64 out itself, and now and then a
+// mistyped character spoils an image the ROM decoder then can't open.
+static bool jpeg_intact(const uint8_t *d, size_t len) {
+    bool frame = false;
+    size_t i = 2;
+    for (;;) {
+        if (i + 4 > len || d[i] != 0xFF) {
+            return false;
+        }
+        uint8_t m = d[i + 1];
+        if (m == 0xFF) {
+            i++;   // fill
+            continue;
+        }
+        if (m == 0xDA) {
+            break;   // the scan
+        }
+        if (m == 0xC0 || m == 0xC1) {
+            frame = true;
+        }
+        size_t seg = (size_t)d[i + 2] << 8 | d[i + 3];
+        if (seg < 2 || i + 2 + seg > len) {
+            return false;
+        }
+        i += 2 + seg;
+    }
+    if (!frame) {
+        return false;
+    }
+    for (size_t k = len; k >= 2 && len - k < 64; k--) {   // trailing bytes after it are allowed
+        if (d[k - 2] == 0xFF && d[k - 1] == 0xD9) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static uint32_t fnv1a(const uint8_t *d, size_t len) {
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < len; i++) {
@@ -434,6 +473,9 @@ cJSON *gadget_show_image_command(const cJSON *params) {
     }
     if (jpeg_progressive(s_push.buf, s_push.len)) {
         return push_error("unsupported", "progressive JPEG isn't supported: send a baseline one");
+    }
+    if (!jpeg_intact(s_push.buf, s_push.len)) {
+        return push_error("invalid_param", "the JPEG arrived damaged: send it again from offset 0");
     }
     uint32_t hash = fnv1a(s_push.buf, s_push.len);
     int64_t now = esp_timer_get_time();
