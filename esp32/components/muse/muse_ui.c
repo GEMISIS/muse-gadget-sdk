@@ -2499,8 +2499,8 @@ static float update_plugged(muse_mode_t mode, float now, bool face)
  * its own): tired as it runs down under TIRED_PCT, the most at
  * TIRED_FULL_PCT, unless charging or in bed; and the level on his belly
  * while charging (or on USB power, full), or for BELLY_PAT_S after a pat.
- * With the face's readouts, not all the time on charge: BELLY_PLUG_S once
- * plugged in, and while it's low (BELLY_LOW_PCT or less).
+ * With the face's readouts: while charging until it's full, BELLY_PLUG_S
+ * once plugged in (full too), and while it's low (BELLY_LOW_PCT or less).
  */
 #define TIRED_PCT 40
 #define TIRED_FULL_PCT 10
@@ -2543,7 +2543,8 @@ static void pose_battery(muse_pose_t *pose, float now)
         plugged_at = now;
     }
     was_charging = pose->charging;
-    pose->belly = now - plugged_at < BELLY_PLUG_S || now - patted_at < BELLY_PAT_S || p.battery_pct <= BELLY_LOW_PCT;
+    pose->belly = (pose->charging && p.battery_pct < 100) || now - plugged_at < BELLY_PLUG_S
+                  || now - patted_at < BELLY_PAT_S || p.battery_pct <= BELLY_LOW_PCT;
 #else
     pose->belly = pose->charging || now - patted_at < BELLY_PAT_S;
 #endif

@@ -149,7 +149,7 @@ static const char *TAG = "muse_chat_session";
 #define TEXT_BUSY_HOLD_US (5 * 60 * 1000000LL)
 #define PRESENT_LATE_US (30 * 1000000LL)   /* an image for the turn's chat may come this long after it */
 #define IMG_HOLD_CAP_US (120 * 1000000LL)  /* a reply's speech waits for its image this long at most */
-#define IMG_GRACE_US (1500 * 1000LL)       /* a reply ready to speak: an image event may still be this close behind */
+#define IMG_GRACE_US (700 * 1000LL)        /* a reply ready to speak: an image event may still be this close behind (seen ~150 ms) */
 #define IMG_RISE_US (1100 * 1000LL)        /* shown: out of the pocket and held up (muse_ui.c's PHOTO_REACH_S + PHOTO_RISE_S) */
 #define IMG_CAPTION "GETTING THE IMAGE..."
 /* After the words of every message (and any mode contract): Muse forgets the contract's standing order. */

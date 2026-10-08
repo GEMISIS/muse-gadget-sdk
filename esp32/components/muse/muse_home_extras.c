@@ -34,12 +34,12 @@
 
 #define COLOR_TEXT MUSE_COLOR_FACE_TEXT   /* the clock: between dim and the captions' colour */
 /* "Up next" (muse_up_next.h): a pill centred over the page dots (its bottom
- * at y 446 on 480 px), a bell and the line in unscii, Muse's own pixel type.
+ * at y 446 on 480 px), just the line in unscii, Muse's own pixel type.
  * A line wider than UP_TEXT_W wraps, centred, to as few lines as it takes
  * (up_fit), the pill growing upwards: two take it to y 394, three to 376,
  * still under Muse's feet (367). Past UP_LINES it ends in dots. A reply's
  * page hides it, and the Night face leaves it out. */
-#define UP_TEXT_W 336           /* 42 columns */
+#define UP_TEXT_W 360           /* 22 columns of unscii_16 */
 #define UP_LINES 3
 #define UP_LINE_SPACE 2
 #define UP_PAD_V 9
@@ -48,7 +48,6 @@
 #define FADE_MS 250             /* the clock's minute, and a new line in the pill: out, then in */
 #define COLOR_UP_BG 0x1d1733
 #define COLOR_UP_EDGE 0x5b3fa0
-#define COLOR_UP_ICON MUSE_COLOR_ACCENT
 #define COLOR_UP_TEXT 0xe4defa
 /* Top centre, over the chat's name (muse_ui.c's STATE_Y) and Muse's head;
  * the corner holds the connectivity icons. Big, to read at a glance, and the
@@ -103,10 +102,6 @@ void muse_home_extras_build(lv_obj_t *face)
     lv_obj_set_flex_flow(s_up, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_up, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_opa(s_up, LV_OPA_TRANSP, 0);   /* shown once there's a line (up_show) */
-    lv_obj_t *bell = lv_label_create(s_up);
-    lv_obj_set_style_text_font(bell, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(bell, lv_color_hex(COLOR_UP_ICON), 0);
-    lv_label_set_text(bell, LV_SYMBOL_BELL);
     s_up_lbl = lv_label_create(s_up);
     lv_obj_set_style_text_font(s_up_lbl, FONT_UP, 0);
     lv_obj_set_style_text_color(s_up_lbl, lv_color_hex(COLOR_UP_TEXT), 0);
