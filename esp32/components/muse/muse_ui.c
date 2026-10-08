@@ -163,6 +163,9 @@ static float s_level;
 static int s_shown_state = -1;
 static const char *s_shown_name;
 static const char *s_idle_name = "READY";   /* idle's label: set by the Wi-Fi state */
+/* Idle in a chat other than the main one, its name stands in for READY. */
+static char s_chat_label[MUSE_CHAT_NAME_MAX + 1];
+static uint32_t s_chat_label_gen = UINT32_MAX;
 static int s_shown_lit = -1;
 static uint32_t s_shown_accent;
 static bool s_meter_visible = true;
@@ -1000,6 +1003,15 @@ static void build_screen(void)
     s_state_lbl = make_label(face, CORNERS ? &lv_font_montserrat_20 : s_small ? &lv_font_unscii_8 : &lv_font_unscii_16,
                              0xffffff);
     lv_obj_set_style_text_letter_space(s_state_lbl, s_small || CORNERS ? 1 : 2, 0);
+    /* A fixed width, so a long chat's name (chat_label) ends in dots. */
+    int state_w = s_w - (s_small ? 4 : CORNERS ? 120 : 32);
+    if (!s_small && muse_board->round) {
+        int r = (s_w < s_h ? s_w : s_h) / 2 - 10, dy = s_h / 2 - (STATE_Y + s_dy + 20);
+        state_w = dy < r ? 2 * (int)sqrtf((float)(r * r - dy * dy)) - 24 : state_w;
+    }
+    lv_obj_set_width(s_state_lbl, state_w);
+    lv_label_set_long_mode(s_state_lbl, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_style_text_align(s_state_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, s_small ? 22 : STATE_Y + s_dy);
     lv_obj_set_flag(s_state_lbl, LV_OBJ_FLAG_HIDDEN, s_small && !s_tall && s_h < 200);
 
@@ -1297,6 +1309,38 @@ static const char *idle_name(muse_wifi_state_t wifi)
     }
 }
 
+/*
+ * What idle's label says in the chat picked now, or NULL in the main chat:
+ * the chat's name, in capitals like the states. Rebuilt only when the chats
+ * or the pick change; a new label clears s_shown_name so it's redrawn.
+ */
+static const char *chat_label(void)
+{
+    uint32_t gen = muse_settings_chats_gen();
+    if (gen != s_chat_label_gen) {
+        s_chat_label_gen = gen;
+        char sid[MUSE_CHAT_SID_MAX + 1], gadget[MUSE_CHAT_SID_MAX + 1];
+        muse_settings_chat_sid(sid);
+        muse_settings_gadget_chat_sid(gadget);
+        if (!sid[0]) {
+            s_chat_label[0] = '\0';
+        } else if (!strcmp(sid, gadget)) {
+            strlcpy(s_chat_label, "GADGET CHAT", sizeof(s_chat_label));
+        } else if (muse_settings_chat_untitled(sid)) {
+            strlcpy(s_chat_label, "NEW CHAT", sizeof(s_chat_label));
+        } else if (muse_settings_chat_name(sid, s_chat_label)) {
+            muse_text_to_ascii(s_chat_label, sizeof(s_chat_label));   /* the font's own letters */
+            for (char *c = s_chat_label; *c; c++) {
+                *c = *c >= 'a' && *c <= 'z' ? *c - 'a' + 'A' : *c;
+            }
+        } else {
+            strlcpy(s_chat_label, "OTHER CHAT", sizeof(s_chat_label));
+        }
+        s_shown_name = NULL;
+    }
+    return s_chat_label[0] ? s_chat_label : NULL;
+}
+
 static void update_chrome(float now)
 {
     if (now < s_next_settings_tick) {
@@ -1339,6 +1383,9 @@ static void update_chrome(float now)
         lv_label_set_text(s_wifi_icon, wifi);
     }
     s_idle_name = idle_name(w.state);
+    if (s_idle_name == MODE_NAMES[MUSE_MODE_IDLE] && chat_label()) {
+        s_idle_name = s_chat_label;   /* ready, in a chat other than the main one */
+    }
     muse_ble_status_t b;
     muse_ble_status(&b);
     /* In the corner, only while a phone's connected: on its own, Bluetooth
