@@ -36,7 +36,7 @@
 #define LIST_W 330
 #define LIST_TOP 84
 #define ROW_H 58
-#define HELP_W 400
+#define HELP_W 360
 #define FORGET_ARMED_US 4000000   /* how long a held chat waits for the tap that forgets it */
 
 #define COLOR_TEXT 0xf2efff
@@ -223,15 +223,15 @@ static void open_help(void)
     lv_obj_t *card = lv_obj_create(s_help);
     lv_obj_remove_style_all(card);
     lv_obj_set_size(card, HELP_W, LV_SIZE_CONTENT);
-    lv_obj_set_style_max_height(card, muse_board->height - 24, 0);
+    lv_obj_set_style_max_height(card, muse_board->height * 3 / 4, 0);   /* the dimmed screen shows round it */
     lv_obj_center(card);
     lv_obj_set_style_radius(card, 24, 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(card, lv_color_hex(COLOR_CARD), 0);
     lv_obj_set_style_border_color(card, lv_color_hex(COLOR_ACCENT), 0);
     lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_pad_all(card, 20, 0);
-    lv_obj_set_style_pad_row(card, 12, 0);
+    lv_obj_set_style_pad_all(card, 16, 0);
+    lv_obj_set_style_pad_row(card, 8, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);   /* taps on it stay on it */
@@ -240,15 +240,14 @@ static void open_help(void)
 
     label(card, &lv_font_montserrat_20, COLOR_TEXT, "How chats work");
     help_tip(card, LV_SYMBOL_LIST, "Tap a chat to talk in it.");
-    help_tip(card, LV_SYMBOL_PLUS, "New chat starts a fresh one. Muse names it from the first thing you ask.");
-    help_tip(card, LV_SYMBOL_CLOSE, "Hold a chat, then tap it, to remove it from this list. "
-                                    "The conversation isn't deleted: it stays in the Muse app.");
-    help_tip(card, LV_SYMBOL_HOME, "After a restart, Muse starts on the main chat.");
-    help_tip(card, LV_SYMBOL_SHUFFLE, "The word beside a chat is the mode it last heard.");
+    help_tip(card, LV_SYMBOL_PLUS, "New chat: Muse names it from your first question.");
+    help_tip(card, LV_SYMBOL_CLOSE, "Hold, then tap, to remove a chat here. It stays in the Muse app.");
+    help_tip(card, LV_SYMBOL_HOME, "A restart begins on the main chat.");
+    help_tip(card, LV_SYMBOL_SHUFFLE, "The word by a chat is the mode it last heard.");
 
     lv_obj_t *ok = lv_button_create(card);
     lv_obj_remove_style_all(ok);
-    lv_obj_set_size(ok, lv_pct(100), 48);
+    lv_obj_set_size(ok, lv_pct(100), 44);
     lv_obj_set_style_radius(ok, 16, 0);
     lv_obj_set_style_bg_opa(ok, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(ok, lv_color_hex(COLOR_ACCENT), 0);
@@ -329,5 +328,5 @@ void muse_chats_ui_tick(bool visible)
 
 bool muse_chats_ui_typing(void)
 {
-    return false;   /* nothing's typed here: the Muse names new chats */
+    return s_help != NULL;   /* the help card is up: no page dots, no swiping away */
 }
