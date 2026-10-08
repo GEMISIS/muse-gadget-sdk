@@ -125,8 +125,7 @@ void muse_home_extras_build(lv_obj_t *face)
     lv_obj_set_style_text_font(s_up_lbl, &lv_font_unscii_16, 0);
     lv_obj_set_style_text_color(s_up_lbl, lv_color_hex(COLOR_UP_TEXT), 0);
     lv_label_set_text(s_up_lbl, "");
-    lv_obj_set_style_max_width(s_up_lbl, UP_TEXT_W, 0);
-    lv_label_set_long_mode(s_up_lbl, LV_LABEL_LONG_MODE_DOTS);
+    lv_label_set_long_mode(s_up_lbl, LV_LABEL_LONG_MODE_DOTS);   /* one line: up_fit() sets its width */
 #endif
     s_next = 0;
     s_24h = muse_extras_get_i32("clock_24h", 0) != 0;
@@ -158,6 +157,15 @@ lv_obj_t *muse_home_extras_corner(void)
 static void up_fade(void *obj, int32_t v)
 {
     lv_obj_set_style_opa(obj, (lv_opa_t)v, 0);
+}
+
+/* The label as wide as its line, up to UP_TEXT_W, past which it ends in
+ * dots: dots need a fixed width, and the pill sizes itself round it. */
+static void up_fit(const char *line)
+{
+    lv_point_t size;
+    lv_text_get_size(&size, line, &lv_font_unscii_16, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    lv_obj_set_width(s_up_lbl, size.x < UP_TEXT_W ? size.x : UP_TEXT_W);
 }
 
 /* Fades the pill in when there's a line, out when there isn't. */
@@ -229,8 +237,9 @@ void muse_home_extras_tick(float now)
     if (s_night || !muse_up_next_line(line, sizeof(line))) {
         line[0] = '\0';
     }
-    if (line[0]) {
+    if (line[0] && strcmp(lv_label_get_text(s_up_lbl), line) != 0) {
         set_text(s_up_lbl, line);
+        up_fit(line);
     }
     char caption[4] = "";
     uint32_t any = 0;
