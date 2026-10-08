@@ -641,7 +641,8 @@ static cJSON *chat_json(void)
     bool named = sid[0] && muse_settings_chat_name(sid, name);
     cJSON *chat = cJSON_CreateObject();
     cJSON_AddStringToObject(chat, "chat",
-                            !sid[0] ? "main" : !strcmp(sid, gadget) ? "gadget" : named ? "named" : "custom");
+                            !sid[0] ? "main" : !strcmp(sid, gadget) ? "gadget" : named ? "named"
+                            : muse_settings_chat_untitled(sid) ? "new" : "custom");
     cJSON_AddStringToObject(chat, "session_id", sid);
     if (named) {
         cJSON_AddStringToObject(chat, "name", name);
@@ -674,6 +675,7 @@ static void chat_error(const char *what, const char *why)
  *   "chat_sid"            prints it
  *   "chat_sid=ID"         picks a side chat by its UUID ("chat_sid=" or "=main"
  *                         the main one, "=gadget" this gadget's own)
+ *   "chat_new="           a new chat the Muse titles by its first message, picked
  *   "chat_new=NAME"       keeps a new named chat and picks it (or picks the
  *                         one with that name)
  *   "chat_forget=ID|NAME" forgets a named chat (the main one is picked if it
@@ -704,6 +706,12 @@ static void chat_sid_command(const char *line)
     }
     if (!strncmp(line, "chat_sub=", 9)) {
         muse_chat_set_subscribe_session(strcmp(line + 9, "0") != 0);
+    } else if (!strcmp(line, "chat_new=")) {
+        /* No name: a new chat the Muse titles by its first message, as on the Chats screen. */
+        if (muse_settings_chat_pick_new() == ESP_ERR_NO_MEM) {
+            chat_error("", "8 named chats are kept already: forget one first");
+            return;
+        }
     } else if (!strncmp(line, "chat_new=", 9)) {
         esp_err_t err = muse_settings_chat_new(line + 9, NULL);
         if (err == ESP_ERR_NO_MEM) {

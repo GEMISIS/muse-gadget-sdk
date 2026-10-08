@@ -133,6 +133,11 @@ static bool muse_settings_chat_find(const char *name, char sid_out[MUSE_CHAT_SID
     return false;
 }
 
+static bool muse_settings_chat_untitled(const char *sid) {
+    (void)sid;
+    return false;
+}
+
 static bool muse_settings_chat_name(const char *sid, char name_out[MUSE_CHAT_NAME_MAX + 1]) {
     for (int i = 0; i < s_chats_n; i++) {
         if (!strcmp(s_chats[i].sid, sid)) {

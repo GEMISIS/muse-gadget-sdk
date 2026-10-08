@@ -835,6 +835,11 @@ const char *muse_hatch_state_name(muse_hatch_state_t state)
     return "";
 }
 
+bool muse_hatch_turn_busy(void)
+{
+    return s_turn.phase != T_IDLE;
+}
+
 bool muse_hatch_ready(void)
 {
     return s_events && muse_link_hatch_linked() && muse_wifi_connected() && muse_link_req_ready();
