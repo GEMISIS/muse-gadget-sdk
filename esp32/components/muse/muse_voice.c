@@ -498,23 +498,54 @@ static void go_idle(const char *caption)
 }
 
 #if CONFIG_MUSE_TTS_PICO
+EXT_RAM_BSS_ATTR static char s_replay_page[MUSE_CAPTION_MAX];
+
 /*
- * Says the last reply again (muse_tts_replay_last), captions following. Any
- * press stops it and stays queued for the loop, so talking cuts it short.
+ * The last reply again without speech (the speaker off, or a mode that
+ * doesn't speak replies): its pages, at the pace Pico would have said them,
+ * the last held a moment. Any press stops it, as in replay_reply().
+ */
+static void replay_captions(const char *text)
+{
+    int64_t t0 = esp_timer_get_time();
+    int64_t end_us = t0 + (int64_t)muse_tts_caption_frames(text) * 1000000 / MUSE_AUDIO_RATE + 2500000;
+    muse_state_set_mode(MUSE_MODE_SPEAKING);   /* the reply's layout */
+    for (int64_t now = t0; now < end_us; now = esp_timer_get_time()) {
+        muse_input_event_t ev;
+        if (xQueuePeek(s_queue, &ev, 0) == pdTRUE) {
+            break;
+        }
+        size_t at = (size_t)((now - t0) * MUSE_AUDIO_RATE / 1000000);
+        if (muse_tts_caption(text, at, s_replay_page, sizeof(s_replay_page))) {
+            muse_state_set_caption("%s", s_replay_page);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    ESP_LOGI(TAG, "showed the last reply again (%u chars, not spoken)", (unsigned)strlen(text));
+}
+
+/*
+ * Says the last reply again (muse_tts_replay_last), captions following, or
+ * shows it again if replies aren't spoken now. Any press stops it and stays
+ * queued for the loop, so talking cuts it short.
  */
 static void replay_reply(void)
 {
-    if (!muse_tts_wanted()) {
+    char *text = heap_caps_malloc(MUSE_TTS_TEXT_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!text || !muse_tts_last(text, MUSE_TTS_TEXT_MAX)) {
+        free(text);
         return;
     }
-    char *text = heap_caps_malloc(MUSE_TTS_TEXT_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!text || !muse_tts_last(text, MUSE_TTS_TEXT_MAX) || !muse_tts_say(text)) {
+    if (!muse_tts_wanted() || !muse_tts_say(text)) {
+        replay_captions(text);
         free(text);
+        go_idle("");
         return;
     }
     EXT_RAM_BSS_ATTR static int16_t buf[MUSE_AUDIO_CHUNK];
     static const int16_t silence[MUSE_AUDIO_CHUNK];
-    EXT_RAM_BSS_ATTR static char page[MUSE_CAPTION_MAX];
+    char *page = s_replay_page;
+    const size_t page_cap = sizeof(s_replay_page);
     size_t played = 0;
     int64_t t0 = esp_timer_get_time();
     muse_state_set_mode(MUSE_MODE_SPEAKING);
@@ -540,7 +571,7 @@ static void replay_reply(void)
         } else {
             vTaskDelay(pdMS_TO_TICKS(10));   /* the engine loading */
         }
-        if (muse_tts_caption(text, played, page, sizeof(page))) {
+        if (muse_tts_caption(text, played, page, page_cap)) {
             muse_state_set_caption("%s", page);
         }
     }

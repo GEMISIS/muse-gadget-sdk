@@ -50,6 +50,9 @@
 #include "muse_settings_ui.h"
 #include "muse_state.h"
 #include "muse_text.h"
+#if CONFIG_MUSE_TTS_PICO
+#include "muse_tts.h"
+#endif
 #include "muse_wifi.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
@@ -533,10 +536,20 @@ static void update_flip(float now)
     lv_obj_invalidate(lv_screen_active());   /* with the layers over it */
 }
 
+/*
+ * A pat: Muse hops for joy, and between turns says its last reply again
+ * (shown again, if replies aren't spoken now). Asleep, the cover takes the
+ * tap and only wakes the screen.
+ */
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
     muse_state_make_happy();
+#if CONFIG_MUSE_TTS_PICO
+    if (muse_state_mode(NULL) == MUSE_MODE_IDLE && !muse_hatch_turn_busy()) {
+        muse_tts_replay_last();
+    }
+#endif
 }
 
 static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compact)
