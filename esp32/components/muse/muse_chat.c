@@ -122,6 +122,17 @@ bool muse_chat_bg_ask_for(muse_chat_bg_for_t who, const char *sid, const char *m
     return true;
 }
 
+void muse_chat_bg_abandon(muse_chat_bg_for_t who)
+{
+    portENTER_CRITICAL(&s_bg_lock);
+    bool mine = who != MUSE_CHAT_BG_FOR_NONE && s_bg_for == who;
+    portEXIT_CRITICAL(&s_bg_lock);
+    if (mine) {
+        muse_chat_bg_forget();   /* the next request replaces it, whatever it's doing */
+        bg_release();
+    }
+}
+
 muse_chat_bg_state_t muse_chat_bg_result_for(muse_chat_bg_for_t who, char *out, size_t cap)
 {
     portENTER_CRITICAL(&s_bg_lock);

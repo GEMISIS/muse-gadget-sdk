@@ -411,10 +411,20 @@ static void background() {
     assert(s_bg.phase == BG_WANTED && !bg_subs);
     bg_end(false, "test");
     s_bg_state = MUSE_CHAT_BG_NONE;
-    /* Unless it's to go beside it (an image the turn waits for). */
+    /* Unless it's to go beside it (an image the turn waits for). The one
+     * waiting has lost its asker (only one asks at a time): it's replaced,
+     * not the new one refused with no answer ever coming. */
+    bg_want(BG_SID "\nWhat's next?");
+    s_bg_state = MUSE_CHAT_BG_BUSY;   /* the image's asker's (muse_chat_bg_ask) */
     bg_want(BG_SID "\nPush it", true);
+    assert(s_bg.phase == BG_WANTED && s_bg.in_turn && s_bg_state == MUSE_CHAT_BG_BUSY);
     bg_poll();
     assert(s_bg.phase == BG_SUBSCRIBING && bg_subs == 1);
+    bg_stream(K_BG_SUB)->status = 200;
+    bg_poll();
+    cJSON *posted_bg = cJSON_Parse(bg_chat_body);
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(posted_bg, "message")), "Push it"));
+    cJSON_Delete(posted_bg);
     /* Muse at work on it: its chat's status is none of the turn's business. */
     cJSON *st = cJSON_Parse("{\"type\":\"event\",\"event\":\"agent.status\",\"payload\":{\"session_id\":\"" BG_SID
                             "\",\"activity_code\":\"making_something\",\"activity_text\":\"Resizing image\"}}");
@@ -691,6 +701,35 @@ static void grace_and_cap() {
     assert(!s_turn.img_hold);   /* turn_finish (stubbed here) also stops the wait: muse_present_wait(false) */
     s_turn.texts = nullptr;
 }
+/*
+ * The koala (a Markdown web image named at message_done, fetched on the
+ * present task for 9 s, then asked for): the reply's all in and held when
+ * the request comes, and it still starts straight away, beside the turn.
+ */
+static void held_turn_takes_the_request() {
+    hold_begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "", "Here's a koala! ![Koala](https://krfa.org.au/k/Koala.webp)");
+    event("delta.message_done", "reply");
+    assert(s_turn.img_hold && asks == 1 && !strcmp(ask_path, "https://krfa.org.au/k/Koala.webp"));
+    for (int i = 0; i < 9; i++) tick();   /* the fetch here, failing */
+    assert(s_turn.img_hold && s_turn.phase == P_WAIT_REPLY && !pcm_sent);
+    bg_end(false, "test");
+    s_bg_state = MUSE_CHAT_BG_BUSY;
+    bg_subs = 0;
+    bg_want(BG_SID "\nDownload the image", true);
+    tick();
+    bg_poll();
+    assert(s_bg.phase == BG_SUBSCRIBING && bg_subs == 1);
+    /* Muse's push shows: the speech goes on, holding it. */
+    fake_seq++;
+    tick(10);
+    tick(IMG_RISE_US / 1000);
+    assert(!s_turn.img_hold && pcm_sent);
+    bg_end(false, "test");
+    s_bg_state = MUSE_CHAT_BG_NONE;
+    s_turn.texts = nullptr;
+}
 static void not_held() {
     /* Muse pushed one by itself this turn already: not asked for, not waited for. */
     hold_begin();
@@ -748,6 +787,7 @@ int main(int argc, char **argv) {
     case 8: grace_and_cap(); break;
     case 9: not_held(); break;
     case 10: progress(); break;
+    case 11: held_turn_takes_the_request(); break;
     default: return 2;
     }
 }
@@ -806,3 +846,6 @@ int main(int argc, char **argv) {
 
     def test_progress_estimate_follows_time_then_bytes(self):
         self.run_case(10)
+
+    def test_held_turn_with_its_reply_in_starts_the_image_request(self):
+        self.run_case(11)

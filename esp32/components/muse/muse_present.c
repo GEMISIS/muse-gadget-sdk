@@ -63,6 +63,7 @@ static const char *TAG = "muse_present";
 #define PATH_MAX_LEN 256                /* a workspace file's path, to ask for */
 #define ASK_POLL_MS 1000                /* how often a request waiting to go, or for its reply, is looked at */
 #define ASK_GIVE_UP_US (120 * 1000000LL)        /* waiting to ask */
+#define ASK_ANSWER_US (150 * 1000000LL)         /* waiting for the request's end: past the session's own two minutes */
 #define ASKED_AGAIN_US (10 * 60 * 1000000LL)    /* a path asked for isn't asked for again this soon */
 #define ASKED_KEPT 4
 
@@ -391,6 +392,7 @@ EXT_RAM_BSS_ATTR static struct {
 /* The task's own: the request under way. */
 EXT_RAM_BSS_ATTR static bool s_asking;
 EXT_RAM_BSS_ATTR static uint32_t s_asking_hash;
+EXT_RAM_BSS_ATTR static int64_t s_asking_us;
 EXT_RAM_BSS_ATTR static char s_asking_label[LABEL_MAX];
 
 static uint32_t path_hash(const char *s)
@@ -437,6 +439,12 @@ static void ask_tick(void)
     if (s_asking) {
         char reply[64];
         muse_chat_bg_state_t st = muse_chat_bg_result_for(MUSE_CHAT_BG_FOR_IMAGE, reply, sizeof(reply));
+        if (st == MUSE_CHAT_BG_BUSY && esp_timer_get_time() - s_asking_us > ASK_ANSWER_US) {
+            /* The session ends a request in two minutes: this one never started, or lost its way. */
+            ESP_LOGW(TAG, "\"%s\": the request to push it never ended; given up", s_asking_label);
+            muse_chat_bg_abandon(MUSE_CHAT_BG_FOR_IMAGE);
+            st = MUSE_CHAT_BG_FAILED;
+        }
         if (st == MUSE_CHAT_BG_BUSY) {
             return;   /* the request gives up by itself after two minutes */
         }
@@ -522,6 +530,7 @@ static void ask_tick(void)
         return;   /* someone else's request is under way, or a turn: next time */
     }
     s_asking = true;
+    s_asking_us = esp_timer_get_time();
     s_asking_hash = hash;
     strlcpy(s_asking_label, label, sizeof(s_asking_label));
     portENTER_CRITICAL(&s_ask_lock);
