@@ -31,6 +31,7 @@
 
 #include "muse_board.h"
 #include "muse_chat_delete.h"
+#include "muse_dialog.h"
 #include "muse_settings.h"
 #include "muse_ui.h"
 
@@ -39,19 +40,13 @@
 #define ROW_H 70        /* the settings rows' height on this board (muse_settings_ui.c) */
 #define GUTTER 12       /* either side of the rows; the scrollbar runs down the right one */
 #define TICK_W 24       /* the tick's room on the right, kept whether or not it shows */
-#define CARD_W 360
-#define CARD_BUTTON_H 52
 #define NOTE_MAX 96
 
 #define COLOR_TEXT 0xf2efff
 #define COLOR_DIM 0x8b84a8
 #define COLOR_CARD 0x1a1530
 #define COLOR_CARD_PRESSED 0x2e2552
-#define COLOR_NEUTRAL_PRESSED 0x3d3270
 #define COLOR_ACCENT 0xa77dff
-#define COLOR_ACCENT_PRESSED 0xc8adff
-#define COLOR_DANGER 0xff5c5c
-#define COLOR_DANGER_PRESSED 0xff8a8a
 
 /* Delete from Muse needs the Muse's own chat session (CONFIG_MUSE_HATCH). */
 #define CAN_DELETE (CONFIG_MUSE_HATCH && CONFIG_MUSE_GADGET_CHATS)
@@ -65,7 +60,6 @@ static int s_count;
 static int s_current = -1;
 static uint32_t s_gen = UINT32_MAX;
 static lv_obj_t *s_tile;
-static lv_obj_t *s_modal;   /* a card over the list while it's open: help, or forgetting a chat */
 static char s_forget_sid[MUSE_CHAT_SID_MAX + 1];   /* the chat the forget card is about */
 #if CAN_DELETE
 static uint32_t s_delete_gen;   /* the muse_chat_delete_status shown */
@@ -233,80 +227,10 @@ static void rebuild(void)
 
 /* ---------- cards over the list: help, and forgetting a chat ---------- */
 
-static void close_modal(void)
-{
-    if (s_modal) {
-        lv_obj_delete_async(s_modal);   /* we may be in one of its own events */
-        s_modal = NULL;
-    }
-}
-
-static void on_modal_close(lv_event_t *e)
-{
-    /* A tap on the dim backdrop closes it; one on the card itself doesn't. */
-    if (lv_event_get_target(e) == lv_event_get_current_target(e)) {
-        close_modal();
-    }
-}
-
-/*
- * A card over the whole screen, the rest dimmed, to fill in; NULL if one's
- * open already. It's on the tile, so it goes with it; the backdrop doesn't
- * pass drags on to the screens either side, and a tap on it closes the card.
- */
-static lv_obj_t *open_modal(void)
-{
-    if (s_modal) {
-        return NULL;
-    }
-    s_modal = lv_obj_create(s_tile);
-    lv_obj_remove_style_all(s_modal);
-    lv_obj_set_size(s_modal, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(s_modal, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(s_modal, LV_OPA_80, 0);
-    lv_obj_remove_flag(s_modal, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_SCROLL_CHAIN | LV_OBJ_FLAG_GESTURE_BUBBLE);
-    lv_obj_add_flag(s_modal, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_modal, on_modal_close, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *card = lv_obj_create(s_modal);
-    lv_obj_remove_style_all(card);
-    lv_obj_set_size(card, CARD_W, LV_SIZE_CONTENT);
-    lv_obj_set_style_max_height(card, muse_board->height * 3 / 4, 0);   /* the dimmed screen shows round it */
-    lv_obj_center(card);
-    lv_obj_set_style_radius(card, 24, 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(card, lv_color_hex(COLOR_CARD), 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_set_style_pad_all(card, 16, 0);
-    lv_obj_set_style_pad_row(card, 8, 0);
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);   /* taps on it stay on it */
-    scroll_column(card, 20);   /* in its padding, clear of its rounded corners */
-    lv_obj_set_style_pad_top(card, 20, LV_PART_SCROLLBAR);
-    return card;
-}
-
-/* A full-width button on a card. */
-static void card_button(lv_obj_t *card, const char *text, uint32_t bg, uint32_t pressed, uint32_t color,
-                        lv_event_cb_t cb)
-{
-    lv_obj_t *b = lv_button_create(card);
-    lv_obj_remove_style_all(b);
-    lv_obj_set_size(b, lv_pct(100), CARD_BUTTON_H);
-    lv_obj_set_style_radius(b, 16, 0);
-    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(bg), 0);
-    lv_obj_set_style_bg_color(b, lv_color_hex(pressed), LV_STATE_PRESSED);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_center(label(b, &lv_font_montserrat_20, color, text));
-}
-
 /* One tip: the icon it's about, beside a line or two. */
-static void help_tip(lv_obj_t *card, const char *icon, const char *text)
+static void help_tip(lv_obj_t *body, const char *icon, const char *text)
 {
-    lv_obj_t *r = lv_obj_create(card);
+    lv_obj_t *r = lv_obj_create(body);
     lv_obj_remove_style_all(r);
     lv_obj_set_size(r, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW);
@@ -320,85 +244,73 @@ static void help_tip(lv_obj_t *card, const char *icon, const char *text)
     lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_WRAP);
 }
 
-static void on_close(lv_event_t *e)
-{
-    (void)e;
-    close_modal();
-}
-
 /* The "?" button's card. */
 static void open_help(void)
 {
-    lv_obj_t *card = open_modal();
-    if (!card) {
+    static const muse_dialog_button_t GOT_IT[] = { { "Got it", MUSE_DIALOG_ACCENT, NULL, NULL } };
+    const muse_dialog_t d = { .title = "How chats work", .body = true, .buttons = GOT_IT, .button_count = 1 };
+    lv_obj_t *body = muse_dialog_open(s_tile, &d);
+    if (!body) {
         return;
     }
-    label(card, &lv_font_montserrat_20, COLOR_TEXT, "How chats work");
-    help_tip(card, LV_SYMBOL_LIST, "Tap a chat to talk in it.");
-    help_tip(card, LV_SYMBOL_PLUS, "New chat: Muse names it from your first question.");
+    help_tip(body, LV_SYMBOL_LIST, "Tap a chat to talk in it.");
+    help_tip(body, LV_SYMBOL_PLUS, "New chat: Muse names it from your first question.");
 #if CAN_DELETE
-    help_tip(card, LV_SYMBOL_CLOSE, "Hold a chat to remove it here, or delete it from Muse too.");
+    help_tip(body, LV_SYMBOL_CLOSE, "Hold a chat to remove it here, or delete it from Muse too.");
 #else
-    help_tip(card, LV_SYMBOL_CLOSE, "Hold a chat to remove it here. It stays in the Muse app.");
+    help_tip(body, LV_SYMBOL_CLOSE, "Hold a chat to remove it here. It stays in the Muse app.");
 #endif
-    help_tip(card, LV_SYMBOL_HOME, "A restart begins on the main chat.");
-    help_tip(card, LV_SYMBOL_SHUFFLE, "The word by a chat is the mode it last heard.");
-    card_button(card, "Got it", COLOR_ACCENT, COLOR_ACCENT_PRESSED, COLOR_CARD, on_close);
+    help_tip(body, LV_SYMBOL_HOME, "A restart begins on the main chat.");
+    help_tip(body, LV_SYMBOL_SHUFFLE, "The word by a chat is the mode it last heard.");
 }
 
-static void on_forget_keep(lv_event_t *e)
+static void on_forget_keep(void *user)
 {
-    (void)e;
+    (void)user;
     /* Back to the main chat first if it's the one picked; the list rebuilds on the next tick. */
     muse_settings_chat_forget(s_forget_sid);
     set_note("Forgotten here; the chat itself stays in the Muse app.");
-    close_modal();
 }
 
 #if CAN_DELETE
-static void on_forget_delete(lv_event_t *e)
+static void on_forget_delete(void *user)
 {
-    (void)e;
+    (void)user;
     char name[MUSE_CHAT_NAME_MAX + 1];
     if (!muse_settings_chat_name(s_forget_sid, name)) {
         name[0] = '\0';
     }
     muse_settings_chat_forget(s_forget_sid);
     muse_chat_delete(s_forget_sid, name);   /* its status shows in the note */
-    close_modal();
 }
 #endif
 
 /* Held a named chat: forget it here, delete it from Muse too, or neither. */
 static void open_forget(int i)
 {
-    lv_obj_t *card = open_modal();
-    if (!card) {
+    static const muse_dialog_button_t BUTTONS[] = {
+        { "Cancel", MUSE_DIALOG_NEUTRAL, NULL, NULL },
+        { "Forget, keep in Muse", MUSE_DIALOG_ACCENT, on_forget_keep, NULL },
+#if CAN_DELETE
+        { "Forget and delete from Muse", MUSE_DIALOG_DANGER, on_forget_delete, NULL },
+#endif
+    };
+    if (muse_dialog_is_open()) {
         return;
     }
     strlcpy(s_forget_sid, s_items[i].sid, sizeof(s_forget_sid));
-    label(card, &lv_font_montserrat_20, COLOR_TEXT, "Forget this chat?");
-    lv_obj_t *name = label(card, &lv_font_montserrat_20, COLOR_ACCENT, s_items[i].name[0] ? s_items[i].name
-                                                                                         : s_items[i].sid);
-    lv_obj_set_width(name, lv_pct(100));
-    lv_label_set_long_mode(name, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
+    const muse_dialog_t d = {
+        .title = "Forget this chat?",
+        .subtitle = s_items[i].name[0] ? s_items[i].name : s_items[i].sid,
 #if CAN_DELETE
-    const char *note = "Forgetting takes it off this gadget. Deleting removes it from Muse too.";
+        .text = "Forgetting takes it off this gadget. Deleting removes it from Muse too.",
 #else
-    const char *note = "Forgetting takes it off this gadget. It stays in the Muse app.";
+        .text = "Forgetting takes it off this gadget. It stays in the Muse app.",
 #endif
-    lv_obj_t *n = label(card, &lv_font_montserrat_16, COLOR_DIM, note);
-    lv_obj_set_width(n, lv_pct(100));
-    lv_label_set_long_mode(n, LV_LABEL_LONG_MODE_WRAP);
-    lv_obj_set_style_text_align(n, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_bottom(n, 4, 0);
-    card_button(card, "Cancel", COLOR_CARD_PRESSED, COLOR_NEUTRAL_PRESSED, COLOR_TEXT, on_close);
-    card_button(card, "Forget, keep in Muse", COLOR_ACCENT, COLOR_ACCENT_PRESSED, COLOR_CARD, on_forget_keep);
-#if CAN_DELETE
-    card_button(card, "Forget and delete from Muse", COLOR_DANGER, COLOR_DANGER_PRESSED, COLOR_CARD,
-                on_forget_delete);
-#endif
+        .buttons = BUTTONS,
+        .button_count = (int)(sizeof(BUTTONS) / sizeof(BUTTONS[0])),
+    };
+    muse_dialog_open(s_tile, &d);
 }
 
 static void on_help(lv_event_t *e)
@@ -453,7 +365,7 @@ void muse_chats_ui_tick(bool visible)
         return;
     }
     if (!visible) {
-        close_modal();   /* swiped or sent away: not still open on the way back */
+        muse_dialog_close_on(s_tile);   /* swiped or sent away: not still open on the way back */
     }
 #if CAN_DELETE
 #if !CONFIG_MUSE_GADGET_EXTRAS
@@ -478,5 +390,5 @@ void muse_chats_ui_tick(bool visible)
 
 bool muse_chats_ui_typing(void)
 {
-    return s_modal != NULL;   /* a card is up: no page dots, no swiping away */
+    return muse_dialog_is_open();   /* a card is up: no page dots, no swiping away */
 }
