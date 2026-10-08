@@ -46,6 +46,11 @@ API (muse_pixel.h, unchanged; implement exactly these)
       float reach;    // optional: 0..1 reaching into a pocket on the body's right side
       bool holding;   // optional: holding a reply's image up; the UI draws the arms
       float plugged;  // optional: 0..1 just plugged in to charge, easing out over ~2 s
+      bool battery;   // optional: battery_pct holds a reading
+      bool charging;  // optional: on USB power (charging, or full)
+      bool belly;     // optional: show the level on the belly
+      int battery_pct;  // optional: 0..100
+      float tired;    // optional: 0..1 tired as the battery runs down (IDLE only)
   } muse_pose_t;
   uint32_t muse_pixel_accent(muse_mode_t mode);    // 0xRRGGBB accent for the UI around the avatar
   void muse_pixel_render(const muse_pose_t *pose); // draw one frame into the 64x64 grid
@@ -57,12 +62,12 @@ API (muse_pixel.h, unchanged; implement exactly these)
 KEEP FROM THE ORIGINAL (reuse its code verbatim where it fits)
 - Framebuffer: uint8_t palette indices, 64x64, black background (index 0 is
   0x000000; the round screen's bezel is black).
-- Palette: an enum of colour roles, at most 40 entries (the default has 39, the
+- Palette: an enum of colour roles, at most 40 entries (the default has 40, the
   background included): outline, dark/mid/light/highlight body tones, face
   tones, eye, shine, blush, mouth, tongue, a 4-step per-mode glow ramp,
   aura x2, sparkle, accent, shadow, heart, white, the bed's pillow x2,
-  quilt x3 and wood x2, and a lightning bolt's yellow x3. Fixed avatar colours go in
-  one table. A per-mode scheme table (glow ramp and accent) blends toward
+  quilt x3 and wood x2, a lightning bolt's yellow x3, and the battery's
+  colour, set each frame. Fixed avatar colours go in one table. A per-mode scheme table (glow ramp and accent) blends toward
   the current mode with 1 - expf(-dt * 7). Precompute RGB565 and a 0.72x
   "dim" copy of every entry once per frame.
 - Time: state that lasts across frames (palette blend, blink and gaze
@@ -137,6 +142,27 @@ ANIMATION BEATS (every one of these, adapted to your body)
   eyes and a grin, more blush, a faster whirl of extra sparkles, and a small
   yellow lightning bolt (about 7x9, outlined) popping up beside the head at
   the top right, with a pulsing dithered glow, that flickers out below 0.25.
+- tired > 0 (optional; the battery's running down, IDLE only and never in
+  bed, nor while happy, plugged, dizzy, reaching or holding): ease toward
+  it slowly (1 - expf(-dt * 1.5)) and back quickly (dt * 6). Heavy lids
+  (eyes up to half shut, a lid line over them), slower and longer blinks,
+  gaze drifting down, a slower bob (keep the bob as a phase you advance by
+  dt, so changing its speed doesn't make it jump), a slouch (a little
+  shorter and wider, face lower), arms hanging lower, less blush, fewer
+  sparkles and a dimmer aura; past 0.5 a flat mouth and bags under the
+  eyes. Past 0.35 a yawn in the first 2.4 s of every 13 s (every 9 s past
+  0.9): eyes shut, a tall O mouth, a stretch with the arms out. Past 0.9 he
+  also nods off 5-7 s in: eyes shut, head dropping, a "z" rising.
+- battery (optional): with charging false and battery_pct 20 or less, a
+  small pixel battery (about 7x10) standing on the floor at the left, its
+  frame and the charge left (two rows, one under 10%) in yellow, red under
+  10% and fading in and out (dithered) about every 2 s. With belly (while
+  charging, or just after a pat): the level on the belly under the face,
+  in 3x5 pixel digits and a % in white on a small dark rounded panel, after
+  a 3x5 bolt while charging whose colour goes red (0%) to yellow (50%) to
+  green (100%). Only on the body's own pixels, so an arm stays in front;
+  not while reaching or holding (the pocket's there), and only when cells
+  are 2 px or bigger (muse_pixel_set_size of 128 or more).
 - Keep it readable at 64x64: expressions come from 2-5 px shapes, so
   exaggerate. The face needs strong contrast against the body.
 
