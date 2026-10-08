@@ -21,6 +21,7 @@ import io
 import json
 import os
 import random
+import re
 import shlex
 import struct
 import subprocess
@@ -51,17 +52,21 @@ def riff_header(rate):
 HEAD = (b'{"message":"","output_modality":"text","items":[{"type":"file",'
         b'"mime_type":"audio/wav","filename":"voice_note.wav","data_base64":"')
 TAIL = b'"}]}'
+# Muse's own session sends every note with the reminder to push an image as its text.
+REMINDER = re.search(r'#define IMG_REMINDER "([^"]*)"',
+                     (Path(__file__).resolve().parents[1] / 'components/muse/muse_chat_session.cpp').read_text()).group(1)
+SESSION_HEAD = HEAD.replace(b'"message":""', b'"message":"' + REMINDER.encode() + b'"')
 
 
 def pcm_bytes(n, seed):
     return random.Random(seed).randbytes(n)
 
 
-def expected_parts(wav_len, part_pcm, part_chars):
+def expected_parts(wav_len, part_pcm, part_chars, head=HEAD):
     """Chunk lengths of a note request: the head, a full chunk per whole part,
     then the remainder's base64 and the tail."""
     full, rest = divmod(wav_len, part_pcm)
-    return [len(HEAD)] + [part_chars] * full + [(rest + 2) // 3 * 4 + len(TAIL)]
+    return [len(head)] + [part_chars] * full + [(rest + 2) // 3 * 4 + len(TAIL)]
 
 
 def compile_c(out, sources):
@@ -77,15 +82,16 @@ def compile_c(out, sources):
 
 class NoteRequestAssertions:
     """Checks a captured request against a body built from CPython's base64."""
+    HEAD = HEAD
 
     def assert_request(self, run, pcm, part_pcm, part_chars):
         wav = riff_header(16000) + pcm
-        self.assertEqual(run['body'], HEAD + base64.b64encode(wav) + TAIL)
-        self.assertEqual(run['parts'], expected_parts(len(wav), part_pcm, part_chars))
+        self.assertEqual(run['body'], self.HEAD + base64.b64encode(wav) + TAIL)
+        self.assertEqual(run['parts'], expected_parts(len(wav), part_pcm, part_chars, self.HEAD))
         self.assertEqual(run['ends'], [False] * (len(run['parts']) - 1) + [True])
         if run['body_sent'] is not None:
             self.assertEqual(run['body_sent'], len(run['body']))
-        at = len(HEAD)
+        at = len(self.HEAD)
         for size in run['parts'][1:-1]:
             chunk = run['body'][at:at + size]
             self.assertEqual(len(chunk), part_chars)
@@ -318,6 +324,7 @@ class HatchVoiceNote(NoteRequestAssertions, unittest.TestCase):
     the source with the transport and mic backlog stubbed."""
 
     PART_PCM, PART_CHARS = 6144, 8192   # NOTE_PART_BYTES and the chunk it base64s to
+    HEAD = SESSION_HEAD
     MIC = 16000 * 2
 
     @classmethod
@@ -390,7 +397,7 @@ typedef struct fake_stream *StreamBufferHandle_t;
         # Under 0.3 s calls turn_fail() before the last chunk: no tail and no
         # end flag. Parts that streamed during the press stay sent; resetting
         # the half-sent stream is turn_fail()'s job, stubbed here.
-        for n, parts in ((3200, [len(HEAD)]), (9598, [len(HEAD), self.PART_CHARS])):
+        for n, parts in ((3200, [len(self.HEAD)]), (9598, [len(self.HEAD), self.PART_CHARS])):
             run = self.record(pcm_bytes(n, n), 320)
             self.assertEqual(run['failed'], "DIDN'T CATCH THAT", n)
             self.assertEqual(run['parts'], parts, n)
@@ -407,7 +414,7 @@ typedef struct fake_stream *StreamBufferHandle_t;
         pcm = pcm_bytes(2 * self.PART_PCM - 44, 4)
         run = self.record(pcm, self.PART_PCM - 44)
         self.assert_sent(run, pcm)
-        self.assertEqual(run['parts'], [len(HEAD), self.PART_CHARS, self.PART_CHARS, len(TAIL)])
+        self.assertEqual(run['parts'], [len(self.HEAD), self.PART_CHARS, self.PART_CHARS, len(TAIL)])
 
     def test_uneven_receives_across_several_parts(self):
         pcm = pcm_bytes(self.PART_PCM - 44 + 3 * self.PART_PCM + 1000, 5)
@@ -437,7 +444,7 @@ typedef struct fake_stream *StreamBufferHandle_t;
 
     def test_mode_contract_goes_as_the_message(self):
         # A chat that last heard another gadget mode gets the contract as the
-        # note's text, escaped; the audio is as ever.
+        # note's text, escaped, the reminder after it; the audio is as ever.
         context = ('[gadget mode: ON-THE-GO] ON-THE-GO mode is on. Keep replies to two sentences max. '
                    'Captions only — no spoken replies unless explicitly asked. "Quoted"')
         pcm = pcm_bytes(self.MIC, 7)
@@ -445,11 +452,12 @@ typedef struct fake_stream *StreamBufferHandle_t;
         self.assertTrue(run['ok'])
         request = json.loads(run['body'])
         wav = base64.b64decode(request['items'][0].pop('data_base64'), validate=True)
-        self.assertEqual(request, {'message': context, 'output_modality': 'text', 'items': [
+        message = context + '\n\n' + REMINDER
+        self.assertEqual(request, {'message': message, 'output_modality': 'text', 'items': [
             {'type': 'file', 'mime_type': 'audio/wav', 'filename': 'voice_note.wav'}]})
         self.assertEqual(wav, riff_header(16000) + pcm)
         # The head: the empty message's two quotes now hold the contract, as UTF-8.
-        self.assertEqual(run['parts'][0], len(HEAD) + len(json.dumps(context, ensure_ascii=False).encode()) - 2)
+        self.assertEqual(run['parts'][0], len(HEAD) + len(json.dumps(message, ensure_ascii=False).encode()) - 2)
 
 
 if __name__ == '__main__':

@@ -461,6 +461,7 @@ cJSON *gadget_show_image_command(const cJSON *params) {
                           png ? "PNG isn't supported: send a baseline JPEG" : "not a JPEG");
     }
     s_push.len = want;
+    muse_present_chunk(s_push.len, final ? s_push.len : size_hint);   // the caption's percentage, waiting for it
     const char *l = cJSON_GetStringValue(label);
     if (offset == 0 || (l && l[0])) {
         strlcpy(s_push.label, l && l[0] ? l : "image", sizeof(s_push.label));
