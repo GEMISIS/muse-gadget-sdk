@@ -83,10 +83,10 @@ typedef void (*text_done_cb_t)(const char *text);
 static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
-static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
+static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_display, *s_battery, *s_power, *s_text;
 static lv_obj_t *s_mode;
 static lv_obj_t *s_advanced;   /* Muse, Bluetooth and Battery, under home */
-static lv_obj_t *s_general;    /* Wi-Fi, Sound, Screen sleep and Mode, under home */
+static lv_obj_t *s_general;    /* Mode, Wi-Fi, Display and Sound, under home */
 static lv_obj_t *s_reset;      /* Reset device's two warnings, under Advanced */
 static lv_obj_t *s_reset_note, *s_reset_go_lbl;
 static int s_reset_step;       /* warnings agreed to so far */
@@ -102,7 +102,7 @@ typedef struct {
 } page_t;
 
 /* Home values. */
-static lv_obj_t *s_home_wifi, *s_home_sound, *s_home_sleep;
+static lv_obj_t *s_home_wifi, *s_home_sound, *s_home_display;
 static lv_obj_t *s_home_mode;
 
 /* Advanced values. */
@@ -128,9 +128,10 @@ static int64_t s_link_reset_armed_us;
 static lv_obj_t *s_ble_sw, *s_ble_status;
 
 /* Sound page. */
-static lv_obj_t *s_spk_sw, *s_vol_val, *s_vol_sl, *s_gain_val, *s_gain_sl, *s_bright_val, *s_bright_sl, *s_mic_bar, *s_mic_val;
+static lv_obj_t *s_spk_sw, *s_vol_val, *s_vol_sl, *s_gain_val, *s_gain_sl, *s_mic_bar, *s_mic_val;
 
-/* Sleep page. */
+/* Display page: brightness, and when the screen sleeps. */
+static lv_obj_t *s_bright_val, *s_bright_sl;
 static const int SLEEP_CHOICES[] = { 0, 30, 60, 120, 300, 600 };
 static const char *const SLEEP_NAMES[] = { "Never", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes" };
 #define SLEEP_COUNT (int)(sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]))
@@ -427,7 +428,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text,
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_display, &s_battery, &s_power, &s_text,
                                  &s_mode, &s_advanced, &s_general, &s_reset };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
@@ -447,7 +448,7 @@ static lv_obj_t *parent(lv_obj_t *p)
     if (p && (p == s_hatch || p == s_ble || p == s_battery || p == s_reset)) {
         return s_advanced;
     }
-    if (p && (p == s_wifi || p == s_sound || p == s_sleep || p == s_mode)) {
+    if (p && (p == s_wifi || p == s_sound || p == s_display || p == s_mode)) {
         return s_general;
     }
     return s_home;
@@ -1096,17 +1097,6 @@ static void on_gain(lv_event_t *e)
     }
 }
 
-static void on_bright(lv_event_t *e)
-{
-    int v = lv_slider_get_value(s_bright_sl);
-    set_val(s_bright_val, "%d%%", v);
-    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
-        muse_settings_set_brightness(v);
-    } else {
-        muse_ui_preview_brightness(v);
-    }
-}
-
 static void build_sound_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -1131,11 +1121,8 @@ static void build_sound_page(lv_obj_t *tile)
     lv_obj_set_style_anim_duration(s_mic_bar, 80, 0);
     note(list, "Talk at arm's length: the bar should reach green (-30 to -15 dBFS) without going orange.");
 
-    s_bright_sl = slider(list, "Brightness", 10, 100, muse_settings_brightness(), &s_bright_val, on_bright);
-
     set_val(s_vol_val, "%d%%", muse_settings_volume());
     set_val(s_gain_val, "%d dB", muse_settings_mic_gain() / 3 * 3);
-    set_val(s_bright_val, "%d%%", muse_settings_brightness());
     back_row(list, "Back");
 }
 
@@ -1154,7 +1141,18 @@ static void tick_sound(void)
     set_val(s_mic_val, "%d dBFS", (int)db);
 }
 
-/* ---------- Sleep ---------- */
+/* ---------- Display ---------- */
+
+static void on_bright(lv_event_t *e)
+{
+    int v = lv_slider_get_value(s_bright_sl);
+    set_val(s_bright_val, "%d%%", v);
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
+        muse_settings_set_brightness(v);
+    } else {
+        muse_ui_preview_brightness(v);
+    }
+}
 
 static void on_sleep_choice(lv_event_t *e)
 {
@@ -1167,17 +1165,18 @@ static void on_sleep_now(lv_event_t *e)
     muse_state_set_asleep(true);
 }
 
-static void build_sleep_page(lv_obj_t *tile)
+static void build_display_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_sleep = page(tile, "AUTO-SLEEP", &list);
-    note(list, "Turn the screen off after Muse has been idle for:");
+    s_display = page(tile, "DISPLAY", &list);
+    s_bright_sl = slider(list, "Brightness", 10, 100, muse_settings_brightness(), &s_bright_val, on_bright);
+    set_val(s_bright_val, "%d%%", muse_settings_brightness());
+    note(list, "Screen off when idle for");
     for (int i = 0; i < SLEEP_COUNT; i++) {
         row(list, NULL, SLEEP_NAMES[i], &s_sleep_checks[i], on_sleep_choice, (void *)(intptr_t)i);
         lv_obj_set_style_text_color(s_sleep_checks[i], lv_color_hex(COLOR_ACCENT), 0);
     }
     button(list, LV_SYMBOL_EYE_CLOSE "  Sleep now", COLOR_ACCENT, on_sleep_now, NULL);
-    note(list, "Tap the screen or press either button to wake.");
     back_row(list, "Back");
 }
 
@@ -1191,7 +1190,7 @@ static const char *sleep_name(int secs)
     return "Custom";
 }
 
-static void tick_sleep(void)
+static void tick_display(void)
 {
     int cur = muse_settings_sleep_s();
     for (int i = 0; i < SLEEP_COUNT; i++) {
@@ -1584,7 +1583,7 @@ static const page_t WIFI = { &s_wifi, build_wifi_page };
 static const page_t HATCH = { &s_hatch, build_hatch_page };
 static const page_t BLE = { &s_ble, build_ble_page };
 static const page_t SOUND = { &s_sound, build_sound_page };
-static const page_t SLEEP = { &s_sleep, build_sleep_page };
+static const page_t DISPLAY = { &s_display, build_display_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
 static const page_t MODE = { &s_mode, build_mode_page };
@@ -1682,8 +1681,8 @@ static void build_general_page(lv_obj_t *tile)
     lv_obj_t *list;
     s_general = page(tile, "GENERAL", &list);
     row(list, LV_SYMBOL_SHUFFLE, "Mode", &s_home_mode, on_nav, (void *)&MODE);
-    row(list, LV_SYMBOL_EYE_CLOSE, "Screen sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
     row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
+    row(list, LV_SYMBOL_IMAGE, "Display", &s_home_display, on_nav, (void *)&DISPLAY);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     back_row(list, "Back");
 }
@@ -1713,7 +1712,7 @@ static void tick_general(void)
     } else {
         set_text(s_home_sound, "Muted");
     }
-    set_text(s_home_sleep, sleep_name(muse_settings_sleep_s()));
+    set_text(s_home_display, sleep_name(muse_settings_sleep_s()));
     set_text(s_home_mode, muse_gadget_mode_name(muse_gadget_mode()));
 }
 
@@ -1751,8 +1750,8 @@ void muse_settings_ui_tick(bool visible)
         tick_ble();
     } else if (s_current == s_sound) {
         tick_sound();
-    } else if (s_current == s_sleep) {
-        tick_sleep();
+    } else if (s_current == s_display) {
+        tick_display();
     } else if (s_current == s_battery) {
         tick_battery();
     } else if (s_current == s_mode) {
