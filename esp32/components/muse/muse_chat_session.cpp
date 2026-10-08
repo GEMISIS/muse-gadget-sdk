@@ -138,15 +138,13 @@ static const char *TAG = "muse_chat_session";
  * The Muse titles a new chat by its first message, and a voice note's is an
  * audio file ("Transcribe audio file"). Dictation would let the words go as
  * text instead, but /api/voice/dictation answers 403, so DICTATE_NEW_CHAT is
- * off: a new chat's first note asks the Muse to retitle the chat from what
- * was said (RETITLE_ASK), which it does in the same turn (sessions.updated).
+ * off. Asked alongside the note, the Muse doesn't rename the chat; asked in a
+ * typed turn of its own, it does: so a chat titled after an audio file gets
+ * that turn once its first reply is done (muse_gadget_mode_retitle).
  * DICTATE_EVERY_TURN dictates every voice turn, for when dictation works.
  */
 #define DICTATE_NEW_CHAT 0
 #define DICTATE_EVERY_TURN 0
-#define RETITLE_ASK                                                                                    \
-    "This is the first message in a new chat. As well as answering my voice message, rename this chat " \
-    "to a short title (2 to 5 words) for what I asked. Don't mention the renaming."
 #define DICT_FINAL_WAIT_US (6 * 1000000LL) /* dictating: release -> transcript, before the note goes instead */
 
 #define MAX_MSGS 8
@@ -1266,17 +1264,11 @@ static bool open_note(void)
     }
     char sid[MUSE_CHAT_SID_MAX + 1], head[MUSE_CHAT_NOTE_HEAD_MAX];
     muse_settings_chat_sid(sid);
-    /* The mode goes as the text with the audio; a new chat's first note asks
-     * for a title as well, ahead of it (RETITLE_ASK). */
+    /* The mode goes as the text with the audio. */
     int mode = -1;
     const char *ctx = muse_gadget_mode_context(sid, &mode);
-    static char first[MUSE_CHAT_NOTE_MESSAGE_MAX + 1];
-    bool fresh = muse_settings_chat_untitled(sid);
-    if (fresh) {
-        snprintf(first, sizeof(first), "%s%s%s", RETITLE_ASK, ctx ? "\n\n" : "", ctx ? ctx : "");
-    }
     message_to(sid, ctx ? mode : -1);
-    size_t n = muse_chat_note_head(sid, fresh ? first : ctx, head, sizeof(head));
+    size_t n = muse_chat_note_head(sid, ctx, head, sizeof(head));
     if (sid[0] || ctx) {
         ESP_LOGI(TAG, "voice note to chat %s%s%s", sid[0] ? sid : "main", ctx ? ", telling it: " : "",
                  ctx ? muse_gadget_mode_name((muse_gadget_mode_t)mode) : "");
@@ -1767,8 +1759,10 @@ static void on_event(cJSON *line)
         cJSON *session = cJSON_GetObjectItem(payload, "session");
         const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(session, "session_id"));
         const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(session, "title"));
-        if (sid && title && title[0]) {
-            muse_settings_chat_retitle(sid, title, nullptr);
+        bool started = false;
+        if (sid && title && title[0] && muse_settings_chat_retitle(sid, title, &started) && started
+            && !strncasecmp(title, "Transcribe", 10)) {
+            muse_gadget_mode_retitle(sid);   /* titled after the audio file, not what was asked */
         }
         return;
     }

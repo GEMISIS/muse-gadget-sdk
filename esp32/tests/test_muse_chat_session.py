@@ -91,6 +91,7 @@ static int64_t s_last_seq, s_marks[4];
 static int captions, console_events, sent_events;
 enum mark_t { M_TEXT, M_DONE, M_ACK };
 static void mark(mark_t) {}
+static void muse_gadget_mode_retitle(const char *) {}
 static bool muse_settings_chat_retitle(const char *, const char *, bool *) { return false; }
 static int64_t now_us() { return 12345; }
 static char chat_sid[MUSE_CHAT_SID_MAX + 1], posted[4096];
