@@ -94,6 +94,8 @@ static void mark(mark_t) {}
 static void muse_gadget_mode_retitle(const char *) {}
 static char s_voice_new_sid[MUSE_CHAT_SID_MAX + 1];
 static bool muse_settings_chat_retitle(const char *, const char *, bool *) { return false; }
+static void muse_settings_chat_set_titling(const char *) {}
+static void muse_settings_chat_titled(const char *) {}
 static int64_t now_us() { return 12345; }
 static char chat_sid[MUSE_CHAT_SID_MAX + 1], posted[4096];
 static void muse_settings_chat_sid(char out[MUSE_CHAT_SID_MAX + 1]) { strlcpy(out, chat_sid, MUSE_CHAT_SID_MAX + 1); }

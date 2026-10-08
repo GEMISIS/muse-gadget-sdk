@@ -341,6 +341,7 @@ void muse_gadget_mode_retitle(const char *sid)
     }
     if (asked_n[i]++ >= 2) {
         ESP_LOGW(TAG, "chat %s: asked twice for a title already", sid);
+        muse_settings_chat_titled(sid);   /* keeps the Muse's own title */
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -365,6 +366,9 @@ static void send_retitle(void)
         s_retitle[0] = '\0';
     }
     xSemaphoreGive(s_lock);
+    if (stale) {
+        muse_settings_chat_titled(sid);   /* gave up: the Muse's own title stands */
+    }
     if (!sid[0] || stale) {
         return;
     }
@@ -379,6 +383,7 @@ static void send_retitle(void)
     s_retitle[0] = '\0';
     xSemaphoreGive(s_lock);
     if (strcmp(cur, sid) != 0) {
+        muse_settings_chat_titled(sid);
         return;   /* moved on to another chat: leave it be */
     }
     /* The wording that's been seen to work: asked for a bare title instead,
