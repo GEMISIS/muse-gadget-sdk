@@ -285,10 +285,9 @@ static const muse_board_t s_board = {
     .width = BSP_LCD_H_RES, .height = BSP_LCD_V_RES, .round = false, .touch = true, .diagonal_in = 2.16f,
     .talk_button = "key", .aux_button = "boot",
     /* The buttons are on the top edge: BOOT, PWR, KEY3 from the left, seen from
-     * the front. The talk icon sits between the edge and the ring, under KEY3.
-     * No aux_hint: the volume keys don't sleep or power off, so there's no
-     * power icon to show. */
-    .talk_hint = { LV_ALIGN_TOP_MID, 113, 6 },
+     * the front. No talk_hint or aux_hint, so no icons beside them: a mic
+     * drawn by the top edge read as a status, not a key, and the volume keys
+     * don't sleep or power off, so there's no power icon to show. */
     .frame_ms = 40,
     .init = init,
     .display_start = display_start,
