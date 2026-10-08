@@ -358,6 +358,39 @@ static void unknown_blob_ignored(void)
     expect_chats(0);
 }
 
+/* Told under older words (no "told_ver", or another): every chat hears the new ones, once. */
+static void old_words_forgotten(void)
+{
+    assert(muse_settings_init() == ESP_OK);
+    char work[MUSE_CHAT_SID_MAX + 1];
+    assert(muse_settings_chat_add("Work", work) == ESP_OK);
+    muse_settings_chat_set_told(work, 2);
+    muse_settings_chat_set_told("", 1);
+    muse_settings_chat_set_told(GADGET_SID, 0);
+    muse_settings_chats_flush();
+    /* An older build's flash: no version kept. */
+    assert(nvs_erase_key(0, "told_ver") == ESP_OK);
+    memset(s.chats, 0, sizeof(s.chats));
+    s.chats_n = 0;
+    assert(muse_settings_init() == ESP_OK);
+    assert(muse_settings_chat_told(work) == -1 && muse_settings_chat_told("") == -1);
+    assert(muse_settings_chat_told(GADGET_SID) == -1);
+    muse_chat_entry_t saved[MUSE_CHATS_MAX];
+    assert(saved_chats(saved) == 1 && saved[0].told_mode == -1);
+    assert(store_find("told_main") < 0 && store_find("told_gadget") < 0);
+    uint8_t v = 0;
+    assert(nvs_get_u8(0, "told_ver", &v) == ESP_OK && v == MUSE_SETTINGS_CONTRACTS_VERSION);
+    /* Told again: kept from now on. */
+    muse_settings_chat_set_told(work, 0);
+    muse_settings_chat_set_told("", 0);
+    muse_settings_chats_flush();
+    memset(s.chats, 0, sizeof(s.chats));
+    s.chats_n = 0;
+    s.told_main = -1;
+    assert(muse_settings_init() == ESP_OK);
+    assert(muse_settings_chat_told(work) == 0 && muse_settings_chat_told("") == 0);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -367,6 +400,7 @@ int main(int argc, char **argv)
     case 2: new_chat_keeps_its_mode(); break;
     case 3: other_chat_in_ram(); break;
     case 4: unknown_blob_ignored(); break;
+    case 5: old_words_forgotten(); break;
     default: return 2;
     }
     return 0;

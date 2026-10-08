@@ -70,6 +70,10 @@ class SettingsChats(unittest.TestCase):
         log = self.run_case(4)
         self.assertIn('no layout known', log)
 
+    def test_chats_told_older_contract_words_hear_the_new_ones(self):
+        log = self.run_case(5)
+        self.assertIn('every chat hears them again', log)
+
 
 if __name__ == '__main__':
     unittest.main()

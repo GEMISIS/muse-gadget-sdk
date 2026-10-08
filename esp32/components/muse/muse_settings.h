@@ -159,7 +159,12 @@ void muse_settings_chats_flush(void);
  * named ones (a new chat's carries over once it's titled); a chat picked by
  * its id alone keeps it in RAM only. Setting it is quick and safe from any
  * task; muse_settings_chats_flush() writes it to flash.
+ *
+ * What was told is kept with the version of the words (the contracts in
+ * muse_gadget_mode.c): a build with new words forgets every chat's at boot,
+ * so each hears them once.
  */
+#define MUSE_SETTINGS_CONTRACTS_VERSION 2   /* 1: before they asked for pictures pushed */
 int muse_settings_chat_told(const char *sid);
 void muse_settings_chat_set_told(const char *sid, int mode);
 

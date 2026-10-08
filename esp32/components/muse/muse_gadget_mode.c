@@ -57,19 +57,30 @@ static const char *const KEYS[MUSE_GADGET_MODE_COUNT] = {
     [MUSE_GADGET_ON_THE_GO] = "on_the_go",
 };
 
-/* What a chat is told of each mode, after the words of its next message. */
+/*
+ * What a chat is told of each mode, after the words of its next message.
+ * Changing these? Bump MUSE_SETTINGS_CONTRACTS_VERSION (muse_settings.h), so
+ * every chat hears the new words once.
+ *
+ * Each ends with the standing order to push an image it shows: the reply's
+ * own image (a delta.presentation event) names a file the gadget can't fetch,
+ * and asking for it after the turn (muse_present_ask) takes a minute more.
+ */
+#define PICTURES                                                                                   \
+    " This gadget can show pictures: whenever you show me an image, also send it to the gadget "  \
+    "in the same turn with display.show_image as a 200x200 baseline JPEG under 12 KB, one chunk."
 static const char *const CONTRACTS[MUSE_GADGET_MODE_COUNT] = {
     [MUSE_GADGET_DESK] =
         "[gadget mode: DESK] DESK mode is on. Be proactive: offer feedback, suggest follow-ups, "
-        "full detail is fine.",
+        "full detail is fine." PICTURES,
     [MUSE_GADGET_NIGHT] =
         "[gadget mode: NIGHT] NIGHT mode is on. Default to backgrounding: anything that takes real "
         "work, run as a background task and summarize in the morning; keep this chat to one-line "
-        "acknowledgments. Do not speak replies aloud.",
+        "acknowledgments. Do not speak replies aloud." PICTURES,
     [MUSE_GADGET_ON_THE_GO] =
         "[gadget mode: ON-THE-GO] ON-THE-GO mode is on. Keep replies to two sentences max. "
         "Captions only — no spoken replies unless explicitly asked. Do not send images unless "
-        "explicitly asked (hotspot data).",
+        "explicitly asked (hotspot data)." PICTURES,
 };
 
 /* ---- Telling the chats ---- */
