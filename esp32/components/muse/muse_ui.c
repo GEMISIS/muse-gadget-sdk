@@ -2984,6 +2984,7 @@ static void pose_act(muse_pose_t *pose, muse_mode_t mode, float mode_t, float no
         }
     }
     if (want != act) {
+        ESP_LOGI(TAG, "act %d -> %d", (int)act, (int)want);
         act = want;
         act_at = now;
     }
