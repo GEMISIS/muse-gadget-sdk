@@ -65,6 +65,10 @@ static lv_obj_t *s_current;
 static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
 static lv_obj_t *s_mode;
 static lv_obj_t *s_advanced;   /* Muse, Bluetooth and Battery, under home */
+static lv_obj_t *s_general;    /* Wi-Fi, Sound, Screen sleep and Mode, under home */
+static lv_obj_t *s_reset;      /* Reset device's two warnings, under Advanced */
+static lv_obj_t *s_reset_note, *s_reset_go_lbl;
+static int s_reset_step;       /* warnings agreed to so far */
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -373,7 +377,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 static void drop(lv_obj_t *p)
 {
     lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text,
-                                 &s_mode, &s_advanced };
+                                 &s_mode, &s_advanced, &s_general, &s_reset };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -382,15 +386,18 @@ static void drop(lv_obj_t *p)
     lv_obj_delete_async(p);   /* we may be in one of its own events */
 }
 
-/* The page a page's back arrow goes to: the text page's opener, Advanced's
- * own pages', or home. */
+/* The page a page's back arrow goes to: the text page's opener, General's
+ * or Advanced's own pages', or home. */
 static lv_obj_t *parent(lv_obj_t *p)
 {
     if (p == s_text) {
         return s_text_back;
     }
-    if (p && (p == s_hatch || p == s_ble || p == s_battery)) {
+    if (p && (p == s_hatch || p == s_ble || p == s_battery || p == s_reset)) {
         return s_advanced;
+    }
+    if (p && (p == s_wifi || p == s_sound || p == s_sleep || p == s_mode)) {
+        return s_general;
     }
     return s_home;
 }
@@ -1399,14 +1406,59 @@ static const page_t MODE = { &s_mode, build_mode_page };
 
 /* ---------- Advanced: what's set once, or looked at when something's wrong ---------- */
 
+/* ---------- Reset device: two warnings, then everything's erased ---------- */
+
+static const char *const RESET_WARNINGS[] = {
+    "This erases everything on this device: Wi-Fi, its pairing with your Muse account, "
+    "chats, modes and every setting. You'll set it up again in the Muse app, as if it were new.",
+    "Are you sure? This can't be undone. Your conversations stay in the Muse app, "
+    "but this device forgets them all and restarts.",
+};
+static const char *const RESET_BUTTONS[] = { "Continue", "Erase and restart" };
+
+static void reset_show_step(void)
+{
+    set_text(s_reset_note, RESET_WARNINGS[s_reset_step]);
+    set_text(s_reset_go_lbl, RESET_BUTTONS[s_reset_step]);
+}
+
+static void on_reset_go(lv_event_t *e)
+{
+    (void)e;
+    if (s_reset_step == 0) {
+        s_reset_step = 1;
+        reset_show_step();
+        return;
+    }
+    set_text(s_reset_note, "Erasing... it restarts in a moment, ready to set up in the Muse app.");
+    set_text(s_reset_go_lbl, "");
+    muse_link_factory_reset();
+}
+
+static void build_reset_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_reset = page(tile, "RESET DEVICE", false, &list);
+    s_reset_step = 0;
+    s_reset_note = note(list, "");
+    lv_obj_set_style_text_color(s_reset_note, lv_color_hex(COLOR_WARN), 0);
+    button(list, "", COLOR_DANGER, on_reset_go, &s_reset_go_lbl);
+    button(list, LV_SYMBOL_LEFT "  Cancel", COLOR_TEXT, on_back, NULL);
+    reset_show_step();
+}
+
+static const page_t RESET = { &s_reset, build_reset_page };
+
 static void build_advanced_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_advanced = page(tile, "ADVANCED", true, &list);
+    s_advanced = page(tile, "ADVANCED", false, &list);
     row(list, LV_SYMBOL_HOME, "Muse connection", &s_adv_hatch, on_nav, (void *)&HATCH);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_adv_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_adv_battery, on_nav, (void *)&BATTERY);
+    row(list, LV_SYMBOL_WARNING, "Reset device", NULL, on_nav, (void *)&RESET);
     s_about = note(list, "");
+    button(list, LV_SYMBOL_LEFT "  Back", COLOR_TEXT, on_back, NULL);
 }
 
 static void tick_advanced(void)
@@ -1437,21 +1489,34 @@ static void tick_advanced(void)
 
 static const page_t ADVANCED = { &s_advanced, build_advanced_page };
 
-/* ---------- Home: the everyday settings ---------- */
+
+/* ---------- General: the everyday settings ---------- */
+
+static void build_general_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_general = page(tile, "GENERAL", false, &list);
+    row(list, LV_SYMBOL_SHUFFLE, "Mode", &s_home_mode, on_nav, (void *)&MODE);
+    row(list, LV_SYMBOL_EYE_CLOSE, "Screen sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
+    row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
+    row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
+    button(list, LV_SYMBOL_LEFT "  Back", COLOR_TEXT, on_back, NULL);
+}
+
+static const page_t GENERAL = { &s_general, build_general_page };
+
+/* ---------- Home ---------- */
 
 static void build_home(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_home = page(tile, "SETTINGS", false, &list);
-    row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
-    row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
-    row(list, LV_SYMBOL_EYE_CLOSE, "Screen sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
-    row(list, LV_SYMBOL_SHUFFLE, "Mode", &s_home_mode, on_nav, (void *)&MODE);
+    row(list, LV_SYMBOL_LIST, "General", NULL, on_nav, (void *)&GENERAL);
     row(list, LV_SYMBOL_SETTINGS, "Advanced", NULL, on_nav, (void *)&ADVANCED);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
 }
 
-static void tick_home(void)
+static void tick_general(void)
 {
     muse_wifi_status_t w;
     muse_wifi_status(&w);
@@ -1490,8 +1555,8 @@ void muse_settings_ui_tick(bool visible)
     if (!visible) {
         return;
     }
-    if (s_current == s_home) {
-        tick_home();
+    if (s_current == s_general) {
+        tick_general();
     } else if (s_current == s_wifi) {
         tick_wifi();
     } else if (s_current == s_hatch) {

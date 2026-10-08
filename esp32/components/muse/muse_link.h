@@ -64,6 +64,7 @@ typedef struct {
                      char **vm_token);
     bool (*talk_press)(void);                     /* true: Link used the press (pairing confirm) */
     void (*reset_setup)(void);                    /* forget Link setup and reboot */
+    void (*factory_reset)(void);                  /* reset_setup, all settings erased too, and reboot */
     /* Requests to the VM on Link's own Noise session, for boards without PSRAM for their own. */
     bool (*req_ready)(void);                      /* the session is up */
     int64_t (*req_open)(const char *verb, const char *path, const char *const *headers, bool end_body,
@@ -88,6 +89,8 @@ bool muse_link_hatch_vm(const char *want_vm, char *vm_id, size_t id_cap, char *v
                         char **vm_token);
 bool muse_link_talk_press(void);
 void muse_link_reset_setup(void);
+/* Back to a freshly flashed board: setup, Wi-Fi, pairing and every setting. */
+void muse_link_factory_reset(void);
 /* The first saved network, owned by Link. Return false when Link hasn't registered. */
 bool muse_link_wifi_get(char *ssid, char *pass);
 bool muse_link_wifi_set(const char *ssid, const char *pass);

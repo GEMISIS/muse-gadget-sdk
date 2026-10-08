@@ -379,6 +379,11 @@ static void op_reset_setup(void) {
     app_reset_setup_async();
 }
 
+static void op_factory_reset(void) {
+    ESP_LOGW(TAG, "factory reset from Muse");
+    app_factory_reset_async();
+}
+
 static const muse_link_ops_t s_ops = {
     .wifi_status = op_wifi_status,
     .wifi_apply = op_wifi_apply,
@@ -393,6 +398,7 @@ static const muse_link_ops_t s_ops = {
     .hatch_vm = op_hatch_vm,
     .talk_press = op_talk_press,
     .reset_setup = op_reset_setup,
+    .factory_reset = op_factory_reset,
     .req_ready = noise_ctrl_is_connected,
     .req_open = noise_ctrl_req_open,
     .req_send = noise_ctrl_req_send,

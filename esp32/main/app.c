@@ -38,6 +38,7 @@
 #include "esp_attr.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "nvs_flash.h"
 #include "esp_efuse.h"
 
 #include "lwip/ip4_addr.h"
@@ -2368,6 +2369,36 @@ static void reset_setup_task(void *arg) {
 void app_reset_setup_async(void) {
     if (xTaskCreate(reset_setup_task, "muse_reset", 4096, NULL, 4, NULL) != pdPASS) {
         atomic_store_explicit(&s_setup_reset_pending, true, memory_order_release);
+    }
+}
+
+static void factory_reset_task(void *arg) {
+    (void)arg;
+    const char *source = "Muse factory reset";
+    if (!operation_gate_take(portMAX_DELAY, source)) {
+        ESP_LOGE(TAG, "%s could not acquire the setup operation gate", source);
+        vTaskDelete(NULL);
+        return;
+    }
+    // The setup reset first, for its verified erase of the credentials; then
+    // the rest of NVS (Muse's settings, chats, modes), held by the gate
+    // until the restart so nothing writes it back.
+    if (!reset_setup_with_gate_held(source)) {
+        ESP_LOGW(TAG, "%s: setup reset failed; erasing NVS anyway", source);
+    }
+    ESP_LOGW(TAG, "%s: erasing all settings", source);
+    nvs_flash_deinit();
+    esp_err_t err = nvs_flash_erase();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "%s: NVS erase failed: %s", source, esp_err_to_name(err));
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));   // let the log out
+    esp_restart();
+}
+
+void app_factory_reset_async(void) {
+    if (xTaskCreate(factory_reset_task, "muse_wipe", 4096, NULL, 4, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "factory reset: no task");
     }
 }
 #endif  // CONFIG_MUSE_ENABLED
