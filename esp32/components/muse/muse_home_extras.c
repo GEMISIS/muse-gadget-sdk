@@ -45,12 +45,17 @@
 #define CORNER_W 80
 #define CORNER_H 18
 #define CORNER_BOTTOM 10
-/* The row above it (y 432-450): "up next" (muse_up_next.h), one dim line of
- * montserrat_14 ending at the battery's right edge and in dots past UP_W,
- * clear of the captions and the page dots. A reply's page hides it as it
- * does the battery; the Night face leaves it out. */
-#define UP_W 300
-#define UP_GAP 2
+/* "Up next" (muse_up_next.h): a pill centred over the page dots (y 412-446
+ * on 480 px), a bell and the line in unscii, Muse's own pixel type, ending
+ * in dots past UP_TEXT_W. Clear of the battery's corner; a reply's page
+ * hides it as it does the battery, and the Night face leaves it out. */
+#define UP_TEXT_W 290
+#define UP_H 34
+#define UP_BOTTOM 34
+#define COLOR_UP_BG 0x1d1733
+#define COLOR_UP_EDGE 0x5b3fa0
+#define COLOR_UP_ICON 0xa77dff
+#define COLOR_UP_TEXT 0xe4defa
 /* Top centre, over the state (muse_ui.c's STATE_Y) and Muse's head; the
  * corner holds the connectivity icons. Offsets are for a 466 px tall
  * screen, as muse_ui.c's are. */
@@ -99,13 +104,29 @@ void muse_home_extras_build(lv_obj_t *face)
 #if CONFIG_MUSE_GADGET_UP_NEXT
     s_up = lv_obj_create(face);
     lv_obj_remove_style_all(s_up);
-    lv_obj_set_size(s_up, UP_W, CORNER_H);
-    lv_obj_align(s_up, LV_ALIGN_BOTTOM_RIGHT, -EDGE, -(CORNER_BOTTOM + CORNER_H + UP_GAP));
+    lv_obj_set_size(s_up, LV_SIZE_CONTENT, UP_H);
+    lv_obj_align(s_up, LV_ALIGN_BOTTOM_MID, 0, -UP_BOTTOM);
     lv_obj_remove_flag(s_up, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    s_up_lbl = label(s_up, &lv_font_montserrat_14, COLOR_DIM, LV_ALIGN_TOP_RIGHT, 0, 0);
-    lv_obj_set_width(s_up_lbl, UP_W);
+    lv_obj_set_style_radius(s_up, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(s_up, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_up, lv_color_hex(COLOR_UP_BG), 0);
+    lv_obj_set_style_border_width(s_up, 1, 0);
+    lv_obj_set_style_border_color(s_up, lv_color_hex(COLOR_UP_EDGE), 0);
+    lv_obj_set_style_pad_hor(s_up, 16, 0);
+    lv_obj_set_style_pad_column(s_up, 8, 0);
+    lv_obj_set_flex_flow(s_up, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(s_up, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_opa(s_up, LV_OPA_TRANSP, 0);   /* shown once there's a line (up_show) */
+    lv_obj_t *bell = lv_label_create(s_up);
+    lv_obj_set_style_text_font(bell, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(bell, lv_color_hex(COLOR_UP_ICON), 0);
+    lv_label_set_text(bell, LV_SYMBOL_BELL);
+    s_up_lbl = lv_label_create(s_up);
+    lv_obj_set_style_text_font(s_up_lbl, &lv_font_unscii_16, 0);
+    lv_obj_set_style_text_color(s_up_lbl, lv_color_hex(COLOR_UP_TEXT), 0);
+    lv_label_set_text(s_up_lbl, "");
+    lv_obj_set_style_max_width(s_up_lbl, UP_TEXT_W, 0);
     lv_label_set_long_mode(s_up_lbl, LV_LABEL_LONG_MODE_DOTS);
-    lv_obj_set_style_text_align(s_up_lbl, LV_TEXT_ALIGN_RIGHT, 0);
 #endif
     s_next = 0;
     s_24h = muse_extras_get_i32("clock_24h", 0) != 0;
@@ -132,6 +153,25 @@ lv_obj_t *muse_home_extras_corner(void)
 {
     return s_corner;
 }
+
+#if CONFIG_MUSE_GADGET_UP_NEXT
+static void up_fade(void *obj, int32_t v)
+{
+    lv_obj_set_style_opa(obj, (lv_opa_t)v, 0);
+}
+
+/* Fades the pill in when there's a line, out when there isn't. */
+static void up_show(bool show)
+{
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s_up);
+    lv_anim_set_exec_cb(&a, up_fade);
+    lv_anim_set_values(&a, lv_obj_get_style_opa(s_up, 0), show ? LV_OPA_COVER : LV_OPA_TRANSP);
+    lv_anim_set_duration(&a, 400);
+    lv_anim_start(&a);
+}
+#endif
 
 lv_obj_t *muse_home_extras_up_next(void)
 {
@@ -182,12 +222,25 @@ void muse_home_extras_tick(float now)
     }
     set_text(s_batt, buf);
 #if CONFIG_MUSE_GADGET_UP_NEXT
-    /* Emptied rather than hidden: a reply's layout unhides it on the way out. */
-    char next[72], line[80] = "";
-    if (!s_night && muse_up_next_line(next, sizeof(next))) {
-        snprintf(line, sizeof(line), LV_SYMBOL_BELL " %s", next);
+    /* Faded rather than hidden: a reply's layout unhides it on the way out.
+     * Only on a quiet face: idle, with no caption (what was heard, the
+     * reply) for it to sit on. */
+    char line[72] = "";
+    if (s_night || !muse_up_next_line(line, sizeof(line))) {
+        line[0] = '\0';
     }
-    set_text(s_up_lbl, line);
+    if (line[0]) {
+        set_text(s_up_lbl, line);
+    }
+    char caption[4] = "";
+    uint32_t any = 0;
+    muse_state_caption(caption, sizeof(caption), &any);
+    bool show = line[0] && muse_state_mode(NULL) == MUSE_MODE_IDLE && !caption[0];
+    static bool shown;
+    if (show != shown) {
+        shown = show;
+        up_show(show);
+    }
 #endif
     static bool low;
     if (low != (p.battery_pct >= 0 && p.battery_pct < LOW_PCT && !p.charging)) {

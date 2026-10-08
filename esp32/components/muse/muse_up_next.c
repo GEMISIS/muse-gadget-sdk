@@ -17,7 +17,10 @@
 /*
  * The face's "up next" line (muse_up_next.h): when to ask the Muse, and the
  * answer kept. The asking itself is muse_chat_session.cpp's background
- * request, in a chat of the gadget's own that's never picked or listed.
+ * request, each time in a fresh chat that's never picked or listed; that ask
+ * also has the Muse delete the one before, so only the latest is left on the
+ * Muse. The answer, its time and that chat's id are kept in NVS ("gadget"),
+ * so a restart shows the line until STALE_US and deletes the chat next time.
  */
 #include "muse_up_next.h"
 
@@ -27,6 +30,8 @@
 #include <time.h>
 
 #include "cJSON.h"
+#include "esp_random.h"
+#include "nvs.h"
 #include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -45,6 +50,9 @@ static const char *TAG = "up_next";
 #define PROMPT                                                                                                     \
     "In one short line (max ~40 characters), what should I prepare for next today? Use my calendar and plans if " \
     "you know them. Reply with just the line, no preamble."
+/* Ahead of PROMPT when an earlier ask's chat is still on the Muse. */
+#define DELETE_FIRST "First, quietly delete the chat with session id %s (an earlier one of these questions); don't mention it. Then: "
+#define NVS_NS "gadget"
 #define UP_NEXT_MAX 72
 #define EVERY_US (3600LL * 1000000)            /* asked at most this often, failures included */
 #define FIRST_AFTER_US (30LL * 1000000)        /* from boot: Wi-Fi and the connection settle first */
@@ -63,14 +71,76 @@ static int64_t s_awake_since;
 static int s_morning_day = -1;    /* year * 1000 + day of the year of the last morning ask */
 static volatile bool s_force;     /* ">brief" */
 
-/* The hidden chat: a UUID made from the Wi-Fi MAC like the gadget's own
- * chat (muse_settings_gadget_chat_sid), with another prefix ("muse", "up"). */
-static void chat_sid(char out[MUSE_CHAT_SID_MAX + 1])
+/* Extras task only: the chat this ask is in, and the last answered one's, to delete. */
+static char s_sid[MUSE_CHAT_SID_MAX + 1];
+static char s_prev[MUSE_CHAT_SID_MAX + 1];
+static bool s_loaded;
+
+/* The fixed chat earlier firmware asked in (a UUID made from the Wi-Fi MAC
+ * with "muse", "up" ahead): the first one to delete after an update. */
+static void old_chat_sid(char out[MUSE_CHAT_SID_MAX + 1])
 {
     uint8_t m[6] = { 0 };
     esp_read_mac(m, ESP_MAC_WIFI_STA);
     snprintf(out, MUSE_CHAT_SID_MAX + 1, "6d757365-7570-4e78-8000-%02x%02x%02x%02x%02x%02x", m[0], m[1], m[2], m[3],
              m[4], m[5]);
+}
+
+/* A fresh random (v4) UUID for each ask. */
+static void new_chat_sid(char out[MUSE_CHAT_SID_MAX + 1])
+{
+    uint8_t u[16];
+    esp_fill_random(u, sizeof(u));
+    u[6] = (u[6] & 0x0f) | 0x40;
+    u[8] = (u[8] & 0x3f) | 0x80;
+    snprintf(out, MUSE_CHAT_SID_MAX + 1, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15]);
+}
+
+/* Restores the kept line (if the clock says it's still fresh) and the chat to delete. */
+static void load(void)
+{
+    s_loaded = true;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        old_chat_sid(s_prev);
+        return;
+    }
+    size_t n = sizeof(s_prev);
+    if (nvs_get_str(h, "un_prev", s_prev, &n) != ESP_OK) {
+        old_chat_sid(s_prev);
+    }
+    char line[UP_NEXT_MAX];
+    n = sizeof(line);
+    int64_t at = 0;
+    time_t wall = time(NULL);
+    if (nvs_get_str(h, "un_line", line, &n) == ESP_OK && nvs_get_i64(h, "un_at", &at) == ESP_OK && at > 0
+        && wall > at && (int64_t)(wall - at) * 1000000 < STALE_US) {
+        int64_t age_us = (int64_t)(wall - at) * 1000000;
+        int64_t now = esp_timer_get_time();
+        portENTER_CRITICAL(&s_lock);
+        strlcpy(s_line, line, sizeof(s_line));
+        s_line_us = now > age_us ? now - age_us : 1;
+        portEXIT_CRITICAL(&s_lock);
+        s_asked_us = s_line_us;   /* fresh enough: the hourly ask counts from it */
+        ESP_LOGI(TAG, "up next (kept): \"%s\"", line);
+    }
+    nvs_close(h);
+}
+
+/* The answer, when it came, and its chat as the next one to delete. */
+static void save(const char *line)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    nvs_set_str(h, "un_prev", s_prev);
+    nvs_set_str(h, "un_line", line);
+    time_t wall = time(NULL);
+    nvs_set_i64(h, "un_at", wall > 1735689600 ? (int64_t)wall : 0);   /* 0 if the clock isn't set */
+    nvs_commit(h);
+    nvs_close(h);
 }
 
 /*
@@ -134,11 +204,16 @@ static void take_reply(void)
     strlcpy(s_line, line, sizeof(s_line));
     s_line_us = line[0] ? esp_timer_get_time() : 0;
     portEXIT_CRITICAL(&s_lock);
+    strlcpy(s_prev, s_sid, sizeof(s_prev));   /* this chat goes with the next ask */
+    save(line);
     ESP_LOGI(TAG, "up next: \"%s\"", line);
 }
 
 void muse_up_next_tick(void)
 {
+    if (!s_loaded && time(NULL) > 1735689600) {
+        load();   /* once the clock's set: the kept line's age needs it */
+    }
     if (s_asking) {
         take_reply();
         return;
@@ -168,9 +243,17 @@ void muse_up_next_tick(void)
     }
     s_force = false;
     s_asked_us = now;
-    char sid[MUSE_CHAT_SID_MAX + 1];
-    chat_sid(sid);
-    s_asking = muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_UP_NEXT, sid, PROMPT);
+    if (!s_loaded) {
+        load();   /* no clock yet: the line can't be dated, but the chat to delete is known */
+    }
+    new_chat_sid(s_sid);
+    static char ask[sizeof(DELETE_FIRST) + MUSE_CHAT_SID_MAX + sizeof(PROMPT)];
+    if (s_prev[0]) {
+        snprintf(ask, sizeof(ask), DELETE_FIRST "%s", s_prev, PROMPT);
+    } else {
+        strlcpy(ask, PROMPT, sizeof(ask));
+    }
+    s_asking = muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_UP_NEXT, s_sid, ask);
     ESP_LOGI(TAG, "%s Muse what's up next (%s)", s_asking ? "asking" : "couldn't ask", why);
 }
 
