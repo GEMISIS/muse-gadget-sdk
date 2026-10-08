@@ -487,6 +487,19 @@ command. Return each reading as `{value, unit, age_s}`, as
 Read slow or I2C sensors in a background task and have `sensors.read` return
 the latest value.
 
+Images Muse shows the user come over the same private session, never as a
+link: `display.show_image` (`gadget_show_image_command()` in
+`main/gadget_commands.c`, with Muse's own session, `CONFIG_MUSE_HATCH`) takes
+a JPEG's bytes base64-encoded in chunks of up to 16 KiB, from offset 0 in
+order, `final: true` on the last, into PSRAM, then hands it to
+`components/muse/muse_present.h`. A command's whole `link.invoke` has to fit
+one inbound service frame (`SVC_FRAME_SCRATCH`; a bigger one ends the
+session), so take anything large in chunks the same way, and keep the
+description's chunk size within it (`tests/test_link_gadget_commands.py`
+checks). An image in a chat reply only names a file in Muse's workspace, which
+the VM won't serve to the gadget, so `muse_present_ask()` asks Muse in the
+background to push it.
+
 Muse sees the command once the board reconnects with the new firmware. Keep
 the management commands that `on_ws_command()` also handles (`device.list_vms`,
 `device.set_vm`, `device.reset_vm` and `device.unpair`) out of
