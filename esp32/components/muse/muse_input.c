@@ -25,6 +25,7 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #if CONFIG_PM_ENABLE
@@ -67,6 +68,7 @@ static const char *TAG = "muse_input";
 #define LONG_TICKS 150         /* 1.5 s: power off */
 #define SLEEP_CHECK_MS 100
 #define VOLUME_STEP 5          /* per volume key press */
+#define MUTE_TAP_US (350 * 1000)   /* volume down twice within this mutes or unmutes */
 #define VOLUME_DELAY_TICKS 50  /* 500 ms: holding volume down starts repeating */
 #define VOLUME_REPEAT_TICKS 30 /* ... every 300 ms */
 
@@ -305,6 +307,9 @@ static void keyboard_buttons(unsigned ev)
 
 static void volume_step(int delta)
 {
+    if (delta > 0 && !muse_settings_speaker_on()) {
+        muse_settings_set_speaker_on(true);   /* volume up while muted: sound back on, first */
+    }
     int pct = muse_settings_volume() + delta;
     pct = pct < 0 ? 0 : pct > 100 ? 100 : pct;
     if (pct != muse_settings_volume()) {
@@ -325,22 +330,42 @@ static void volume_keys(unsigned ev)
 {
     static bool down_held, swallow;
     static int held;
+    static int64_t tapped_us;   /* the last single press of volume down, for a double tap */
+    static int before;          /* the volume before it */
 
     if (ev & MUSE_BTN_VOL_DOWN_PRESS) {
         down_held = true;
         held = 0;
         swallow = muse_state_asleep() || muse_power_menu_is_open();
         muse_state_poke();
+        int64_t now = esp_timer_get_time();
         if (muse_state_asleep()) {
             set_asleep(false, muse_board->aux_button);
         } else if (muse_power_menu_is_open()) {
             muse_power_menu_key(MUSE_POWER_MENU_UP);
+        } else if (tapped_us && now - tapped_us < MUTE_TAP_US) {
+            /* A double tap mutes (or unmutes): the first tap's step is undone. */
+            tapped_us = 0;
+            swallow = true;
+            if (muse_settings_volume() != before) {
+                muse_settings_set_volume(before);
+            }
+            bool on = !muse_settings_speaker_on();
+            muse_settings_set_speaker_on(on);
+            ESP_LOGI(TAG, "volume down twice: %s", on ? "sound on" : "muted");
+            muse_power_menu_show_volume(before);
+            if (on) {
+                muse_voice_earcon(MUSE_EARCON_TICK);
+            }
         } else {
+            before = muse_settings_volume();
+            tapped_us = now;
             volume_step(-VOLUME_STEP);
         }
     } else if (ev & MUSE_BTN_VOL_DOWN_RELEASE) {
         down_held = false;
     } else if (down_held && !swallow && ++held >= VOLUME_DELAY_TICKS
+               && (tapped_us = 0, true)   /* held: not a tap */
                && (held - VOLUME_DELAY_TICKS) % VOLUME_REPEAT_TICKS == 0) {
         muse_state_poke();
         volume_step(-VOLUME_STEP);
