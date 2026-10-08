@@ -36,6 +36,7 @@
 #define LIST_W 330
 #define LIST_TOP 84
 #define ROW_H 58
+#define GUTTER 12   /* either side of the rows; the scrollbar runs down the right one */
 #define HELP_W 360
 #define FORGET_ARMED_US 4000000   /* how long a held chat waits for the tap that forgets it */
 
@@ -73,6 +74,25 @@ static void set_text(lv_obj_t *l, const char *text)
     if (l && strcmp(lv_label_get_text(l), text) != 0) {
         lv_label_set_text(l, text);
     }
+}
+
+/*
+ * Scrolls only when its content doesn't fit, with no bounce when it does,
+ * and a scrollbar while it doesn't: dim on black, by the right edge, its
+ * bottom end `bottom` px up (clear of a curve or a rounded corner).
+ */
+static void scroll_column(lv_obj_t *o, int bottom)
+{
+    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_scroll_dir(o, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(o, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_width(o, 6, LV_PART_SCROLLBAR);
+    lv_obj_set_style_radius(o, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(o, lv_color_hex(COLOR_DIM), LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_right(o, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_top(o, 8, LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_bottom(o, bottom, LV_PART_SCROLLBAR);
 }
 
 /* Tappable row: an icon, the text over a smaller dim line (sub, if not NULL), and a value on the right. */
@@ -248,8 +268,8 @@ static void open_help(void)
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);   /* taps on it stay on it */
-    lv_obj_set_scroll_dir(card, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_OFF);
+    scroll_column(card, 20);   /* in its padding, clear of its rounded corners */
+    lv_obj_set_style_pad_top(card, 20, LV_PART_SCROLLBAR);
 
     label(card, &lv_font_montserrat_20, COLOR_TEXT, "How chats work");
     help_tip(card, LV_SYMBOL_LIST, "Tap a chat to talk in it.");
@@ -304,13 +324,15 @@ void muse_chats_ui_build(lv_obj_t *tile)
 
     s_list = lv_obj_create(tile);
     lv_obj_remove_style_all(s_list);
-    lv_obj_set_size(s_list, LIST_W, muse_board->height - LIST_TOP);
+    lv_obj_set_size(s_list, LIST_W + 2 * GUTTER, muse_board->height - LIST_TOP);
     lv_obj_align(s_list, LV_ALIGN_TOP_MID, 0, LIST_TOP);
     lv_obj_set_flex_flow(s_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(s_list, 10, 0);
-    lv_obj_set_style_pad_bottom(s_list, 110, 0);   /* clear of the page dots */
-    lv_obj_set_scroll_dir(s_list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(s_list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_hor(s_list, GUTTER, 0);
+    /* Clear of the page dots, or a round screen's bottom curve; no more, or
+     * a list that fits would scroll. */
+    lv_obj_set_style_pad_bottom(s_list, muse_board->round ? 110 : 40, 0);
+    scroll_column(s_list, muse_board->round ? 90 : 16);
     build_help_button(tile);
 }
 

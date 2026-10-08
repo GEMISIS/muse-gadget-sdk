@@ -195,6 +195,8 @@ static void on_back(lv_event_t *e)
     go_back();
 }
 
+/* The text page's arrow, by its title: the keys take the bottom, where the
+ * other pages have back_row(). */
 static lv_obj_t *back_button(lv_obj_t *p)
 {
     lv_obj_t *b = lv_button_create(p);
@@ -207,12 +209,33 @@ static lv_obj_t *back_button(lv_obj_t *p)
     return b;
 }
 
-/* A page: title, optional back arrow, and a vertically scrolling column. */
-static lv_obj_t *page(lv_obj_t *tile, const char *title, bool back, lv_obj_t **list_out)
+/*
+ * A list that scrolls only when its rows don't fit, with no bounce when they
+ * do, and a scrollbar while they don't: dim on black, in the list's right
+ * gutter, short of its ends (and of a round screen's bottom curve).
+ */
+static void scroll_column(lv_obj_t *list, bool compact)
+{
+    lv_obj_remove_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
+    lv_obj_set_scroll_dir(list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_width(list, compact ? 4 : 6, LV_PART_SCROLLBAR);
+    lv_obj_set_style_radius(list, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(list, lv_color_hex(COLOR_DIM), LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_right(list, compact ? 0 : 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_top(list, 8, LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_bottom(list, muse_board->round ? 90 : 16, LV_PART_SCROLLBAR);
+}
+
+/* A page: title and a vertically scrolling column; a sub-page ends it with back_row(). */
+static lv_obj_t *page(lv_obj_t *tile, const char *title, lv_obj_t **list_out)
 {
     /* Flat short panels, and ones too narrow for LIST_W, get tighter rows. */
     const bool compact = !muse_board->round && (muse_board->height <= 240 || muse_board->width < LIST_W);
-    const int list_top = compact ? (back ? 48 : 36) : LIST_TOP;
+    const int list_top = compact ? 36 : LIST_TOP;
+    /* Room either side of the rows; the scrollbar runs down the right one. */
+    const int gutter = compact ? 4 : 12;
     lv_obj_t *p = lv_obj_create(tile);
     lv_obj_remove_style_all(p);
     lv_obj_set_size(p, lv_pct(100), lv_pct(100));
@@ -222,27 +245,20 @@ static lv_obj_t *page(lv_obj_t *tile, const char *title, bool back, lv_obj_t **l
 
     lv_obj_t *t = label(p, compact ? &lv_font_montserrat_16 : &lv_font_unscii_16, COLOR_ACCENT, title);
     lv_obj_set_style_text_letter_space(t, compact ? 0 : 2, 0);
-    lv_obj_align(t, LV_ALIGN_TOP_MID, 0, compact ? (back ? 12 : 8) : 44);
-
-    if (back) {
-        lv_obj_t *b = back_button(p);
-        if (compact) {
-            lv_obj_set_size(b, 44, 44);
-            lv_obj_align(b, LV_ALIGN_TOP_LEFT, 4, 0);
-        }
-    }
+    lv_obj_align(t, LV_ALIGN_TOP_MID, 0, compact ? 8 : 44);
 
     lv_obj_t *list = lv_obj_create(p);
     lv_obj_remove_style_all(list);
-    lv_obj_set_size(list, compact ? muse_board->width - 16 : LIST_W, muse_board->height - list_top);
+    lv_obj_set_size(list, (compact ? muse_board->width - 16 : LIST_W) + 2 * gutter, muse_board->height - list_top);
     lv_obj_align(list, LV_ALIGN_TOP_MID, 0, list_top);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(list, 10, 0);
-    /* Clear the page dots on flat panels, or the bottom curve on round ones. */
-    lv_obj_set_style_pad_bottom(list, compact ? 32 : 110, 0);
-    lv_obj_set_scroll_dir(list, LV_DIR_VER);
-    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_pad_hor(list, gutter, 0);
+    /* Clear the page dots (8 px, 14 px up) on flat panels, or the bottom
+     * curve on round ones; no more, or a page that fits would scroll. */
+    lv_obj_set_style_pad_bottom(list, muse_board->round ? 110 : compact ? 32 : 40, 0);
+    scroll_column(list, compact);
     *list_out = list;
     return p;
 }
@@ -310,6 +326,21 @@ static lv_obj_t *button(lv_obj_t *list, const char *text, uint32_t color, lv_eve
     if (label_out) {
         *label_out = l;
     }
+    return b;
+}
+
+/* The way back, last on every sub-page and the same on each: full width and
+ * taller than a row, so it's easy to find and hit on a small screen. */
+static lv_obj_t *back_row(lv_obj_t *list, const char *text)
+{
+    lv_obj_t *b = button(list, "", COLOR_TEXT, on_back, NULL);
+    lv_obj_set_height(b, 64);
+    lv_obj_set_style_border_width(b, 2, 0);
+    lv_obj_set_style_border_color(b, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_border_opa(b, LV_OPA_60, 0);
+    char buf[32];
+    snprintf(buf, sizeof(buf), LV_SYMBOL_LEFT "  %s", text);
+    lv_label_set_text(lv_obj_get_child(b, 0), buf);
     return b;
 }
 
@@ -386,7 +417,7 @@ static void drop(lv_obj_t *p)
     lv_obj_delete_async(p);   /* we may be in one of its own events */
 }
 
-/* The page a page's back arrow goes to: the text page's opener, General's
+/* The page a page's Back goes to: the text page's opener, General's
  * or Advanced's own pages', or home. */
 static lv_obj_t *parent(lv_obj_t *p)
 {
@@ -787,7 +818,7 @@ static bool rebuild_scan_list(void)
 static void build_wifi_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_wifi = page(tile, "WI-FI", true, &list);
+    s_wifi = page(tile, "WI-FI", &list);
     s_shown_scan_gen = UINT32_MAX;   /* the lists start empty */
     s_saved_n = -1;
     s_forget_armed = -1;
@@ -808,6 +839,7 @@ static void build_wifi_page(lv_obj_t *tile)
     }
     note(list, "Muse remembers up to 8 networks and joins the strongest one in range. Tap a saved one twice to "
                "forget it.");
+    back_row(list, "Back");
 }
 
 static void tick_wifi(void)
@@ -912,7 +944,7 @@ static void on_link_reset(lv_event_t *e)
 static void build_hatch_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_hatch = page(tile, "MUSE", true, &list);
+    s_hatch = page(tile, "MUSE", &list);
     s_link_reset_armed_us = 0;
     s_link_status = note(list, "");
     button(list, "Reset pairing", COLOR_DANGER, on_link_reset, &s_link_reset_lbl);
@@ -924,6 +956,7 @@ static void build_hatch_page(lv_obj_t *tile)
     note(list, "Pair with the Muse app to use your account; a device token here overrides it, and a long one is "
                "easier to send over Bluetooth. The VM ID picks one of your VMs. "
                "Reset pairing forgets Wi-Fi and the app pairing, then restarts.");
+    back_row(list, "Back");
 }
 
 static void tick_hatch(void)
@@ -971,12 +1004,13 @@ static void on_ble_forget(lv_event_t *e)
 static void build_ble_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_ble = page(tile, "BLUETOOTH", true, &list);
+    s_ble = page(tile, "BLUETOOTH", &list);
     s_ble_sw = switch_row(list, "Phone setup", muse_settings_ble_on(), on_ble_sw);
     s_ble_status = note(list, "");
     button(list, "Forget paired phones", COLOR_DANGER, on_ble_forget, NULL);
     note(list, "When on, Muse is visible to phones nearby. Open tools/ble_setup.html in Chrome, "
                "connect, and enter the code Muse shows to pair.");
+    back_row(list, "Back");
 }
 
 static void tick_ble(void)
@@ -1055,7 +1089,7 @@ static void on_bright(lv_event_t *e)
 static void build_sound_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_sound = page(tile, "SOUND", true, &list);
+    s_sound = page(tile, "SOUND", &list);
     s_spk_sw = switch_row(list, "Speaker", muse_settings_speaker_on(), on_speaker_sw);
     s_vol_sl = slider(list, "Volume", 0, 100, muse_settings_volume(), &s_vol_val, on_volume);
     s_gain_sl = slider(list, "Mic gain", 0, MUSE_MIC_GAIN_MAX / 3, muse_settings_mic_gain() / 3, &s_gain_val, on_gain);
@@ -1081,6 +1115,7 @@ static void build_sound_page(lv_obj_t *tile)
     set_val(s_vol_val, "%d%%", muse_settings_volume());
     set_val(s_gain_val, "%d dB", muse_settings_mic_gain() / 3 * 3);
     set_val(s_bright_val, "%d%%", muse_settings_brightness());
+    back_row(list, "Back");
 }
 
 static void tick_sound(void)
@@ -1114,7 +1149,7 @@ static void on_sleep_now(lv_event_t *e)
 static void build_sleep_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_sleep = page(tile, "AUTO-SLEEP", true, &list);
+    s_sleep = page(tile, "AUTO-SLEEP", &list);
     note(list, "Turn the screen off after Muse has been idle for:");
     for (int i = 0; i < SLEEP_COUNT; i++) {
         row(list, NULL, SLEEP_NAMES[i], &s_sleep_checks[i], on_sleep_choice, (void *)(intptr_t)i);
@@ -1122,6 +1157,7 @@ static void build_sleep_page(lv_obj_t *tile)
     }
     button(list, LV_SYMBOL_EYE_CLOSE "  Sleep now", COLOR_ACCENT, on_sleep_now, NULL);
     note(list, "Tap the screen or press either button to wake.");
+    back_row(list, "Back");
 }
 
 static const char *sleep_name(int secs)
@@ -1231,7 +1267,7 @@ static lv_obj_t *mode_net_row(lv_obj_t *list, const char *text, int which)
 static void build_mode_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_mode = page(tile, "MODE", true, &list);
+    s_mode = page(tile, "MODE", &list);
     for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
         row(list, NULL, muse_gadget_mode_name((muse_gadget_mode_t)m), &s_mode_checks[m], on_mode_choice,
             (void *)(intptr_t)m);
@@ -1250,6 +1286,7 @@ static void build_mode_page(lv_obj_t *tile)
     switch_row(list, "24-hour clock", muse_home_extras_24h(), on_clock_24h_sw);
     note(list, "Off shows the 12-hour clock, as 9:30 PM.");
 #endif
+    back_row(list, "Back");
 }
 
 static void tick_mode(void)
@@ -1277,7 +1314,7 @@ static void on_battery_reset(lv_event_t *e)
 static void build_battery_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_battery = page(tile, "BATTERY", true, &list);
+    s_battery = page(tile, "BATTERY", &list);
     s_batt_shown_us = 0;
     s_batt_status = note(list, "");
     s_batt_level = info_row(list, "Battery");
@@ -1291,6 +1328,7 @@ static void build_battery_page(lv_obj_t *tile)
     button(list, LV_SYMBOL_REFRESH "  Start over", COLOR_ACCENT, on_battery_reset, NULL);
     note(list, "Measures from unplugging USB until it's plugged back in. The gauge moves in 1% steps, so give it a "
                "few hours. Chip asleep is time in light sleep; CPU busy is time a core was running a task.");
+    back_row(list, "Back");
 }
 
 /* A per-mille figure as a percentage. */
@@ -1383,16 +1421,16 @@ static void on_power_off(lv_event_t *e)
 static void build_power_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_power = page(tile, "POWER", true, &list);
+    s_power = page(tile, "POWER", &list);
     note(list, "Power Muse off completely?");
     button(list, LV_SYMBOL_POWER "  Power off", COLOR_DANGER, on_power_off, NULL);
-    button(list, "Cancel", COLOR_TEXT, on_back, NULL);
     char text[128];
     const char *power = muse_board->power_button ? muse_board->power_button : muse_board->talk_button;
     const char *sleep = muse_board->power_button ? muse_board->power_button : muse_board->aux_button;
     snprintf(text, sizeof(text), "Press the %s button to turn it back on. To just turn the screen off, press the %s button.",
              power, sleep);
     note(list, text);
+    back_row(list, "Cancel");
 }
 
 /* ---------- Home ---------- */
@@ -1440,12 +1478,12 @@ static void on_reset_go(lv_event_t *e)
 static void build_reset_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_reset = page(tile, "RESET DEVICE", false, &list);
+    s_reset = page(tile, "RESET DEVICE", &list);
     s_reset_step = 0;
     s_reset_note = note(list, "");
     lv_obj_set_style_text_color(s_reset_note, lv_color_hex(COLOR_WARN), 0);
     button(list, "", COLOR_DANGER, on_reset_go, &s_reset_go_lbl);
-    button(list, LV_SYMBOL_LEFT "  Cancel", COLOR_TEXT, on_back, NULL);
+    back_row(list, "Cancel");
     reset_show_step();
 }
 
@@ -1454,13 +1492,13 @@ static const page_t RESET = { &s_reset, build_reset_page };
 static void build_advanced_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_advanced = page(tile, "ADVANCED", false, &list);
+    s_advanced = page(tile, "ADVANCED", &list);
     row(list, LV_SYMBOL_HOME, "Muse connection", &s_adv_hatch, on_nav, (void *)&HATCH);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_adv_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_adv_battery, on_nav, (void *)&BATTERY);
     row(list, LV_SYMBOL_WARNING, "Reset device", NULL, on_nav, (void *)&RESET);
     s_about = note(list, "");
-    button(list, LV_SYMBOL_LEFT "  Back", COLOR_TEXT, on_back, NULL);
+    back_row(list, "Back");
 }
 
 static void tick_advanced(void)
@@ -1497,12 +1535,12 @@ static const page_t ADVANCED = { &s_advanced, build_advanced_page };
 static void build_general_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_general = page(tile, "GENERAL", false, &list);
+    s_general = page(tile, "GENERAL", &list);
     row(list, LV_SYMBOL_SHUFFLE, "Mode", &s_home_mode, on_nav, (void *)&MODE);
     row(list, LV_SYMBOL_EYE_CLOSE, "Screen sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
     row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
-    button(list, LV_SYMBOL_LEFT "  Back", COLOR_TEXT, on_back, NULL);
+    back_row(list, "Back");
 }
 
 static const page_t GENERAL = { &s_general, build_general_page };
@@ -1512,7 +1550,7 @@ static const page_t GENERAL = { &s_general, build_general_page };
 static void build_home(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_home = page(tile, "SETTINGS", false, &list);
+    s_home = page(tile, "SETTINGS", &list);
     row(list, LV_SYMBOL_LIST, "General", NULL, on_nav, (void *)&GENERAL);
     row(list, LV_SYMBOL_SETTINGS, "Advanced", NULL, on_nav, (void *)&ADVANCED);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
