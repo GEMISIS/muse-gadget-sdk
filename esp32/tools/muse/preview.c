@@ -83,6 +83,7 @@ int main(int argc, char **argv)
     shot(dir, "nodding", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 195.0f, .mode_t = 9, .battery = true, .battery_pct = 6, .tired = 1 });
     shot(dir, "charging_low", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 200.3f, .mode_t = 9, .battery = true, .battery_pct = 8, .charging = true, .belly = true });
     shot(dir, "charging", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 210.3f, .mode_t = 9, .battery = true, .battery_pct = 57, .charging = true, .belly = true });
+    shot(dir, "bed_low", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 230.1f, .mode_t = 9, .bed = true, .sleepy = true, .battery = true, .battery_pct = 15 });
     shot(dir, "charged", (muse_pose_t){ .mode = MUSE_MODE_SPEAKING, .t = 220.3f, .mode_t = 2, .level = 0.4f, .battery = true, .battery_pct = 100, .charging = true, .belly = true });
     return 0;
 }
