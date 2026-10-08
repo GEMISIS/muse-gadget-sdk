@@ -34,11 +34,13 @@
 #define COLOR_DIM 0x8b84a8
 #define COLOR_LOW 0xff7a7a      /* battery under LOW_PCT */
 #define LOW_PCT 15
-#define EDGE 16
+/* In from the right edge: the screen's corners are rounded, and at 16 px in
+ * the battery's last digit was cut off by the curve. */
+#define EDGE 40
 /* The corner: a line of montserrat_16, right-aligned, at the very bottom
- * (y 452-470 on 480 px): under the captions (which end at 419) and a heard
- * reply's page (451), so it stays up through one. The row above it is left
- * free for another line. */
+ * (x 360-440, y 452-470 on 480 px): under the captions (which end at 419)
+ * and a heard reply's page (451), so it stays up through one. The row above
+ * it is left free for another line. */
 #define CORNER_W 80
 #define CORNER_H 18
 #define CORNER_BOTTOM 10

@@ -982,7 +982,8 @@ static void build_screen(void)
     lv_obj_set_flex_align(status, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(status, s_small ? 4 : 8, 0);
     if (CORNERS) {
-        lv_obj_align(status, LV_ALIGN_TOP_RIGHT, -20, 20 + s_dy);
+        /* Clear of the screen's rounded corner. */
+        lv_obj_align(status, LV_ALIGN_TOP_RIGHT, -32, 20 + s_dy);
     } else {
         lv_obj_align(status, LV_ALIGN_TOP_MID, 0, s_small ? 1 : 20 + s_dy);
     }
