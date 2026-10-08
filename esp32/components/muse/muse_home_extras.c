@@ -45,11 +45,15 @@
 #define COLOR_UP_EDGE 0x5b3fa0
 #define COLOR_UP_ICON MUSE_COLOR_ACCENT
 #define COLOR_UP_TEXT 0xe4defa
-/* Top centre, over the state (muse_ui.c's STATE_Y) and Muse's head; the
+/* Top centre, over the chat's name (muse_ui.c's STATE_Y) and Muse's head; the
  * corner holds the connectivity icons. Offsets are for a 466 px tall
  * screen, as muse_ui.c's are. */
-#define CLOCK_Y 12
+#define CLOCK_Y 10
+#if LV_FONT_MONTSERRAT_48
+#define FONT_CLOCK (&lv_font_montserrat_48)   /* big, to read at a glance */
+#else
 #define FONT_CLOCK (&lv_font_montserrat_28)
+#endif
 /* The Night face's: big, over Muse in bed, which muse_ui.c moves lower;
  * under the state, and the unpaired gadget's name (NAME_Y). */
 #define CLOCK_NIGHT_Y 100

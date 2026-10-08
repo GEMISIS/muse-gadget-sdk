@@ -104,15 +104,17 @@ static const char *TAG = "muse_ui";
 #define SETTINGS_TICK_S 0.25f
 
 /*
- * With the face's readouts (muse_home_extras.h, a square screen): the clock
- * on top, the state under it in bigger type, the connectivity icons in the
- * top right corner and the battery in the bottom right one, so no power
- * label. Offsets are for a 466 px tall screen, as the rest are.
+ * With the face's readouts (muse_home_extras.h, a square screen): a big
+ * clock on top, the connectivity icons in the top right corner and the
+ * battery in the bottom right one, so no power label. No state either:
+ * Muse's pose says it (cupping an ear, a paw on his chin, talking, X eyes),
+ * so the line under the clock only names a chat other than the main one.
+ * Offsets are for a 466 px tall screen, as the rest are.
  */
 #if CONFIG_MUSE_GADGET_HOME_EXTRAS
 #define CORNERS 1
-#define STATE_Y 52          /* under the clock (muse_home_extras.c's CLOCK_Y) */
-#define NAME_Y 82
+#define STATE_Y 70          /* under the clock (muse_home_extras.c's CLOCK_Y, FONT_CLOCK) */
+#define NAME_Y 96
 #else
 #define CORNERS 0
 #define STATE_Y 40
@@ -2127,13 +2129,17 @@ static void update_status(muse_mode_t mode, float now)
 {
     uint32_t accent = muse_pixel_accent(mode);
     const char *name = mode == MUSE_MODE_IDLE ? s_idle_name : MODE_NAMES[mode];
+    if (CORNERS) {
+        name = chat_label();   /* the state's in Muse's pose */
+        name = name ? name : "";
+    }
 
     if (name != s_shown_name) {
         lv_label_set_text(s_state_lbl, name);
         s_shown_name = name;
     }
     if ((int)mode != s_shown_state) {
-        lv_obj_set_style_text_color(s_state_lbl, lv_color_hex(accent), 0);
+        lv_obj_set_style_text_color(s_state_lbl, lv_color_hex(CORNERS ? COLOR_DIM : accent), 0);
         if (s_ring) {
             lv_obj_set_style_arc_color(s_ring, lv_color_hex(accent), LV_PART_INDICATOR);
         } else {
