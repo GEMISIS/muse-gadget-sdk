@@ -100,18 +100,18 @@ void muse_hatch_tail_words(const char *src, char *out, size_t cap)
  * The next line of `text` wrapped to `cols` characters as the caption shows
  * them (an ellipsis as three dots, muse_text.h), splitting only words longer
  * than a line. CJK has no spaces: it breaks between characters, but never
- * before closing punctuation.
+ * before closing punctuation. The text ends at `stop`.
  */
-static bool next_line(const char **text, int cols, const char **start, size_t *len)
+static bool next_line(const char **text, const char *stop, int cols, const char **start, size_t *len)
 {
     const char *p = *text;
-    while (*p == ' ' || *p == '\n') {
+    while (p < stop && (*p == ' ' || *p == '\n')) {
         p++;
     }
     const char *end = p, *brk = NULL, *movable = NULL;
     int n = 0;
     muse_text_cjk_t prev = MUSE_TEXT_NOT_CJK;
-    while (*end && *end != '\n') {
+    while (end < stop && *end && *end != '\n') {
         size_t bytes;
         char shown[4];
         int w = muse_text_ascii(end, &bytes, shown);
@@ -136,7 +136,7 @@ static bool next_line(const char **text, int cols, const char **start, size_t *l
         end += bytes;
         prev = cjk;
     }
-    if (*end && *end != ' ' && *end != '\n' && brk) {
+    if (end < stop && *end && *end != ' ' && *end != '\n' && brk) {
         end = brk;   /* don't split a word */
     }
     *start = p;
@@ -149,15 +149,20 @@ static bool next_line(const char **text, int cols, const char **start, size_t *l
  * Wraps `text` to the screen's page (muse_state_page) and puts the page holding
  * byte `at` in `out`. Pages overlap by a line: a page's last line starts the
  * next one, so the page turns as that line is reached and nothing is skipped.
+ * An image still arriving at the text's end isn't shown (muse_chat_md.h).
  */
 bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap)
 {
     int cols, lines;
     muse_state_page(muse_text_has_cjk(text), &cols, &lines);
+    const char *stop = text + muse_chat_shown_len(text);
+    while (stop > text && stop[-1] == ' ' && *stop) {
+        stop--;   /* the space before an image still arriving */
+    }
     const char *p = text, *start;
     size_t len;
     int line = -1, n = 0;
-    while (next_line(&p, cols, &start, &len)) {
+    while (next_line(&p, stop, cols, &start, &len)) {
         line = n++;
         if ((size_t)(start + len - text) > at) {
             break;
@@ -171,7 +176,7 @@ bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap)
     size_t o = 0;
     out[0] = '\0';
     p = text;
-    for (n = 0; n < first + lines && next_line(&p, cols, &start, &len); n++) {
+    for (n = 0; n < first + lines && next_line(&p, stop, cols, &start, &len); n++) {
         if (n < first) {
             continue;
         }
