@@ -51,6 +51,7 @@
  * in dots past UP_TEXT_W. Clear of the battery's corner; a reply's page
  * hides it as it does the battery, and the Night face leaves it out. */
 #define UP_TEXT_W 290
+#define CAPTION_S 6.0f          /* a new caption keeps the pill out of its way this long */
 #define UP_H 34
 #define UP_BOTTOM 34
 #define COLOR_UP_BG 0x1d1733
@@ -269,10 +270,15 @@ void muse_home_extras_tick(float now)
         set_text(s_up_lbl, line);
         up_fit(line);
     }
+    /* A caption stays in the state after it's read ("DESK MODE", say), so
+     * one only counts while it's new: the pill steps aside for CAPTION_S. */
+    static uint32_t caption_ver;
+    static float caption_at = -100.0f;
     char caption[4] = "";
-    uint32_t any = 0;
-    muse_state_caption(caption, sizeof(caption), &any);
-    bool show = line[0] && muse_state_mode(NULL) == MUSE_MODE_IDLE && !caption[0];
+    if (muse_state_caption(caption, sizeof(caption), &caption_ver) && caption[0]) {
+        caption_at = now;
+    }
+    bool show = line[0] && muse_state_mode(NULL) == MUSE_MODE_IDLE && now - caption_at > CAPTION_S;
     if (show != s_up_shown) {
         s_up_shown = show;
         if (show) {
