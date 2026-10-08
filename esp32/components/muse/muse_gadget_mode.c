@@ -326,7 +326,21 @@ static int64_t s_retitle_at;
 
 void muse_gadget_mode_retitle(const char *sid)
 {
+    /* Twice per chat per boot at most: the asking turn could itself be titled. */
+    static char asked[2][MUSE_CHAT_SID_MAX + 1];
+    static int asked_n[2], next;
     if (!s_lock || !sid || !sid[0]) {
+        return;
+    }
+    int i = !strcmp(asked[0], sid) ? 0 : !strcmp(asked[1], sid) ? 1 : -1;
+    if (i < 0) {
+        i = next;
+        next ^= 1;
+        strlcpy(asked[i], sid, sizeof(asked[i]));
+        asked_n[i] = 0;
+    }
+    if (asked_n[i]++ >= 2) {
+        ESP_LOGW(TAG, "chat %s: asked twice for a title already", sid);
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -367,8 +381,9 @@ static void send_retitle(void)
     if (strcmp(cur, sid) != 0) {
         return;   /* moved on to another chat: leave it be */
     }
-    char *ask = strdup("Rename this chat to a short title (2 to 5 words) for what I asked in my voice message. "
-                       "Reply with just the new title.");
+    /* The wording that's been seen to work: asked for a bare title instead,
+     * the Muse answered with one and the chat came out "Generate session title". */
+    char *ask = strdup("Please rename this chat to a short title that describes what I asked you in my voice message.");
     if (ask) {
         ESP_LOGI(TAG, "asking the Muse to retitle chat %s", sid);
         muse_hatch_text_turn(ask);   /* frees it */

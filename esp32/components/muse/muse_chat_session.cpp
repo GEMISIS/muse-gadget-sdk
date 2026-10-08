@@ -1760,9 +1760,10 @@ static void on_event(cJSON *line)
         const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(session, "session_id"));
         const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(session, "title"));
         bool started = false;
-        if (sid && title && title[0] && muse_settings_chat_retitle(sid, title, &started) && started
-            && !strncasecmp(title, "Transcribe", 10)) {
-            muse_gadget_mode_retitle(sid);   /* titled after the audio file, not what was asked */
+        if (sid && title && title[0] && muse_settings_chat_retitle(sid, title, &started)
+            && (!strncasecmp(title, "Transcribe", 10) || !strcasecmp(title, "Generate session title"))) {
+            /* Titled after the audio file, or a titler's placeholder: not what was asked. */
+            muse_gadget_mode_retitle(sid);
         }
         return;
     }
