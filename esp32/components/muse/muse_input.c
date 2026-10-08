@@ -674,8 +674,11 @@ static void chat_cancel(void)
  * Bench: puts the face in a mode ("face=thinking") until the voice path or
  * another "face=" moves it on. "face=happy" goes back to idle with the happy
  * hop, as a finished turn does. The rest are what Muse is up to
- * (muse_ui_bench_pose), held until the next "face=": "phone", "listen_phone"
- * and "packages" thinking, "tea", "pajamas" and "brace" idle.
+ * (muse_ui_bench_pose), held until the next "face=": "phone", "listen_phone",
+ * "packages", "unbox" and "assemble" thinking, "tea", "pajamas" and "brace"
+ * idle. "download" plays an image's whole way in, made up: the phone, the
+ * boxes over three seconds, unboxing, the picture put together and held (or,
+ * with a photo put away lately, that one out of the pocket).
  */
 static void set_face(const char *name)
 {
@@ -696,6 +699,9 @@ static void set_face(const char *name)
         { "phone", MUSE_UI_BENCH_PHONE, "thinking" },
         { "listen_phone", MUSE_UI_BENCH_LISTEN_PHONE, "thinking" },
         { "packages", MUSE_UI_BENCH_PACKAGES, "thinking" },
+        { "download", MUSE_UI_BENCH_DOWNLOAD, "thinking" },
+        { "unbox", MUSE_UI_BENCH_UNBOX, "thinking" },
+        { "assemble", MUSE_UI_BENCH_ASSEMBLE, "thinking" },
         { "tea", MUSE_UI_BENCH_TEA, "idle" },
         { "pajamas", MUSE_UI_BENCH_PAJAMAS, "idle" },
         { "brace", MUSE_UI_BENCH_BRACE, "idle" },

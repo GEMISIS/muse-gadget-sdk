@@ -59,9 +59,9 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label);
  */
 void muse_present_ask(const char *path, const char *label);
 
-/* Counts the pushed images handled: shown, or dropped as unshowable. Moves
- * once the face has the image (muse_ui_present), which then takes it out of
- * Muse's pocket. Any task. */
+/* Counts the images handed to the face (muse_ui_present), which then has Muse
+ * unbox it and take it out of his pocket (muse_present_up_seq once it's up).
+ * Any task. */
 uint32_t muse_present_seq(void);
 
 /*
@@ -77,6 +77,37 @@ void muse_present_chunk(size_t received, size_t size);
 /* How far the image waited for has got, 0-100, or -1 when none is waited
  * for. Any task. */
 int muse_present_progress(void);
+
+/*
+ * Where an image has really got, for Muse to act it out (muse_ui.c):
+ * WAITING, one waited for (muse_present_wait) with none of it here yet (Muse
+ * finding it, making it, or writing out the push); FETCHING, its bytes
+ * coming (a web fetch connected, or a push's chunks), *progress 0..1, or -1
+ * not knowing its size; DECODING, all here and being decoded and sized
+ * (*progress 1). A sharper copy coming after the one shown is none of them.
+ * Any task.
+ */
+typedef enum {
+    MUSE_PRESENT_NONE,
+    MUSE_PRESENT_WAITING,
+    MUSE_PRESENT_FETCHING,
+    MUSE_PRESENT_DECODING,
+} muse_present_phase_t;
+
+muse_present_phase_t muse_present_phase(float *progress);
+
+/* A preview's been shown and Muse is still to push the sharper copy he was
+ * asked for (muse_present_ask): the face keeps it up for that. Any task. */
+bool muse_present_sharper_pending(void);
+
+/*
+ * The face has the photo up in his hands (or never will, dropped unshown):
+ * muse_present_up_seq moves, and a reply's speech held for the image goes
+ * on. Later than muse_present_seq, by however long he takes to unbox it.
+ * Any task.
+ */
+void muse_present_up(void);
+uint32_t muse_present_up_seq(void);
 
 /*
  * The estimate behind it: Muse writes the image out as base64 before any of
