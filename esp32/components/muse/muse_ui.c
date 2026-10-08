@@ -600,6 +600,15 @@ static void on_canvas_clicked(lv_event_t *e)
 #endif
 }
 
+/* Touch and hold Muse: the Mode dialog (muse_gadget_mode.h). */
+static void on_canvas_held(lv_event_t *e)
+{
+    (void)e;
+    if (muse_state_mode(NULL) == MUSE_MODE_IDLE) {
+        muse_mode_dialog_open();
+    }
+}
+
 static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compact)
 {
     return s_small ? compact : full;
@@ -1158,7 +1167,8 @@ static void build_screen(void)
     lv_obj_align(s_canvas, LV_ALIGN_CENTER, 0, s_big_y);
     s_muse_y = s_big_y;
     lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_canvas, on_canvas_clicked, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_canvas, on_canvas_clicked, LV_EVENT_SHORT_CLICKED, NULL);   /* not after a hold */
+    lv_obj_add_event_cb(s_canvas, on_canvas_held, LV_EVENT_LONG_PRESSED, NULL);
     if (s_ring) {
         /* The canvas's black corners reach the bezel; keep the ring on top. */
         lv_obj_move_foreground(s_ring);

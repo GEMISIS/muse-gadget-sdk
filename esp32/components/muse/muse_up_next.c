@@ -62,6 +62,7 @@ static const char *TAG = "up_next";
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 EXT_RAM_BSS_ATTR static char s_line[UP_NEXT_MAX];   /* with s_lock */
+EXT_RAM_BSS_ATTR static char s_full[256];           /* the whole reply the line came from, with s_lock */
 static int64_t s_line_us;         /* when it came; 0 for none */
 
 /* Extras task only. */
@@ -202,6 +203,7 @@ static void take_reply(void)
     tidy(reply, line, sizeof(line));
     portENTER_CRITICAL(&s_lock);
     strlcpy(s_line, line, sizeof(s_line));
+    strlcpy(s_full, reply, sizeof(s_full));
     s_line_us = line[0] ? esp_timer_get_time() : 0;
     portEXIT_CRITICAL(&s_lock);
     strlcpy(s_prev, s_sid, sizeof(s_prev));   /* this chat goes with the next ask */
@@ -268,6 +270,19 @@ bool muse_up_next_line(char *out, size_t cap)
     strlcpy(out, fresh ? s_line : "", cap);
     portEXIT_CRITICAL(&s_lock);
     return fresh && out[0];
+}
+
+bool muse_up_next_full(char *out, size_t cap)
+{
+    if (!cap || !muse_up_next_line(out, cap)) {
+        return false;
+    }
+    portENTER_CRITICAL(&s_lock);
+    if (s_full[0]) {
+        strlcpy(out, s_full, cap);
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return true;
 }
 
 void muse_up_next_refresh(void)
