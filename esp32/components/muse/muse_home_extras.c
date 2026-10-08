@@ -45,23 +45,13 @@
 #define COLOR_UP_EDGE 0x5b3fa0
 #define COLOR_UP_ICON MUSE_COLOR_ACCENT
 #define COLOR_UP_TEXT 0xe4defa
-/* Top centre, over the chat's name (muse_ui.c's STATE_Y) and Muse's head; the
- * corner holds the connectivity icons. Offsets are for a 466 px tall
+/* Top centre, over the chat's name (muse_ui.c's STATE_Y) and Muse's head;
+ * the corner holds the connectivity icons. Big, to read at a glance, and the
+ * same on every face, the Night one too. Offsets are for a 466 px tall
  * screen, as muse_ui.c's are. */
-#define CLOCK_Y 10
-#if LV_FONT_MONTSERRAT_48
-#define FONT_CLOCK (&lv_font_montserrat_48)   /* big, to read at a glance */
-#else
-#define FONT_CLOCK (&lv_font_montserrat_28)
-#endif
-/* The Night face's: big, over Muse in bed, which muse_ui.c moves lower;
- * under the state, and the unpaired gadget's name (NAME_Y). */
-#define CLOCK_NIGHT_Y 100
-#if LV_FONT_MONTSERRAT_48
-#define FONT_NIGHT (&lv_font_montserrat_48)
-#else
-#define FONT_NIGHT (&lv_font_montserrat_28)
-#endif
+#define CLOCK_Y 6
+LV_FONT_DECLARE(muse_font_clock_72);
+#define FONT_CLOCK (&muse_font_clock_72)
 
 static lv_obj_t *s_clock;
 #if CONFIG_MUSE_GADGET_UP_NEXT
@@ -87,6 +77,10 @@ static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, 
 void muse_home_extras_build(lv_obj_t *face)
 {
     s_clock = label(face, FONT_CLOCK, COLOR_TEXT, LV_ALIGN_TOP_MID, 0, CLOCK_Y + (muse_board->height - 466) / 2);
+    /* Wider than the ring is at the top: the ring goes behind it, not through. */
+    lv_obj_set_style_bg_color(s_clock, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_clock, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_hor(s_clock, 10, 0);
 #if CONFIG_MUSE_GADGET_UP_NEXT
     s_up = lv_obj_create(face);
     lv_obj_remove_style_all(s_up);
@@ -195,8 +189,6 @@ void muse_home_extras_set_night(bool night)
 {
     s_night = night;
     s_next = 0;   /* "up next" goes or comes back on the next frame */
-    lv_obj_set_style_text_font(s_clock, night ? FONT_NIGHT : FONT_CLOCK, 0);
-    lv_obj_align(s_clock, LV_ALIGN_TOP_MID, 0, (night ? CLOCK_NIGHT_Y : CLOCK_Y) + (muse_board->height - 466) / 2);
 }
 
 static void set_text(lv_obj_t *l, const char *text)

@@ -81,7 +81,7 @@ if(CONFIG_MUSE_ENABLED)
         if(CONFIG_MUSE_GADGET_EXTRAS)
             # microSD, RTC, IMU and the face's corner readouts (Kconfig.gadget)
             list(APPEND srcs "muse_extras.c" "muse_sd.c" "muse_rtc.c" "muse_imu.c"
-                             "muse_home_extras.c")
+                             "muse_home_extras.c" "fonts/muse_font_clock_72.c")
             if(CONFIG_MUSE_GADGET_AUTO_FLIP)
                 list(APPEND srcs "muse_orient.c")   # upside down at night
             endif()
