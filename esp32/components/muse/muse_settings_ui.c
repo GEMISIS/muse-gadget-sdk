@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "esp_app_desc.h"
+#include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 
@@ -29,6 +30,7 @@
 #include "muse_ble.h"
 #include "muse_board.h"
 #include "muse_chat.h"
+#include "muse_dialog.h"
 #include "muse_gadget_mode.h"
 #include "muse_home_extras.h"
 #include "muse_input.h"
@@ -82,11 +84,12 @@ typedef void (*text_done_cb_t)(const char *text);
 static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
-static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
+static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_display, *s_battery, *s_power, *s_text;
 static lv_obj_t *s_mode;
 static lv_obj_t *s_advanced;   /* Muse, Bluetooth and Battery, under home */
-static lv_obj_t *s_general;    /* Wi-Fi, Sound, Screen sleep and Mode, under home */
+static lv_obj_t *s_general;    /* Mode, Wi-Fi, Display and Sound, under home */
 static lv_obj_t *s_reset;      /* Reset device's two warnings, under Advanced */
+static lv_obj_t *s_about;      /* what this device is and how it's doing, under Advanced */
 static lv_obj_t *s_reset_note, *s_reset_go_lbl;
 static int s_reset_step;       /* warnings agreed to so far */
 
@@ -101,11 +104,14 @@ typedef struct {
 } page_t;
 
 /* Home values. */
-static lv_obj_t *s_home_wifi, *s_home_sound, *s_home_sleep;
+static lv_obj_t *s_home_wifi, *s_home_sound, *s_home_display;
 static lv_obj_t *s_home_mode;
 
 /* Advanced values. */
-static lv_obj_t *s_adv_hatch, *s_adv_ble, *s_adv_battery, *s_about;
+static lv_obj_t *s_adv_hatch, *s_adv_ble, *s_adv_battery;
+
+/* About page. */
+static lv_obj_t *s_about_ip, *s_about_wifi, *s_about_signal, *s_about_uptime, *s_about_mem;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -127,18 +133,18 @@ static int64_t s_link_reset_armed_us;
 static lv_obj_t *s_ble_sw, *s_ble_status;
 
 /* Sound page. */
-static lv_obj_t *s_spk_sw, *s_vol_val, *s_vol_sl, *s_gain_val, *s_gain_sl, *s_bright_val, *s_bright_sl, *s_mic_bar, *s_mic_val;
+static lv_obj_t *s_spk_sw, *s_vol_val, *s_vol_sl, *s_gain_val, *s_gain_sl, *s_mic_bar, *s_mic_val;
 
-/* Sleep page. */
+/* Display page: brightness, and when the screen sleeps. */
+static lv_obj_t *s_bright_val, *s_bright_sl;
 static const int SLEEP_CHOICES[] = { 0, 30, 60, 120, 300, 600 };
 static const char *const SLEEP_NAMES[] = { "Never", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes" };
 #define SLEEP_COUNT (int)(sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]))
 static lv_obj_t *s_sleep_checks[SLEEP_COUNT];
 
 /* Mode */
-static lv_obj_t *s_mode_checks[MUSE_GADGET_MODE_COUNT], *s_mode_home, *s_mode_away, *s_mode_note;
-static lv_obj_t *s_mode_pick[2];   /* under the Home and On-the-go rows: the saved networks to pick from */
-static muse_wifi_saved_t s_mode_nets[MUSE_WIFI_SAVED_MAX];
+static lv_obj_t *s_mode_home, *s_mode_away;
+static muse_wifi_saved_t s_mode_nets[MUSE_WIFI_SAVED_MAX];   /* the Wi-Fi dialog's, while it's open */
 
 /* Battery page. */
 static lv_obj_t *s_batt_status, *s_batt_level, *s_batt_drain, *s_batt_full, *s_batt_off, *s_batt_slept, *s_batt_wakes,
@@ -427,8 +433,8 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text,
-                                 &s_mode, &s_advanced, &s_general, &s_reset };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_display, &s_battery, &s_power, &s_text,
+                                 &s_mode, &s_advanced, &s_general, &s_reset, &s_about };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -444,10 +450,10 @@ static lv_obj_t *parent(lv_obj_t *p)
     if (p == s_text) {
         return s_text_back;
     }
-    if (p && (p == s_hatch || p == s_ble || p == s_battery || p == s_reset)) {
+    if (p && (p == s_hatch || p == s_ble || p == s_battery || p == s_reset || p == s_about)) {
         return s_advanced;
     }
-    if (p && (p == s_wifi || p == s_sound || p == s_sleep || p == s_mode)) {
+    if (p && (p == s_wifi || p == s_sound || p == s_display || p == s_mode)) {
         return s_general;
     }
     return s_home;
@@ -462,6 +468,7 @@ static void show(lv_obj_t *p)
     if (prev) {
         lv_obj_add_flag(prev, LV_OBJ_FLAG_HIDDEN);
     }
+    muse_dialog_close_on(s_tile);   /* it was about the page left */
     if (prev == s_sound) {
         muse_voice_set_monitor(false);
     }
@@ -857,8 +864,7 @@ static void build_wifi_page(lv_obj_t *tile)
         snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", m[0], m[1], m[2], m[3], m[4], m[5]);
         lv_label_set_text(mac, buf);
     }
-    note(list, "Muse remembers up to 8 networks and joins the strongest one in range. Tap a saved one twice to "
-               "forget it.");
+    note(list, "Tap a saved network twice to forget it.");
     back_row(list, "Back");
 }
 
@@ -973,9 +979,7 @@ static void build_hatch_page(lv_obj_t *tile)
     row(list, NULL, "VM ID", &s_hatch_vm, on_hatch_vm, NULL);
     row(list, NULL, "Device token", &s_hatch_token, on_hatch_token, NULL);
     button(list, "Test connection", COLOR_ACCENT, on_hatch_test, NULL);
-    note(list, "Pair with the Muse app to use your account; a device token here overrides it, and a long one is "
-               "easier to send over Bluetooth. The VM ID picks one of your VMs. "
-               "Reset pairing forgets Wi-Fi and the app pairing, then restarts.");
+    note(list, "Reset pairing forgets Wi-Fi and the app pairing, then restarts.");
     back_row(list, "Back");
 }
 
@@ -1028,8 +1032,7 @@ static void build_ble_page(lv_obj_t *tile)
     s_ble_sw = switch_row(list, "Phone setup", muse_settings_ble_on(), on_ble_sw);
     s_ble_status = note(list, "");
     button(list, "Forget paired phones", COLOR_DANGER, on_ble_forget, NULL);
-    note(list, "When on, Muse is visible to phones nearby. Open tools/ble_setup.html in Chrome, "
-               "connect, and enter the code Muse shows to pair.");
+    note(list, "To pair, open tools/ble_setup.html in Chrome, connect, and enter the code Muse shows.");
     back_row(list, "Back");
 }
 
@@ -1095,17 +1098,6 @@ static void on_gain(lv_event_t *e)
     }
 }
 
-static void on_bright(lv_event_t *e)
-{
-    int v = lv_slider_get_value(s_bright_sl);
-    set_val(s_bright_val, "%d%%", v);
-    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
-        muse_settings_set_brightness(v);
-    } else {
-        muse_ui_preview_brightness(v);
-    }
-}
-
 static void build_sound_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -1130,11 +1122,8 @@ static void build_sound_page(lv_obj_t *tile)
     lv_obj_set_style_anim_duration(s_mic_bar, 80, 0);
     note(list, "Talk at arm's length: the bar should reach green (-30 to -15 dBFS) without going orange.");
 
-    s_bright_sl = slider(list, "Brightness", 10, 100, muse_settings_brightness(), &s_bright_val, on_bright);
-
     set_val(s_vol_val, "%d%%", muse_settings_volume());
     set_val(s_gain_val, "%d dB", muse_settings_mic_gain() / 3 * 3);
-    set_val(s_bright_val, "%d%%", muse_settings_brightness());
     back_row(list, "Back");
 }
 
@@ -1153,7 +1142,18 @@ static void tick_sound(void)
     set_val(s_mic_val, "%d dBFS", (int)db);
 }
 
-/* ---------- Sleep ---------- */
+/* ---------- Display ---------- */
+
+static void on_bright(lv_event_t *e)
+{
+    int v = lv_slider_get_value(s_bright_sl);
+    set_val(s_bright_val, "%d%%", v);
+    if (lv_event_get_code(e) == LV_EVENT_RELEASED) {
+        muse_settings_set_brightness(v);
+    } else {
+        muse_ui_preview_brightness(v);
+    }
+}
 
 static void on_sleep_choice(lv_event_t *e)
 {
@@ -1166,17 +1166,18 @@ static void on_sleep_now(lv_event_t *e)
     muse_state_set_asleep(true);
 }
 
-static void build_sleep_page(lv_obj_t *tile)
+static void build_display_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_sleep = page(tile, "AUTO-SLEEP", &list);
-    note(list, "Turn the screen off after Muse has been idle for:");
+    s_display = page(tile, "DISPLAY", &list);
+    s_bright_sl = slider(list, "Brightness", 10, 100, muse_settings_brightness(), &s_bright_val, on_bright);
+    set_val(s_bright_val, "%d%%", muse_settings_brightness());
+    note(list, "Screen off when idle for");
     for (int i = 0; i < SLEEP_COUNT; i++) {
         row(list, NULL, SLEEP_NAMES[i], &s_sleep_checks[i], on_sleep_choice, (void *)(intptr_t)i);
         lv_obj_set_style_text_color(s_sleep_checks[i], lv_color_hex(COLOR_ACCENT), 0);
     }
     button(list, LV_SYMBOL_EYE_CLOSE "  Sleep now", COLOR_ACCENT, on_sleep_now, NULL);
-    note(list, "Tap the screen or press either button to wake.");
     back_row(list, "Back");
 }
 
@@ -1190,7 +1191,7 @@ static const char *sleep_name(int secs)
     return "Custom";
 }
 
-static void tick_sleep(void)
+static void tick_display(void)
 {
     int cur = muse_settings_sleep_s();
     for (int i = 0; i < SLEEP_COUNT; i++) {
@@ -1200,33 +1201,19 @@ static void tick_sleep(void)
 
 /* ---------- Mode ---------- */
 
-static void on_mode_choice(lv_event_t *e)
-{
-    muse_gadget_mode_pick((muse_gadget_mode_t)(intptr_t)lv_event_get_user_data(e));
-}
-
-static void on_mode_home(lv_event_t *e)
-{
-    (void)e;
-    set_text(s_mode_note, muse_gadget_mode_set_home() ? "Saved." : "Join a Wi-Fi network first.");
-}
-
 static void on_clock_24h_sw(lv_event_t *e)
 {
     muse_home_extras_set_24h(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
-static void on_mode_away(lv_event_t *e)
-{
-    (void)e;
-    set_text(s_mode_note, muse_gadget_mode_set_away() ? "Saved: joining it switches to On-the-go."
-                                                      : "Join a Wi-Fi network first.");
-}
-
 enum { PICK_HOME, PICK_AWAY };
+#define PICK_NONE 0xff   /* "None": no network */
 
-static void set_mode_net(int which, const char *ssid)
+static void on_mode_net(void *user)
 {
+    intptr_t v = (intptr_t)user;
+    int which = (int)(v >> 8), i = (int)(v & 0xff);
+    const char *ssid = i == PICK_NONE ? "" : s_mode_nets[i].ssid;
     if (which == PICK_HOME) {
         muse_settings_set_home_ssid(ssid);
     } else {
@@ -1234,36 +1221,39 @@ static void set_mode_net(int which, const char *ssid)
     }
 }
 
-static void on_mode_net(lv_event_t *e)
-{
-    intptr_t v = (intptr_t)lv_event_get_user_data(e);
-    int which = (int)(v >> 8), i = (int)(v & 0xff);
-    set_mode_net(which, i == 0xff ? "" : s_mode_nets[i].ssid);
-    lv_obj_add_flag(s_mode_pick[which], LV_OBJ_FLAG_HIDDEN);
-    set_text(s_mode_note, i == 0xff ? "Cleared." : "Saved.");
-}
-
-/* Opens (or closes) the saved networks under a row, filled in fresh. */
+/* A Wi-Fi row was tapped: the saved networks and "None" to pick from, the
+ * one set now ticked. */
 static void on_mode_pick(lv_event_t *e)
 {
     int which = (int)(intptr_t)lv_event_get_user_data(e);
-    lv_obj_t *box = s_mode_pick[which];
-    lv_obj_add_flag(s_mode_pick[!which], LV_OBJ_FLAG_HIDDEN);
-    if (!lv_obj_has_flag(box, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
-        return;
+    char cur[MUSE_SSID_MAX + 1];
+    if (which == PICK_HOME) {
+        muse_settings_home_ssid(cur);
+    } else {
+        muse_settings_away_ssid(cur);
     }
-    lv_obj_clean(box);
     int n = muse_wifi_saved(s_mode_nets, MUSE_WIFI_SAVED_MAX);
-    if (!n) {
-        note(box, "No saved networks yet: add one on the Wi-Fi page.");
-    }
+    muse_dialog_option_t options[MUSE_WIFI_SAVED_MAX + 1];
+    bool ticked = false;
     for (int i = 0; i < n; i++) {
-        row(box, LV_SYMBOL_WIFI, s_mode_nets[i].ssid, NULL, on_mode_net, (void *)(intptr_t)((which << 8) | i));
+        bool on = !strcmp(cur, s_mode_nets[i].ssid);
+        ticked |= on;
+        options[i] = (muse_dialog_option_t){ s_mode_nets[i].ssid, LV_SYMBOL_WIFI, on, on_mode_net,
+                                             (void *)(intptr_t)((which << 8) | i) };
     }
-    row(box, LV_SYMBOL_CLOSE, "None", NULL, on_mode_net, (void *)(intptr_t)((which << 8) | 0xff));
-    lv_obj_remove_flag(box, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_scroll_to_view(box, LV_ANIM_ON);
+    options[n] = (muse_dialog_option_t){ "None", LV_SYMBOL_CLOSE, !ticked, on_mode_net,
+                                         (void *)(intptr_t)((which << 8) | PICK_NONE) };
+    const muse_dialog_t d = {
+        .title = which == PICK_HOME ? "Home Wi-Fi" : "On-the-go Wi-Fi",
+        .text = n ? NULL : "No saved networks yet: add one on the Wi-Fi page.",
+        .help = which == PICK_HOME
+                    ? "Home Wi-Fi is the network where you usually are. On another one, Muse offers On-the-go mode."
+                    : "On-the-go Wi-Fi is one you join when you're out, such as your phone's hotspot. "
+                      "Joining it switches Muse to On-the-go mode by itself.",
+        .options = options,
+        .option_count = n + 1,
+    };
+    muse_dialog_open(s_tile, &d);
 }
 
 /* ---- Mode: Night's times and the alarm's, set with a picker over the page ---- */
@@ -1409,21 +1399,12 @@ static void build_time_picker(lv_obj_t *p)
     time_button(s_time_box, LV_SYMBOL_OK "  OK", COLOR_ACCENT, 78, true);
 }
 
-/* A row showing a network, tapped for the list of saved ones beneath it. */
+/* A row showing a network, tapped to pick from the saved ones. */
 static lv_obj_t *mode_net_row(lv_obj_t *list, const char *text, int which)
 {
     lv_obj_t *value;
-    row(list, NULL, text, &value, on_mode_pick, (void *)(intptr_t)which);
+    row(list, LV_SYMBOL_WIFI, text, &value, on_mode_pick, (void *)(intptr_t)which);
     lv_obj_set_style_text_color(value, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_t *box = lv_obj_create(list);
-    lv_obj_remove_style_all(box);
-    lv_obj_set_size(box, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(box, 10, 0);
-    lv_obj_set_style_pad_left(box, 24, 0);   /* indented under its row */
-    lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
-    s_mode_pick[which] = box;
     return value;
 }
 
@@ -1431,18 +1412,11 @@ static void build_mode_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_mode = page(tile, "MODE", &list);
-    for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
-        row(list, NULL, muse_gadget_mode_name((muse_gadget_mode_t)m), &s_mode_checks[m], on_mode_choice,
-            (void *)(intptr_t)m);
-        lv_obj_set_style_text_color(s_mode_checks[m], lv_color_hex(COLOR_ACCENT), 0);
-    }
     for (int i = TIME_NIGHT_FROM; i <= TIME_NIGHT_TO; i++) {
         row(list, LV_SYMBOL_EYE_CLOSE, i == TIME_NIGHT_FROM ? "Night starts" : "Night ends", &s_time_vals[i],
             on_time_pick, (void *)(intptr_t)i);
         lv_obj_set_style_text_color(s_time_vals[i], lv_color_hex(COLOR_ACCENT), 0);
     }
-    note(list, "Night runs between these times and Desk the rest of the day, once the clock is set. "
-               "A mode picked here holds until the next switch.");
 #if CONFIG_MUSE_GADGET_ALARM
     bool alarm_on;
     muse_rtc_alarm(&alarm_on);
@@ -1451,15 +1425,9 @@ static void build_mode_page(lv_obj_t *tile)
     lv_obj_set_style_text_color(s_time_vals[TIME_ALARM], lv_color_hex(COLOR_ACCENT), 0);
 #endif
     s_mode_home = mode_net_row(list, "Home Wi-Fi", PICK_HOME);
-    button(list, LV_SYMBOL_WIFI "  Set current as home", COLOR_ACCENT, on_mode_home, NULL);
     s_mode_away = mode_net_row(list, "On-the-go Wi-Fi", PICK_AWAY);
-    button(list, LV_SYMBOL_GPS "  Set current as on-the-go", COLOR_ACCENT, on_mode_away, NULL);
-    s_mode_note = note(list, "On the on-the-go Wi-Fi (your phone's hotspot, say), Muse switches to "
-                             "On-the-go by itself. Without one, other networks away from home offer it. "
-                             "Tap a Wi-Fi row to pick from the saved networks.");
 #if CONFIG_MUSE_GADGET_HOME_EXTRAS
     switch_row(list, "24-hour clock", muse_home_extras_24h(), on_clock_24h_sw);
-    note(list, "Off shows the 12-hour clock, as 9:30 PM.");
 #endif
     back_row(list, "Back");
     build_time_picker(s_mode);
@@ -1467,10 +1435,6 @@ static void build_mode_page(lv_obj_t *tile)
 
 static void tick_mode(void)
 {
-    muse_gadget_mode_t cur = muse_gadget_mode();
-    for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
-        set_text(s_mode_checks[m], (int)cur == m ? LV_SYMBOL_OK : "");
-    }
     char home[MUSE_SSID_MAX + 1];
     muse_settings_home_ssid(home);
     set_text(s_mode_home, home[0] ? home : "Not set");
@@ -1510,7 +1474,7 @@ static void build_battery_page(lv_obj_t *tile)
     s_batt_awake = note(list, "");
     button(list, LV_SYMBOL_REFRESH "  Start over", COLOR_ACCENT, on_battery_reset, NULL);
     note(list, "Measures from unplugging USB until it's plugged back in. The gauge moves in 1% steps, so give it a "
-               "few hours. Chip asleep is time in light sleep; CPU busy is time a core was running a task.");
+               "few hours.");
     back_row(list, "Back");
 }
 
@@ -1605,7 +1569,6 @@ static void build_power_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_power = page(tile, "POWER", &list);
-    note(list, "Power Muse off completely?");
     button(list, LV_SYMBOL_POWER "  Power off", COLOR_DANGER, on_power_off, NULL);
     char text[128];
     snprintf(text, sizeof(text), "Press the %s button to turn it back on. To just turn the screen off, press the %s button.",
@@ -1620,7 +1583,7 @@ static const page_t WIFI = { &s_wifi, build_wifi_page };
 static const page_t HATCH = { &s_hatch, build_hatch_page };
 static const page_t BLE = { &s_ble, build_ble_page };
 static const page_t SOUND = { &s_sound, build_sound_page };
-static const page_t SLEEP = { &s_sleep, build_sleep_page };
+static const page_t DISPLAY = { &s_display, build_display_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
 static const page_t MODE = { &s_mode, build_mode_page };
@@ -1670,6 +1633,97 @@ static void build_reset_page(lv_obj_t *tile)
 
 static const page_t RESET = { &s_reset, build_reset_page };
 
+/* ---------- About: what this device is, and how it's doing ---------- */
+
+/* A card of a dim label over its value, the whole width for a long one. */
+static lv_obj_t *about_row(lv_obj_t *list, const char *text, const char *value)
+{
+    lv_obj_t *c = card(list, false);
+    lv_obj_set_height(c, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_ver(c, 8, 0);
+    lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(c, 2, 0);
+    label(c, &lv_font_montserrat_16, COLOR_DIM, text);
+    lv_obj_t *v = label(c, FONT_VALUE, COLOR_TEXT, value);
+    lv_obj_set_width(v, lv_pct(100));
+    lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_DOTS);
+    return v;
+}
+
+static void build_about_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_about = page(tile, "ABOUT", &list);
+    about_row(list, "Firmware", esp_app_get_description()->version);
+    about_row(list, "Board", muse_board->name);
+    muse_ble_status_t b;
+    muse_ble_status(&b);
+    about_row(list, "Device name", b.name[0] ? b.name : "-");
+    s_about_wifi = about_row(list, "Wi-Fi network", "");
+    s_about_signal = about_row(list, "Signal", "");
+    s_about_ip = about_row(list, "IP address", "");
+    char buf[18] = "-";
+    uint8_t m[6];
+    if (esp_read_mac(m, ESP_MAC_WIFI_STA) == ESP_OK) {
+        snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X", m[0], m[1], m[2], m[3], m[4], m[5]);
+    }
+    about_row(list, "MAC address", buf);
+    s_about_uptime = about_row(list, "Up for", "");
+    s_about_mem = about_row(list, "Free memory", "");
+    back_row(list, "Back");
+}
+
+/* 1.5 MB, 18 KB */
+static void bytes_text(size_t n, char *out, size_t cap)
+{
+    if (n >= 1024 * 1024) {
+        snprintf(out, cap, "%u.%u MB", (unsigned)(n >> 20), (unsigned)((n & 0xfffff) * 10 >> 20));
+    } else {
+        snprintf(out, cap, "%u KB", (unsigned)(n >> 10));
+    }
+}
+
+static void tick_about(void)
+{
+    muse_wifi_status_t w;
+    muse_wifi_status(&w);
+    bool on = w.state == MUSE_WIFI_CONNECTED;
+    char buf[64];
+    set_text(s_about_wifi, on ? w.ssid : "Not connected");
+    set_text(s_about_ip, on ? w.ip : "-");
+    if (on) {
+        const char *how = w.rssi >= -60 ? "strong" : w.rssi >= -70 ? "good" : w.rssi >= -80 ? "fair" : "weak";
+        snprintf(buf, sizeof(buf), "%d dBm, %s", w.rssi, how);
+    } else {
+        strlcpy(buf, "-", sizeof(buf));
+    }
+    set_text(s_about_signal, buf);
+
+    int64_t up = esp_timer_get_time() / 1000000;
+    int d = (int)(up / 86400), h = (int)(up / 3600 % 24), min = (int)(up / 60 % 60);
+    if (d) {
+        snprintf(buf, sizeof(buf), "%d d %d h %d min", d, h, min);
+    } else if (h) {
+        snprintf(buf, sizeof(buf), "%d h %d min", h, min);
+    } else {
+        snprintf(buf, sizeof(buf), "%d min", min);
+    }
+    set_text(s_about_uptime, buf);
+
+    char in[16], ps[16];
+    bytes_text(heap_caps_get_free_size(MALLOC_CAP_INTERNAL), in, sizeof(in));
+    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM)) {
+        bytes_text(heap_caps_get_free_size(MALLOC_CAP_SPIRAM), ps, sizeof(ps));
+        snprintf(buf, sizeof(buf), "%s internal, %s PSRAM", in, ps);
+    } else {
+        snprintf(buf, sizeof(buf), "%s", in);
+    }
+    set_text(s_about_mem, buf);
+}
+
+static const page_t ABOUT = { &s_about, build_about_page };
+
 static void build_advanced_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -1677,16 +1731,29 @@ static void build_advanced_page(lv_obj_t *tile)
     row(list, LV_SYMBOL_HOME, "Muse connection", &s_adv_hatch, on_nav, (void *)&HATCH);
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_adv_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_adv_battery, on_nav, (void *)&BATTERY);
+    row(list, LV_SYMBOL_FILE, "About", NULL, on_nav, (void *)&ABOUT);
     row(list, LV_SYMBOL_WARNING, "Reset device", NULL, on_nav, (void *)&RESET);
-    s_about = note(list, "");
     back_row(list, "Back");
 }
 
 static void tick_advanced(void)
 {
+    /* A tick once it's connected, as the row has little room for words. */
     muse_hatch_status_t h;
     muse_hatch_status(&h);
-    set_text(s_adv_hatch, muse_hatch_state_name(h.state));
+    const char *sym = LV_SYMBOL_CLOSE;   /* not set up */
+    uint32_t color = COLOR_DIM;
+    if (h.state == MUSE_HATCH_REACHABLE) {
+        sym = LV_SYMBOL_OK;
+        color = COLOR_OK;
+    } else if (h.state == MUSE_HATCH_TESTING || h.state == MUSE_HATCH_UNTESTED) {
+        sym = LV_SYMBOL_REFRESH;
+    } else if (h.state == MUSE_HATCH_UNREACHABLE || h.state == MUSE_HATCH_OFFLINE) {
+        sym = LV_SYMBOL_WARNING;
+        color = COLOR_WARN;
+    }
+    set_text(s_adv_hatch, sym);
+    lv_obj_set_style_text_color(s_adv_hatch, lv_color_hex(color), 0);
 
     muse_ble_status_t b;
     muse_ble_status(&b);
@@ -1700,12 +1767,6 @@ static void tick_advanced(void)
         snprintf(buf, sizeof(buf), "%s%d%%", p.charging ? LV_SYMBOL_CHARGE " " : "", p.battery_pct);
     }
     set_text(s_adv_battery, buf);
-
-    muse_wifi_status_t w;
-    muse_wifi_status(&w);
-    snprintf(buf, sizeof(buf), "Firmware %s\nIP address %s", esp_app_get_description()->version,
-             w.state == MUSE_WIFI_CONNECTED ? w.ip : "none (no Wi-Fi)");
-    set_text(s_about, buf);
 }
 
 static const page_t ADVANCED = { &s_advanced, build_advanced_page };
@@ -1718,8 +1779,8 @@ static void build_general_page(lv_obj_t *tile)
     lv_obj_t *list;
     s_general = page(tile, "GENERAL", &list);
     row(list, LV_SYMBOL_SHUFFLE, "Mode", &s_home_mode, on_nav, (void *)&MODE);
-    row(list, LV_SYMBOL_EYE_CLOSE, "Screen sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
     row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
+    row(list, LV_SYMBOL_IMAGE, "Display", &s_home_display, on_nav, (void *)&DISPLAY);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     back_row(list, "Back");
 }
@@ -1749,7 +1810,7 @@ static void tick_general(void)
     } else {
         set_text(s_home_sound, "Muted");
     }
-    set_text(s_home_sleep, sleep_name(muse_settings_sleep_s()));
+    set_text(s_home_display, sleep_name(muse_settings_sleep_s()));
     set_text(s_home_mode, muse_gadget_mode_name(muse_gadget_mode()));
 }
 
@@ -1774,6 +1835,7 @@ void muse_settings_ui_tick(bool visible)
         muse_voice_set_monitor(visible && s_current == s_sound);
     }
     if (!visible) {
+        muse_dialog_close_on(s_tile);   /* not still open on the way back */
         return;
     }
     if (s_current == s_general) {
@@ -1786,18 +1848,20 @@ void muse_settings_ui_tick(bool visible)
         tick_ble();
     } else if (s_current == s_sound) {
         tick_sound();
-    } else if (s_current == s_sleep) {
-        tick_sleep();
+    } else if (s_current == s_display) {
+        tick_display();
     } else if (s_current == s_battery) {
         tick_battery();
     } else if (s_current == s_mode) {
         tick_mode();
     } else if (s_current == s_advanced) {
         tick_advanced();
+    } else if (s_current == s_about) {
+        tick_about();
     }
 }
 
 bool muse_settings_ui_in_subpage(void)
 {
-    return s_current != s_home;
+    return s_current != s_home || muse_dialog_is_open();   /* a dialog holds the screen as a page does */
 }
