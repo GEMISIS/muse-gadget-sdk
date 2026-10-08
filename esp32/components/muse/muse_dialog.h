@@ -18,7 +18,7 @@
  * A card over the screen, the rest dimmed: a title, an optional line under
  * it, some text or the caller's own widgets, options to pick from (the
  * current one ticked) and buttons. A tap outside it cancels. With help text,
- * a "?" in its top right corner opens a second card that says it. One at a
+ * a "?" in its top left corner opens a second card that says it. One at a
  * time; all of it runs in the LVGL task.
  */
 #pragma once
@@ -26,16 +26,17 @@
 #include <stdbool.h>
 
 #include "lvgl.h"
+#include "muse_style.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef enum {
-    MUSE_DIALOG_NEUTRAL,   /* Cancel and the like */
-    MUSE_DIALOG_ACCENT,    /* the usual choice */
-    MUSE_DIALOG_DANGER,    /* can't be undone */
-} muse_dialog_style_t;
+/* A button's look: the settings pages' (muse_style.h). */
+typedef muse_button_kind_t muse_dialog_style_t;
+#define MUSE_DIALOG_NEUTRAL MUSE_BUTTON_NEUTRAL   /* Cancel and the like */
+#define MUSE_DIALOG_ACCENT MUSE_BUTTON_ACCENT     /* the usual choice */
+#define MUSE_DIALOG_DANGER MUSE_BUTTON_DANGER     /* can't be undone */
 
 /* A button or option was tapped; the dialog has closed by then. */
 typedef void (*muse_dialog_cb_t)(void *user);
