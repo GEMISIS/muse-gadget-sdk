@@ -119,7 +119,7 @@ static bool morning_due(int64_t now)
 static void take_reply(void)
 {
     char reply[256];
-    muse_chat_bg_state_t st = muse_chat_bg_result(reply, sizeof(reply));
+    muse_chat_bg_state_t st = muse_chat_bg_result_for(MUSE_CHAT_BG_FOR_UP_NEXT, reply, sizeof(reply));
     if (st == MUSE_CHAT_BG_BUSY) {
         return;
     }
@@ -170,7 +170,7 @@ void muse_up_next_tick(void)
     s_asked_us = now;
     char sid[MUSE_CHAT_SID_MAX + 1];
     chat_sid(sid);
-    s_asking = muse_chat_bg_ask(sid, PROMPT);
+    s_asking = muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_UP_NEXT, sid, PROMPT);
     ESP_LOGI(TAG, "%s Muse what's up next (%s)", s_asking ? "asking" : "couldn't ask", why);
 }
 

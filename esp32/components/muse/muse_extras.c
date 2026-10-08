@@ -31,6 +31,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 
+#include "muse_chat_delete.h"
 #include "muse_imu.h"
 #include "muse_rtc.h"
 #include "muse_sd.h"
@@ -113,6 +114,9 @@ static void extras_task(void *arg)
             muse_sd_caption_write();
 #if CONFIG_MUSE_GADGET_UP_NEXT
             muse_up_next_tick();
+#endif
+#if CONFIG_MUSE_HATCH && CONFIG_MUSE_GADGET_CHATS
+            muse_chat_delete_tick();   /* the Chats screen's deletes from Muse */
 #endif
         }
         vTaskDelay(pdMS_TO_TICKS(wait_ms));
