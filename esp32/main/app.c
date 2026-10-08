@@ -1913,7 +1913,15 @@ static cJSON *on_ws_command(
 #endif
 #if CONFIG_MUSE_HATCH
     if (strcmp(command, "display.show_image") == 0) {
-        return gadget_show_image_command(params);
+        cJSON *result = gadget_show_image_command(params);
+        const cJSON *data = cJSON_GetObjectItem(params, "data_b64");
+        char *out = cJSON_PrintUnformatted(result);
+        ESP_LOGI(TAG, "display.show_image: offset %d, %u base64 chars, final %d -> %s",
+                 (int)cJSON_GetNumberValue(cJSON_GetObjectItem(params, "offset")),
+                 (unsigned)(cJSON_IsString(data) ? strlen(data->valuestring) : 0),
+                 cJSON_IsTrue(cJSON_GetObjectItem(params, "final")), out ? out : "?");
+        cJSON_free(out);
+        return result;
     }
 #endif
 #if CONFIG_HOMEHUB_VOICE
