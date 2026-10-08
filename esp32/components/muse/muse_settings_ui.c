@@ -1144,10 +1144,12 @@ static void tick_display(void)
 
 /* ---------- Mode ---------- */
 
+#if CONFIG_MUSE_GADGET_HOME_EXTRAS
 static void on_clock_24h_sw(lv_event_t *e)
 {
     muse_home_extras_set_24h(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
+#endif
 
 enum { PICK_HOME, PICK_AWAY };
 #define PICK_NONE 0xff   /* "None": no network */
