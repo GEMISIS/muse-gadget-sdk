@@ -1,0 +1,15 @@
+# libwebp's zeroed statics (its DSP function pointers, about 700 bytes) go to
+# PSRAM: the internal RAM can't spare them. Only with
+# CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY, as on the boards that build it.
+[scheme:webp_extram_bss]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:libwebp]
+archive: liblibwebp.a
+entries:
+    if SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY = y:
+        * (webp_extram_bss)
+    else:
+        * (default)
