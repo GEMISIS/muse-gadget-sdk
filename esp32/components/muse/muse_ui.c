@@ -47,6 +47,9 @@
 #include "muse_orient.h"
 #include "muse_pixel.h"
 #include "muse_power_menu.h"
+#if CONFIG_MUSE_HATCH
+#include "muse_present.h"
+#endif
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
 #include "muse_state.h"
@@ -1594,15 +1597,34 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
     photo_px_t next = s_photo.next;
     s_photo.next = (photo_px_t){ 0 };
     xSemaphoreGive(s_image_mutex);
+    static bool waiting;
     if (next.full && mode == MUSE_MODE_LISTENING) {
-        ESP_LOGI(TAG, "photo dropped: a new turn's begun");
-        photo_px_free(&next);
+        /* A new turn's begun: it waits for the press to end rather than going. */
+        xSemaphoreTake(s_image_mutex, portMAX_DELAY);
+        bool newer = s_photo.next.full != NULL;
+        if (!newer) {
+            s_photo.next = next;
+        }
+        xSemaphoreGive(s_image_mutex);
+        if (newer) {
+            ESP_LOGI(TAG, "photo dropped: a newer one came while listening");
+            photo_px_free(&next);
+        } else if (!waiting) {
+            ESP_LOGI(TAG, "photo waits: listening");
+        }
+        waiting = true;
+        next = (photo_px_t){ 0 };
     }
     if (next.full) {
+        waiting = false;
+        ESP_LOGI(TAG, "photo out: %dx%d held, %dx%d full (%s)", next.hw, next.hh, next.fw, next.fh,
+                 !s_photo_card ? "full size" : s_photo.phase == PHOTO_NONE || s_photo.phase == PHOTO_STOW
+                     ? "from the pocket" : "in place of the one held");
         if (!s_photo_card) {
             photo_drop();
             photo_adopt(&next);
             photo_full_show();   /* compact: straight to full size */
+            muse_ui_show_face();
         } else if (s_photo.phase == PHOTO_NONE || s_photo.phase == PHOTO_STOW) {
             photo_drop();
             photo_adopt(&next);
@@ -2088,14 +2110,22 @@ static void update_status(muse_mode_t mode, float now)
         s_shown_lit = -1;
     }
 
-    /* Ring: phase progress while listening/speaking, a spinner while thinking. */
-    int ring = 0;
+    /* Ring: phase progress while listening/speaking, a spinner while thinking,
+     * or how far an image the reply waits for has got (muse_present_progress). */
+    int ring = 0, image = -1;
+#if CONFIG_MUSE_HATCH
+    if (mode == MUSE_MODE_THINKING) {
+        image = muse_present_progress();
+    }
+#endif
     if (mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_SPEAKING) {
         ring = (int)(muse_state_progress() * RING_RANGE);
+    } else if (image >= 0) {
+        ring = image * RING_RANGE / 100;
     } else if (mode == MUSE_MODE_THINKING) {
         ring = RING_RANGE / 6;
     }
-    if (s_ring && mode == MUSE_MODE_THINKING) {
+    if (s_ring && mode == MUSE_MODE_THINKING && image < 0) {
         /* Move the indicator rather than rotate the arc: a rotation redraws
          * the whole ring, and with it the whole screen. */
         int start = (int)(now * 300.0f) % 360;
@@ -2384,8 +2414,17 @@ static void frame_tick(lv_timer_t *timer)
     }
     update_chrome(now);
     muse_home_extras_tick(now);
+    xSemaphoreTake(s_image_mutex, portMAX_DELAY);
+    bool photo_coming = s_photo.next.full != NULL;
+    xSemaphoreGive(s_image_mutex);
+    if (photo_coming && mode != MUSE_MODE_LISTENING) {
+        muse_menu_close();   /* Muse's image: the face, to see it (photo_tick) */
+    }
     if (muse_menu_tick(now)) {
         image_hide_locked();
+        if (s_photo.phase != PHOTO_NONE) {
+            ESP_LOGI(TAG, "photo dropped: the menu's open");
+        }
         photo_drop();
         return;   /* the menu covers the face */
     }
