@@ -192,6 +192,18 @@ menu "Muse"
             them. Needs PSRAM. Without it, voice notes go over Home Link's own
             session to its paired VM and replies are shown as text.
 
+    config MUSE_PRESENT_FORMATS
+        bool "Show PNG and WebP images in replies too"
+        depends on MUSE_HATCH && MUSE_BOARD_WAVESHARE_S3_216
+        default y
+        help
+            A reply's image in PNG (libpng) or WebP (components/libwebp,
+            decoding only) is decoded here, as baseline JPEG always is: a
+            web image Muse names then shows in a second or two, without
+            Muse making a JPEG copy to push. About 200 KB of flash; it
+            decodes in PSRAM. The libpng dependency is this board's alone
+            (idf_component.yml), so it's only offered here.
+
     config MUSE_CHAT_SUBSCRIBE_SESSION
         bool "Name the chosen chat when subscribing to replies"
         depends on MUSE_ENABLED

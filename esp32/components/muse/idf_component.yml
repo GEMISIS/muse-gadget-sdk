@@ -50,6 +50,12 @@ dependencies:
     version: "^2.0.1"
     rules:
       - if: "$CONFIG{MUSE_BOARD_ID} == \"waveshare_s3_216\""
+  # A reply's PNG images (muse_image.c, CONFIG_MUSE_PRESENT_FORMATS); the
+  # board's LVGL adapter brings the same one in already.
+  espressif/libpng:
+    version: "1.*"
+    rules:
+      - if: "$CONFIG{MUSE_BOARD_ID} == \"waveshare_s3_216\""
   espressif/esp-box-3:
     version: "3.2.0"
     rules:

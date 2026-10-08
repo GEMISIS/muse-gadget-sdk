@@ -49,6 +49,9 @@ if(CONFIG_MUSE_ENABLED)
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
         list(APPEND srcs "muse_present.c")   # images in replies, held up on the face
+        if(CONFIG_MUSE_PRESENT_FORMATS)
+            list(APPEND srcs "muse_image.c")   # their PNG and WebP
+        endif()
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
         if(CONFIG_MUSE_TTS_PICO)
             list(APPEND srcs "muse_tts.c" "muse_tts_text.c")   # replies spoken on the device
@@ -143,6 +146,10 @@ set(muse_priv_requires
     esp_driver_pcnt
     fatfs sdmmc esp_driver_sdmmc esp_netif lwip)   # the 2.16's extras: microSD, SNTP
 list(APPEND muse_priv_requires camera)
+# A reply's WebP images (muse_image.c): libwebp builds nothing unless
+# CONFIG_MUSE_PRESENT_FORMATS, and requirements can't wait on the config.
+# libpng comes in through idf_component.yml, on the boards that have it.
+list(APPEND muse_priv_requires libwebp)
 
 idf_component_register(
     SRCS ${srcs}
