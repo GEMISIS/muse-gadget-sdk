@@ -44,9 +44,9 @@ void muse_up_next_tick(void);
 bool muse_up_next_line(char *out, size_t cap);
 /* The whole reply the line came from (the kept line itself after a restart). */
 bool muse_up_next_full(char *out, size_t cap);
-/* The voice task, during a turn: what was heard and the reply, then that
- * it's done. A turn about the line (sharing a word of note with it: "Ezra",
- * "Kindering") has it asked again shortly after, as it may be done now. */
+/* The voice task, during a turn: what was heard and the reply (unused for
+ * now), then that it's done. After a turn, up next is asked again once
+ * things have been quiet a little: what was said may have done it. */
 void muse_up_next_turn_text(const char *text);
 void muse_up_next_turn_done(void);
 /* The serial console's ">brief": asks now, schedule or not (a turn still

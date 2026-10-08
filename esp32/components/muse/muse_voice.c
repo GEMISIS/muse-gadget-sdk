@@ -422,7 +422,7 @@ static bool hatch_reply(bool *delivered)
         while ((ev = muse_hatch_turn_event(text, sizeof(text))) != MUSE_HATCH_EV_NONE) {
             muse_sd_caption_event(ev, text);   /* the SD card's caption log, if any */
             if (ev == MUSE_HATCH_EV_HEARD || ev == MUSE_HATCH_EV_REPLY) {
-                muse_up_next_turn_text(text);   /* about up next's line: it's asked again after */
+                muse_up_next_turn_text(text);
             } else if (ev == MUSE_HATCH_EV_DONE) {
                 muse_up_next_turn_done();
             }
