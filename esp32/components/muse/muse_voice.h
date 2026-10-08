@@ -39,7 +39,8 @@ float muse_voice_monitor_db(void);
 void muse_voice_request_chirp(void);
 
 /*
- * Earcons: short, quiet sounds (80 ms at most) that say a key did something.
+ * Earcons: short, quiet sounds (80 ms at most, but for the charge jingle)
+ * that say a key, or the charger, did something.
  * None with the speaker off, and at half the level in Night mode. The talk
  * key's pair (listening starts, and stops) the voice task plays itself; the
  * rest are asked for here, from any task, and play once it's idle, the
@@ -51,6 +52,7 @@ typedef enum {
     MUSE_EARCON_LISTEN,   /* listening starts: a soft rising ping */
     MUSE_EARCON_STOP,     /* listening stops: a lower, falling one */
     MUSE_EARCON_CLICK,    /* the power menu opens */
+    MUSE_EARCON_CHARGE,   /* plugged in to charge: a little rising arpeggio, half a second */
 } muse_earcon_t;
 
 void muse_voice_earcon(muse_earcon_t which);

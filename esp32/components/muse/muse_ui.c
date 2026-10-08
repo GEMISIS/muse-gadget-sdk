@@ -2220,6 +2220,40 @@ static float update_quake(muse_mode_t mode, float now, bool asked)
     return qt < QUAKE_S ? 1.0f : 1.0f - (qt - QUAKE_S) / (DIZZY_S - QUAKE_S);
 }
 
+/*
+ * Plugged in to charge (muse_ui_plugged): Muse cheers, muse_pose_t.plugged
+ * easing from 1 to 0 over PLUGGED_S. Asked for while the screen wakes, so a
+ * request waits up to PLUGGED_WAIT_MS for a frame that draws the face, idle.
+ */
+#define PLUGGED_S 2.2f
+#define PLUGGED_WAIT_MS 1500
+
+static volatile uint32_t s_plugged_req_ms;   /* when it was asked for, in ms since boot (odd); 0 for none */
+static float s_plugged_at = -100.0f;
+
+void muse_ui_plugged(void)
+{
+    s_plugged_req_ms = (uint32_t)(esp_timer_get_time() / 1000) | 1;
+}
+
+/* How much Muse cheers for the plug, 0..1: started here when asked for (`face` drawn, idle). */
+static float update_plugged(muse_mode_t mode, float now, bool face)
+{
+    uint32_t req = s_plugged_req_ms;
+    uint32_t age = (uint32_t)(esp_timer_get_time() / 1000) - req;
+    if (req && (age > PLUGGED_WAIT_MS || (face && mode == MUSE_MODE_IDLE))) {
+        s_plugged_req_ms = 0;
+        if (face && mode == MUSE_MODE_IDLE) {
+            s_plugged_at = now;
+        }
+    }
+    if (mode != MUSE_MODE_IDLE) {
+        s_plugged_at = -100.0f;   /* a turn ends it */
+    }
+    float pt = now - s_plugged_at;
+    return pt < PLUGGED_S ? 1.0f - pt / PLUGGED_S : 0.0f;
+}
+
 static volatile bool s_snapshot;
 
 /* Streams the screen over the USB cable as base64 RGB565 (bench testing; needs
@@ -2320,10 +2354,12 @@ static void frame_tick(lv_timer_t *timer)
         .dizzy = update_quake(mode, now, quake && !photo_shown()),
         .reach = reach,
         .holding = holding,
+        .plugged = update_plugged(mode, now, !photo_shown()),
     };
     /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
-     * (or an earthquake). */
-    pose.sleepy = pose.bed && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f;
+     * (or an earthquake, or being plugged in). */
+    pose.sleepy = pose.bed && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f
+                  && pose.plugged <= 0.0f;
     muse_pixel_render(&pose);
     invalidate_muse();
 

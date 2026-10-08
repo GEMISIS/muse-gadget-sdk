@@ -51,6 +51,9 @@ enum {
     C_QUILTD,
     C_WOOD,
     C_WOODD,
+    C_BOLT,      /* plugged in (pose->plugged): the lightning bolt */
+    C_BOLTL,
+    C_BOLTD,
     C_COUNT,
 };
 
@@ -103,6 +106,9 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_QUILTD] = 0x3a4699,
     [C_WOOD] = 0x6b4a35,
     [C_WOODD] = 0x45301f,
+    [C_BOLT] = 0xffd23f,
+    [C_BOLTL] = 0xfff6b8,
+    [C_BOLTD] = 0x9a6410,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -889,6 +895,48 @@ static void draw_stars(float cx, float top, float t, float amount)
     }
 }
 
+/*
+ * Plugged in (pose->plugged, 1 easing to 0): a lightning bolt pops up beside
+ * the head at x, its top at row y, pulsing with a glow, and flickers out.
+ */
+static void draw_bolt(float x, float y, float t, float amount)
+{
+    static const char *const BOLT[] = {
+        "....###",
+        "...###.",
+        "..###..",
+        ".######",
+        "######.",
+        "..###..",
+        ".###...",
+        ".##....",
+        "##.....",
+    };
+    if (amount < 0.25f && fracf(t * 8.0f) < 0.5f) {
+        return;   /* flickering out */
+    }
+    float up = clampf((1.0f - amount) / 0.12f, 0, 1);   /* the pop: up from below, a little past, back */
+    int x0 = iround(x) - 3;
+    int y0 = iround(y + (1.0f - up) * 5.0f - sinf(up * 3.1416f) * 2.0f + sinf(t * 6.0f) * 0.7f);
+    float pulse = 0.5f + 0.5f * sinf(t * 10.0f);
+    for (int dy = -2; dy <= 10; dy++) {
+        for (int dx = -2; dx <= 8; dx++) {
+            float ex = (dx - 3.0f) / 5.5f, ey = (dy - 4.0f) / 6.5f;
+            float d = ex * ex + ey * ey;
+            if (d < 1.0f && bayer(x0 + dx, y0 + dy) < (1.0f - d) * (0.35f + 0.5f * pulse)) {
+                px(x0 + dx, y0 + dy, C_BOLTD);   /* the glow */
+            }
+        }
+    }
+    static const int8_t AROUND[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+    for (int k = 0; k < 4; k++) {
+        stamp(BOLT, 9, x0 + AROUND[k][0], y0 + AROUND[k][1], C_OUT, C_OUT);
+    }
+    stamp(BOLT, 9, x0, y0, pulse > 0.6f ? C_BOLTL : C_BOLT, C_BOLT);
+    px(x0 + 4, y0, C_WHITE);   /* a glint */
+    px(x0 + 1, y0 + 4, pulse > 0.6f ? C_WHITE : C_BOLTL);
+}
+
 /* The earthquake itself: grit shaken down from above. */
 static void draw_dust(float t, float amount)
 {
@@ -1141,6 +1189,11 @@ void muse_pixel_render(const muse_pose_t *p)
     if (happy > 0) {
         hop = fabsf(sinf(t * 9.0f)) * 3.0f * happy;
     }
+    /* Plugged in: a happy hop or two, arms up. */
+    float plug = mode == MUSE_MODE_IDLE ? clampf(p->plugged, 0, 1) : 0.0f;
+    float plug_hop = fabsf(sinf(t * 8.0f)) * 4.0f * plug;
+    hop = plug_hop > hop ? plug_hop : hop;
+    bool cheer = happy > 0 || plug > 0.1f;
     /* Dizzy: reeling from side to side, slowing as it comes round. */
     float dizzy = mode == MUSE_MODE_ERROR || mode == MUSE_MODE_OFF ? 0.0f : clampf(p->dizzy, 0, 1);
     lean += sinf(t * 11.0f) * 2.2f * dizzy;
@@ -1188,14 +1241,16 @@ void muse_pixel_render(const muse_pose_t *p)
     if (bed) {
         spk_count = (int)(spk_count * s_rise * 0.5f);   /* none asleep, a few sat up */
     }
+    spk_speed += 2.4f * plug;                /* plugged in: a whirl of them */
+    spk_count += (int)(6.0f * plug + 0.5f);
     draw_sparkles(p, j.cx, j.cy, false, spk_speed, spk_count);
 
     /* ---- limbs ---- */
     float base = j.cy + j.b;
     limb_t feet[2];
     float step = mode == MUSE_MODE_SPEAKING ? sinf(t * 5.0f) * 0.6f : 0.0f;
-    feet[0] = (limb_t){ j.cx - 7.0f, base - 0.5f + (happy > 0 ? hop * 0.3f : step), -0.15f };
-    feet[1] = (limb_t){ j.cx + 7.0f, base - 0.5f + (happy > 0 ? hop * 0.3f : -step), 0.15f };
+    feet[0] = (limb_t){ j.cx - 7.0f, base - 0.5f + (cheer ? hop * 0.3f : step), -0.15f };
+    feet[1] = (limb_t){ j.cx + 7.0f, base - 0.5f + (cheer ? hop * 0.3f : -step), 0.15f };
 
     limb_t arms[2];
     float adx = j.a + 0.3f;
@@ -1225,7 +1280,7 @@ void muse_pixel_render(const muse_pose_t *p)
     }
     default: {
         float sway = sinf(t * 1.8f + 0.6f) * 0.08f;
-        if (happy > 0) {
+        if (cheer) {
             /* Arms up and wiggling. */
             float wig = sinf(t * 14.0f) * 0.25f;
             arms[0] = (limb_t){ j.cx - adx - 1.0f, j.cy - 4.0f, 2.4f + wig };
@@ -1285,7 +1340,7 @@ void muse_pixel_render(const muse_pose_t *p)
     default:
         break;
     }
-    if (happy > 0.2f && mode != MUSE_MODE_ERROR) {
+    if ((happy > 0.2f || plug > 0.15f) && mode != MUSE_MODE_ERROR) {
         style = EYES_HAPPY;
         mouth = MOUTH_GRIN;
     }
@@ -1313,7 +1368,7 @@ void muse_pixel_render(const muse_pose_t *p)
         px(br - 1, by - 1, C_BROW); px(br, by - 1, C_BROW);
     }
 
-    float blush = 0.55f + happy * 0.45f + (mode == MUSE_MODE_SPEAKING ? 0.15f : 0.0f) + (p->holding ? 0.2f : 0.0f);
+    float blush = 0.55f + happy * 0.45f + (mode == MUSE_MODE_SPEAKING ? 0.15f : 0.0f) + (p->holding ? 0.2f : 0.0f) + plug * 0.3f;
     draw_blush(iround(j.fx - j.fa * 0.72f), iround(eye_y + 2), blush);
     draw_blush(iround(j.fx + j.fa * 0.72f), iround(eye_y + 2), blush);
 
@@ -1339,6 +1394,9 @@ void muse_pixel_render(const muse_pose_t *p)
     }
     if (mode == MUSE_MODE_ERROR) {
         draw_alert(iround(j.cx + 18), iround(top - 1));
+    }
+    if (plug > 0.05f) {
+        draw_bolt(j.cx + 19.0f, top + hop - 3.0f, t, plug);   /* not hopping with Muse: it'd leave the top */
     }
     if (dizzy > 0.05f) {
         draw_stars(j.cx, top, t, dizzy);
