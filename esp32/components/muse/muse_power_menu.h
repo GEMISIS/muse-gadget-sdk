@@ -45,9 +45,8 @@ void muse_power_menu_show_volume(int pct);
 
 /* LVGL task only: build onto the top layer, under the sleep cover. */
 void muse_power_menu_build(lv_obj_t *layer, int w, int h);
-/* The screen turned 180 degrees (muse_board_t.set_flip): the keys' hint
- * follows them. */
-void muse_power_menu_set_flipped(bool flipped);
+/* The screen turned (muse_board_t.set_turn): the keys' hint follows them. */
+void muse_power_menu_set_turn(int quarters);
 /* Every frame, asleep or not: handles queued keys, times the volume bar out
  * and closes everything when the screen sleeps. */
 void muse_power_menu_tick(float now);

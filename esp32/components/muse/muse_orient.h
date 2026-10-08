@@ -26,14 +26,15 @@ extern "C" {
 
 /*
  * Which way up the Waveshare 2.16's screen should be (CONFIG_MUSE_GADGET_AUTO_FLIP):
- * turned 180 degrees when the IMU says the board stands on its keys; lying
- * flat, as it was.
+ * the quarter turn that puts its picture upright however the board stands,
+ * from the IMU; lying flat, as it was.
  */
 #if CONFIG_MUSE_GADGET_AUTO_FLIP
-/* LVGL task, every frame; `now` in seconds. True: upside down. */
-bool muse_orient_flipped(float now);
+/* LVGL task, every frame; `now` in seconds. 0 upright (keys on top), 2 upside
+ * down, 1 and 3 on its sides (muse_board_t.set_turn). */
+int muse_orient_turn(float now);
 #else
-static inline bool muse_orient_flipped(float now) { (void)now; return false; }
+static inline int muse_orient_turn(float now) { (void)now; return 0; }
 #endif
 
 #ifdef __cplusplus

@@ -216,7 +216,7 @@ static void build_menu(lv_obj_t *layer, int w)
     lv_obj_set_style_text_color(s_hint, lv_color_hex(COLOR_DIM), 0);
     lv_obj_set_style_text_align(s_hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(s_hint, LV_LABEL_LONG_MODE_WRAP);
-    muse_power_menu_set_flipped(false);
+    muse_power_menu_set_turn(0);
 }
 
 static void build_volume(lv_obj_t *layer, int w, int h)
@@ -249,11 +249,17 @@ static void build_volume(lv_obj_t *layer, int w, int h)
     lv_obj_set_style_bg_color(s_volume_bar, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
 }
 
-void muse_power_menu_set_flipped(bool flipped)
+void muse_power_menu_set_turn(int quarters)
 {
-    /* Turned over, the keys are along the bottom, in the other order. */
-    lv_label_set_text(s_hint, flipped ? "Right key up, middle key down,\nleft key selects"
-                                      : "Left key up, middle key down,\nright key selects");
+    /* Turned over, the keys are along the bottom, in the other order; on its
+     * side, they're named rather than placed. */
+    static const char *const HINTS[4] = {
+        "Left key up, middle key down,\nright key selects",
+        "BOOT key up, PWR key down,\ntalk key selects",
+        "Right key up, middle key down,\nleft key selects",
+        "BOOT key up, PWR key down,\ntalk key selects",
+    };
+    lv_label_set_text(s_hint, HINTS[quarters & 3]);
 }
 
 void muse_power_menu_build(lv_obj_t *layer, int w, int h)

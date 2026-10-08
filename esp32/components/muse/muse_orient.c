@@ -15,8 +15,8 @@
  */
 
 /*
- * Upside down or not (muse_orient.h), from the IMU's smoothed gravity
- * (muse_imu_gravity), once the board has read the other way up for HOLD_S.
+ * Which quarter turn is up (muse_orient.h), from the IMU's smoothed gravity
+ * (muse_imu_gravity), once the board has read a new one for HOLD_S.
  */
 #include "muse_orient.h"
 
@@ -41,55 +41,69 @@ static const char *TAG = "orient";
  */
 #define FLIP_AXIS 1             /* 0 x, 1 y */
 #define FLIP_SIGN 1             /* +1 or -1 */
+/* The sign of the other in-plane axis when the board lies on the side that
+ * should be turn 1 (muse_board_t.set_turn): unconfirmed, flip it if the
+ * picture comes out upside down with the board on its side. */
+#define SIDE_SIGN 1
 
-/* Turns once that axis reads more than this the other way, and more than the
- * screen's other axis; tilted on its side or lying flat, it stays as it is. */
+/* Turns once gravity in the screen's plane is more than this; lying flat, it
+ * stays as it is. */
 #define TURN_G 0.35f
 #define CHECK_S 0.25f
-#define HOLD_S 1.0f             /* turned the other way this long before the screen follows */
+#define DIAGONAL_G 0.15f        /* this close to 45 degrees, it keeps the turn it has */
+#define HOLD_S 1.0f             /* turned this long before the screen follows */
 
-static bool s_flipped;
+static int s_turn;              /* the quarter turn on screen */
 static float s_next;
 static int s_mode = -1;
-static float s_turned_at = -1;   /* when the board started reading the other way up */
+static int s_want = -1;          /* the turn the board has read for a while, not yet taken */
+static float s_want_at;
 
-bool muse_orient_flipped(float now)
+static const char *const TURN_NAMES[] = { "upright", "on its side (1)", "upside down", "on its side (3)" };
+
+/* The quarter turn gravity points to within the screen's plane, however far
+ * the board leans back; -1 lying flat, or near a diagonal (it keeps its turn). */
+static int turn_of(const float g[3])
+{
+    float up = FLIP_SIGN * g[FLIP_AXIS];
+    float side = SIDE_SIGN * g[1 - FLIP_AXIS];
+    float a = fabsf(up), b = fabsf(side);
+    if ((a > b ? a : b) < TURN_G || fabsf(a - b) < DIAGONAL_G) {
+        return -1;
+    }
+    return a > b ? (up > 0 ? 0 : 2) : (side > 0 ? 1 : 3);
+}
+
+int muse_orient_turn(float now)
 {
     if (now < s_next) {
-        return s_flipped;
+        return s_turn;
     }
     s_next = now + CHECK_S;
 
     muse_gadget_mode_t mode = muse_gadget_mode();
     float g[3];
     bool known = muse_imu_gravity(g);
-    bool flipped = s_flipped;
-    if (known) {   /* every mode: whichever way up the board stands */
-        /* Up or down within the screen's plane, however far it leans back:
-         * propped on a stand, gravity splits about evenly with the face axis. */
-        float up = FLIP_SIGN * g[FLIP_AXIS];
-        float side = g[1 - FLIP_AXIS];
-        if (fabsf(up) > TURN_G && fabsf(up) > fabsf(side) && (up < 0) != s_flipped) {
-            if (s_turned_at < 0) {
-                s_turned_at = now;
-            }
-            if (now - s_turned_at >= HOLD_S) {
-                flipped = up < 0;
-            }
-        } else {
-            s_turned_at = -1;
-        }
+    int turn = s_turn;
+    int want = known ? turn_of(g) : -1;
+    if (want < 0 || want == s_turn) {
+        s_want = -1;
+    } else if (want != s_want) {
+        s_want = want;
+        s_want_at = now;
+    } else if (now - s_want_at >= HOLD_S) {
+        turn = want;
+        s_want = -1;
     }
-    if (flipped != s_flipped || (int)mode != s_mode) {
+    if (turn != s_turn || (int)mode != s_mode) {
         if (known) {
-            ESP_LOGI(TAG, "gravity x=%.2f y=%.2f z=%.2f -> %s (%s)", g[0], g[1], g[2],
-                     flipped ? "flipped" : "upright", muse_gadget_mode_name(mode));
-        } else {
-            ESP_LOGI(TAG, "gravity not known yet -> %s (%s)", flipped ? "flipped" : "upright",
+            ESP_LOGI(TAG, "gravity x=%.2f y=%.2f z=%.2f -> %s (%s)", g[0], g[1], g[2], TURN_NAMES[turn],
                      muse_gadget_mode_name(mode));
+        } else {
+            ESP_LOGI(TAG, "gravity not known yet -> %s (%s)", TURN_NAMES[turn], muse_gadget_mode_name(mode));
         }
     }
     s_mode = (int)mode;
-    s_flipped = flipped;
-    return flipped;
+    s_turn = turn;
+    return turn;
 }
