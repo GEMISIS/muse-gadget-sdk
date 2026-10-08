@@ -64,6 +64,7 @@ static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
 static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
 static lv_obj_t *s_mode;
+static lv_obj_t *s_advanced;   /* Muse, Bluetooth and Battery, under home */
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -76,8 +77,11 @@ typedef struct {
 } page_t;
 
 /* Home values. */
-static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home_sleep, *s_home_battery, *s_about;
+static lv_obj_t *s_home_wifi, *s_home_sound, *s_home_sleep;
 static lv_obj_t *s_home_mode;
+
+/* Advanced values. */
+static lv_obj_t *s_adv_hatch, *s_adv_ble, *s_adv_battery, *s_about;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -369,13 +373,26 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 static void drop(lv_obj_t *p)
 {
     lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text,
-                                 &s_mode };
+                                 &s_mode, &s_advanced };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
         }
     }
     lv_obj_delete_async(p);   /* we may be in one of its own events */
+}
+
+/* The page a page's back arrow goes to: the text page's opener, Advanced's
+ * own pages', or home. */
+static lv_obj_t *parent(lv_obj_t *p)
+{
+    if (p == s_text) {
+        return s_text_back;
+    }
+    if (p && (p == s_hatch || p == s_ble || p == s_battery)) {
+        return s_advanced;
+    }
+    return s_home;
 }
 
 static void show(lv_obj_t *p)
@@ -396,8 +413,10 @@ static void show(lv_obj_t *p)
         muse_voice_set_monitor(true);
     }
     muse_ui_set_swipe_enabled(p == s_home);
-    /* Home keeps nothing open; the text page returns to the page that opened it. */
-    if (prev && prev != s_home && (p == s_home || prev == s_text)) {
+    /* Only the way down to the page on screen is kept: going into a page
+     * keeps the one it opened from (Advanced, or what the text page is for),
+     * and going back drops the one left. Home is always kept. */
+    if (prev && prev != s_home && parent(p) != prev) {
         drop(prev);
     }
 }
@@ -409,7 +428,7 @@ static void go_back(void)
     if (s_current == s_text) {
         close_text();
     } else if (s_current != s_home) {
-        show(s_home);
+        show(parent(s_current));
     }
 }
 
@@ -1380,19 +1399,58 @@ static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
 static const page_t MODE = { &s_mode, build_mode_page };
 
+/* ---------- Advanced: what's set once, or looked at when something's wrong ---------- */
+
+static void build_advanced_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_advanced = page(tile, "ADVANCED", true, &list);
+    row(list, LV_SYMBOL_HOME, "Muse connection", &s_adv_hatch, on_nav, (void *)&HATCH);
+    row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_adv_ble, on_nav, (void *)&BLE);
+    row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_adv_battery, on_nav, (void *)&BATTERY);
+    s_about = note(list, "");
+}
+
+static void tick_advanced(void)
+{
+    muse_hatch_status_t h;
+    muse_hatch_status(&h);
+    set_text(s_adv_hatch, muse_hatch_state_name(h.state));
+
+    muse_ble_status_t b;
+    muse_ble_status(&b);
+    set_text(s_adv_ble, b.state == MUSE_BLE_OFF ? "Off" : (b.state == MUSE_BLE_CONNECTED ? "Connected" : "On"));
+
+    muse_power_t p = muse_state_power();
+    char buf[96];
+    if (p.battery_pct < 0) {
+        strlcpy(buf, p.usb ? "USB power" : "", sizeof(buf));
+    } else {
+        snprintf(buf, sizeof(buf), "%s%d%%", p.charging ? LV_SYMBOL_CHARGE " " : "", p.battery_pct);
+    }
+    set_text(s_adv_battery, buf);
+
+    muse_wifi_status_t w;
+    muse_wifi_status(&w);
+    snprintf(buf, sizeof(buf), "Firmware %s\nIP address %s", esp_app_get_description()->version,
+             w.state == MUSE_WIFI_CONNECTED ? w.ip : "none (no Wi-Fi)");
+    set_text(s_about, buf);
+}
+
+static const page_t ADVANCED = { &s_advanced, build_advanced_page };
+
+/* ---------- Home: the everyday settings ---------- */
+
 static void build_home(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_home = page(tile, "SETTINGS", false, &list);
     row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
-    row(list, LV_SYMBOL_HOME, "Muse", &s_home_hatch, on_nav, (void *)&HATCH);
-    row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
-    row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
+    row(list, LV_SYMBOL_EYE_CLOSE, "Screen sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
     row(list, LV_SYMBOL_SHUFFLE, "Mode", &s_home_mode, on_nav, (void *)&MODE);
-    row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
+    row(list, LV_SYMBOL_SETTINGS, "Advanced", NULL, on_nav, (void *)&ADVANCED);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
-    s_about = note(list, "");
 }
 
 static void tick_home(void)
@@ -1402,14 +1460,6 @@ static void tick_home(void)
     static const char *const WIFI_VALUES[] = { "Off", "Not set", "Joining", "", "Failed", "Not nearby" };
     set_text(s_home_wifi, w.state == MUSE_WIFI_CONNECTED ? w.ssid : WIFI_VALUES[w.state]);
 
-    muse_hatch_status_t h;
-    muse_hatch_status(&h);
-    set_text(s_home_hatch, muse_hatch_state_name(h.state));
-
-    muse_ble_status_t b;
-    muse_ble_status(&b);
-    set_text(s_home_ble, b.state == MUSE_BLE_OFF ? "Off" : (b.state == MUSE_BLE_CONNECTED ? "Connected" : "On"));
-
     if (muse_settings_speaker_on()) {
         set_val(s_home_sound, "Vol %d%%", muse_settings_volume());
     } else {
@@ -1417,19 +1467,6 @@ static void tick_home(void)
     }
     set_text(s_home_sleep, sleep_name(muse_settings_sleep_s()));
     set_text(s_home_mode, muse_gadget_mode_name(muse_gadget_mode()));
-
-    muse_power_t p = muse_state_power();
-    char buf[96];
-    if (p.battery_pct < 0) {
-        strlcpy(buf, "USB", sizeof(buf));
-    } else {
-        snprintf(buf, sizeof(buf), "%s%d%%", p.charging ? LV_SYMBOL_CHARGE " " : "", p.battery_pct);
-    }
-    set_text(s_home_battery, buf);
-
-    snprintf(buf, sizeof(buf), "Muse %s  -  %s", esp_app_get_description()->version,
-             w.state == MUSE_WIFI_CONNECTED ? w.ip : "offline");
-    set_text(s_about, buf);
 }
 
 /* ---------- public ---------- */
@@ -1471,6 +1508,8 @@ void muse_settings_ui_tick(bool visible)
         tick_battery();
     } else if (s_current == s_mode) {
         tick_mode();
+    } else if (s_current == s_advanced) {
+        tick_advanced();
     }
 }
 
