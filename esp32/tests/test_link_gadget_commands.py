@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 JSON = Path(os.environ.get(
     "CJSON_SOURCE_DIR", ROOT / "managed_components/espressif__cjson/cJSON"
 ))
-COMMANDS = ("show_text", "set_mode")
+COMMANDS = ("show_text", "set_mode", "set_chat")
 
 
 class LinkGadgetCommandsTest(unittest.TestCase):
@@ -69,6 +69,11 @@ class LinkGadgetCommandsTest(unittest.TestCase):
         cmake = (ROOT / "main/CMakeLists.txt").read_text()
         start = cmake.index("if(CONFIG_MUSE_ENABLED)")
         self.assertIn('"gadget_commands.c"', cmake[start:cmake.index("endif()", start)])
+
+    def test_chat_id_limit_matches_the_firmware(self):
+        # The harness fakes muse_settings.h with this limit, the Muse's own.
+        settings = (ROOT / "components/muse/muse_settings.h").read_text()
+        self.assertRegex(settings, r"#define MUSE_CHAT_SID_MAX 64\b")
 
     def test_mode_names_match_the_firmware(self):
         # The harness fakes muse_gadget_mode_parse with these names.

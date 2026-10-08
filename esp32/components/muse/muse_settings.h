@@ -33,6 +33,7 @@
 #define MUSE_HOST_MAX 63
 #define MUSE_VM_MAX 63
 #define MUSE_TOKEN_MAX 1023
+#define MUSE_CHAT_SID_MAX 64      /* a chat's session_id: letters, digits and dashes */
 
 #define MUSE_MIC_GAIN_MAX 36      /* dB; ES7210 PGA, applied in 3 dB steps */
 
@@ -46,6 +47,7 @@ typedef enum {
     MUSE_SETTING_BLE,
     MUSE_SETTING_HATCH,
     MUSE_SETTING_GADGET_MODE,   /* the mode, its manual override or the home network */
+    MUSE_SETTING_CHAT,          /* which Muse chat turns go to */
 } muse_setting_t;
 
 typedef void (*muse_setting_cb_t)(muse_setting_t what);
@@ -75,6 +77,15 @@ void muse_settings_hatch_host(char out[MUSE_HOST_MAX + 1]);
 void muse_settings_hatch_vm(char out[MUSE_VM_MAX + 1]);
 void muse_settings_hatch_token(char out[MUSE_TOKEN_MAX + 1]);
 size_t muse_settings_hatch_token_len(void);
+/*
+ * The Muse chat turns go to, as the session_id of POST /chat/stream: empty for
+ * the main chat. An id the Muse hasn't seen starts a new side chat.
+ */
+void muse_settings_chat_sid(char out[MUSE_CHAT_SID_MAX + 1]);
+/* This gadget's own side chat: "gadget-" and the Wi-Fi MAC in hex. */
+void muse_settings_gadget_chat_sid(char out[MUSE_CHAT_SID_MAX + 1]);
+/* 1 to MUSE_CHAT_SID_MAX letters, digits and dashes. */
+bool muse_settings_chat_sid_valid(const char *sid);
 
 void muse_settings_set_volume(int pct);
 void muse_settings_set_speaker_on(bool on);
@@ -94,3 +105,5 @@ void muse_settings_set_hatch_host(const char *host);
 void muse_settings_set_hatch_vm(const char *vm);
 /* append=true adds to the stored token (for chunked BLE writes). */
 esp_err_t muse_settings_set_hatch_token(const char *token, bool append);
+/* NULL or empty picks the main chat; false (and nothing saved) for an invalid id. */
+bool muse_settings_set_chat_sid(const char *sid);

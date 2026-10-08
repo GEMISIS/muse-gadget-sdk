@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "muse_gadget_mode.h"
+#include "muse_settings.h"
 #include "muse_state.h"
 
 // ---- Commands (host-tested) -------------------------------------------------
@@ -76,5 +77,49 @@ cJSON *gadget_set_mode_command(const cJSON *params) {
     muse_gadget_mode_pick(m);
     cJSON *payload = cJSON_CreateObject();
     cJSON_AddStringToObject(payload, "mode", mode->valuestring);
+    return gadget_ok(payload);
+}
+
+// A chat's session_id: 1 to MUSE_CHAT_SID_MAX letters, digits and dashes.
+static bool chat_sid_valid(const char *sid) {
+    size_t n = 0;
+    for (; sid[n]; n++) {
+        char c = sid[n];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '-')) {
+            return false;
+        }
+    }
+    return n >= 1 && n <= MUSE_CHAT_SID_MAX;
+}
+
+cJSON *gadget_set_chat_command(const cJSON *params) {
+    const cJSON *sid = cJSON_GetObjectItemCaseSensitive(params, "session_id");
+    const char *want = "";
+    if (sid && !cJSON_IsNull(sid)) {
+        if (!cJSON_IsString(sid) || !sid->valuestring) {
+            return gadget_error("invalid_param", "session_id must be a string");
+        }
+        want = sid->valuestring;
+    }
+    char gadget[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_gadget_chat_sid(gadget);
+    const char *chat = "custom";
+    if (!want[0] || !strcmp(want, "main")) {
+        want = "";
+        chat = "main";
+    } else if (!strcmp(want, "gadget") || !strcmp(want, gadget)) {
+        want = gadget;
+        chat = "gadget";
+    } else if (!chat_sid_valid(want)) {
+        return gadget_error("invalid_param",
+                            "session_id must be 1 to 64 letters, digits and dashes");
+    }
+    if (!muse_settings_set_chat_sid(want)) {
+        return gadget_error("invalid_param", "session_id was refused");
+    }
+    cJSON *payload = cJSON_CreateObject();
+    cJSON_AddStringToObject(payload, "chat", chat);
+    cJSON_AddStringToObject(payload, "session_id", want);
     return gadget_ok(payload);
 }

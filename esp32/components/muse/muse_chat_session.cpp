@@ -40,6 +40,9 @@
  * A typed turn (muse_hatch_text_turn, from the serial console) skips steps 1
  * and 3: the text goes to /chat/stream and the reply streams back to the
  * console as "@chat" lines instead of to the voice task.
+ *
+ * Turns go to the main chat, or to the side chat picked in the settings
+ * (muse_settings_chat_sid) as their session_id.
  */
 
 #include <atomic>
@@ -173,6 +176,19 @@ static char s_host[MUSE_HOST_MAX + 1];
  * if that fails or the connection drops, not after an idle close. */
 static int64_t s_auto_next_us;
 static int64_t s_auto_backoff_us = AUTO_RETRY_MIN_US;
+/*
+ * The chat (muse_settings_chat_sid): each turn names it in its session_id,
+ * and the subscription names the one it was opened for (s_sub_sid), unless
+ * s_sub_with_sid is off. A change sets s_chat_check; once no turn runs, a
+ * subscription for another chat is dropped and opened again.
+ */
+#if CONFIG_MUSE_CHAT_SUBSCRIBE_SESSION
+static std::atomic<bool> s_sub_with_sid{true};
+#else
+static std::atomic<bool> s_sub_with_sid{false};
+#endif
+static std::atomic<bool> s_chat_check{false};
+static char s_sub_sid[MUSE_CHAT_SID_MAX + 1];
 
 /* ---- Streams on the connection ---- */
 
@@ -805,10 +821,42 @@ static bool resolve_vm(char *err, size_t err_cap)
     return false;
 }
 
+/* The chat the subscription should name: "" for none (the main chat, or s_sub_with_sid off). */
+static void wanted_sub_sid(char out[MUSE_CHAT_SID_MAX + 1])
+{
+    out[0] = '\0';
+    if (s_sub_with_sid) {
+        muse_settings_chat_sid(out);
+    }
+}
+
+/* Connected, and subscribed for another chat than the chosen one. */
+static bool subscription_stale(void)
+{
+    char want[MUSE_CHAT_SID_MAX + 1];
+    wanted_sub_sid(want);
+    return s_connected && strcmp(want, s_sub_sid) != 0;
+}
+
 static bool open_subscription(void)
 {
     s_last_seq = 0;
-    s_conn.sub_id = open_stream(K_SUB, "POST", "/chat/subscribe", "application/json", "application/x-ndjson", "{}",
+    char sid[MUSE_CHAT_SID_MAX + 1], body[MUSE_CHAT_SUB_BODY_MAX];
+    wanted_sub_sid(sid);
+    if (!muse_chat_sub_body(sid, body, sizeof(body))) {
+        return false;
+    }
+    strlcpy(s_sub_sid, sid, sizeof(s_sub_sid));
+    char chosen[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(chosen);
+    if (sid[0]) {
+        ESP_LOGI(TAG, "subscribing to replies in chat %s", sid);
+    } else if (chosen[0]) {
+        ESP_LOGI(TAG, "subscribing to replies with {} (chat %s is picked, subscribe leaves it out)", chosen);
+    } else {
+        ESP_LOGI(TAG, "subscribing to replies in the main chat");
+    }
+    s_conn.sub_id = open_stream(K_SUB, "POST", "/chat/subscribe", "application/json", "application/x-ndjson", body,
                                 true);
     return s_conn.sub_id != 0;
 }
@@ -1018,6 +1066,9 @@ static bool turn_start(uint32_t gen, bool text)
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
     resampler_init(&s_turn.up, MIC_RATE, DICT_RATE);
+    if (subscription_stale()) {
+        disconnect("chat changed");   /* subscribe again for the chat this turn goes to */
+    }
     if (!ensure_connected()) {
         turn_fail(muse_hatch_configured() ? "CAN'T REACH MUSE" : "MUSE NOT SET UP");
         return false;
@@ -1131,8 +1182,14 @@ static bool open_note(void)
     if (!s_turn.chat_id) {
         return false;
     }
-    s_turn.body_sent = sizeof(MUSE_HATCH_NOTE_HEAD) - 1;
-    if (!send_body(s_turn.chat_id, reinterpret_cast<const uint8_t *>(MUSE_HATCH_NOTE_HEAD), sizeof(MUSE_HATCH_NOTE_HEAD) - 1, false)) {
+    char sid[MUSE_CHAT_SID_MAX + 1], head[MUSE_CHAT_NOTE_HEAD_MAX];
+    muse_settings_chat_sid(sid);
+    size_t n = muse_chat_note_head(sid, head, sizeof(head));
+    if (sid[0]) {
+        ESP_LOGI(TAG, "voice note to chat %s", sid);
+    }
+    s_turn.body_sent = n;
+    if (!n || !send_body(s_turn.chat_id, reinterpret_cast<const uint8_t *>(head), n, false)) {
         return false;
     }
     muse_hatch_wav_header(s_turn.note, MIC_RATE);
@@ -1187,6 +1244,12 @@ static void send_chat(const char *text, const char *modality)
     cJSON *body = cJSON_CreateObject();
     cJSON_AddStringToObject(body, "message", text);
     cJSON_AddStringToObject(body, "output_modality", modality);
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(sid);
+    if (sid[0]) {
+        cJSON_AddStringToObject(body, "session_id", sid);
+        ESP_LOGI(TAG, "message to chat %s", sid);
+    }
     char *json = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     size_t len = json ? strlen(json) : 0;
@@ -1239,7 +1302,10 @@ static void text_begin(const char *text)
     send_chat(text, "text");
     if (s_turn.phase == P_WAIT_REPLY) {
         mark(M_SENT);
-        muse_hatch_console("sent", nullptr, "\"bytes\":%u", (unsigned)strlen(text));
+        char sid[MUSE_CHAT_SID_MAX + 1];
+        muse_settings_chat_sid(sid);
+        muse_hatch_console("sent", nullptr, "\"bytes\":%u,\"chat\":\"%s\"", (unsigned)strlen(text),
+                           sid[0] ? sid : "main");
     }
 }
 
@@ -1937,6 +2003,11 @@ static bool on_http_error(stream_t *s, const ApplicationResponseView &resp)
     memcpy(body, resp.body.data(), n);
     body[n] = '\0';
     ESP_LOGW(TAG, "stream %lld: HTTP %d %s", (long long)s->id, (int)resp.status, body);
+    if (s->kind == K_SUB && s_sub_sid[0] && resp.status >= 400 && resp.status < 500) {
+        /* The subscription doesn't take a session_id after all: fall back to {} until restart. */
+        ESP_LOGW(TAG, "subscribe refused chat %s: subscribing with {} from now on", s_sub_sid);
+        s_sub_with_sid = false;
+    }
     return stream_end(s, false);
 }
 
@@ -2110,6 +2181,14 @@ static void hatch_task(void *arg)
             continue;
         }
 
+        /* The chat changed: subscribe for the new one once no turn needs this subscription. */
+        if (s_turn.phase == P_IDLE && s_chat_check.exchange(false) && subscription_stale()) {
+            disconnect("chat changed");
+            muse_hatch_report(MUSE_HATCH_UNTESTED, "");
+            s_auto_next_us = 0;   /* and connect again straight away */
+            continue;
+        }
+
         /* Resting, Wi-Fi may nap; don't wait for the server to go quiet. */
         if (s_resting && !muse_wifi_connected()) {
             drop_connection("Wi-Fi down");
@@ -2220,6 +2299,24 @@ extern "C" void muse_hatch_chat_connect(void)
 extern "C" void muse_hatch_chat_forget(void)
 {
     post(CMD_FORGET, 0);
+}
+
+extern "C" void muse_chat_changed(void)
+{
+    s_chat_check = true;
+    post(CMD_WAKE, 0);   /* a resting task looks now */
+}
+
+extern "C" void muse_chat_set_subscribe_session(bool on)
+{
+    ESP_LOGI(TAG, "subscribe %s", on ? "names the picked chat" : "with {}");
+    s_sub_with_sid = on;
+    muse_chat_changed();
+}
+
+extern "C" bool muse_chat_subscribe_session(void)
+{
+    return s_sub_with_sid;
 }
 
 extern "C" bool muse_hatch_ready(void)

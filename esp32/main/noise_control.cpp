@@ -1372,6 +1372,15 @@ static char *build_register_json(void) {
                 "screen, captions only). Holds until the next scheduled "
                 "switch, at 05:00 or 21:00.",
                 mode_required, nullptr);
+    cJSON *chat_optional = cJSON_CreateObject();
+    cJSON_AddItemToObject(chat_optional, "session_id",
+                          string_param("main (or empty) for the main chat, "
+                                       "gadget for this gadget's own chat, or "
+                                       "a chat's id: letters, digits, dashes."));
+    add_command(commands, "set_chat",
+                "Pick which chat the gadget's messages and voice notes go "
+                "to. Returns chat and session_id.",
+                nullptr, chat_optional);
 #endif
 
 #if CONFIG_HOMEHUB_VOICE

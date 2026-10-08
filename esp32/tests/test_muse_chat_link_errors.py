@@ -73,6 +73,11 @@ static uint32_t esp_random(void) { return 42; }
 static bool muse_link_hatch_linked(void) { return true; }
 static bool muse_wifi_connected(void) { return true; }
 static bool muse_link_req_ready(void) { return true; }
+#define CONFIG_MUSE_CHAT_SUBSCRIBE_SESSION 1
+#define MUSE_CHAT_SID_MAX 64
+static char chat_sid[MUSE_CHAT_SID_MAX + 1];   /* "" = the main chat */
+static void muse_settings_chat_sid(char *out) { strcpy(out, chat_sid); }
+static char note_head[512];
 typedef void (*frame_fn)(void *,int,const uint8_t *,size_t,bool);
 static struct { frame_fn cb; void *ctx; int id; } requests[2];
 static int next_id, allocation_attempts, fail_allocation, fail_send;
@@ -106,12 +111,16 @@ static int64_t muse_link_req_open(const char *verb,const char *path,const char *
 static bool muse_link_req_send(int64_t id,const void *data,size_t len,bool end,int wait) {
     (void)wait;
     if(fail_send) { fail_send--; return false; }
-    if(id==requests[1].id) { assert(end && len==2 && !memcmp(data,"{}",2)); operation(4); }
+    if(id==requests[1].id) {
+        char want[96]; size_t n=muse_chat_sub_body(chat_sid,want,sizeof(want));
+        assert(end && n && len==n && !memcmp(data,want,n)); operation(4);
+    }
     else {
         assert(id==requests[0].id);
         if(end) operation(5);
         else if(len>20 && ((const char*)data)[0]=='{') {
             assert(strstr(data,"\"output_modality\":\"text\"")); operation(2);
+            assert(len<sizeof(note_head)); memcpy(note_head,data,len); note_head[len]=0;
         }
     }
     return true;
@@ -331,6 +340,27 @@ static void text_modality(void) {
     assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(text,"output_modality")),"text"));
     cJSON_Delete(text);
 }
+/* A side chat: the note and the subscription both name it. */
+static void side_chat(void) {
+    strcpy(chat_sid,"gadget-0a1b2c3d4e5f");
+    begin(); release();
+    char body[600]; snprintf(body,sizeof(body),"%s%s",note_head,MUSE_HATCH_NOTE_TAIL);
+    cJSON *note=cJSON_Parse(body); assert(note);
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(note,"session_id")),chat_sid));
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(note,"output_modality")),"text"));
+    assert(cJSON_IsArray(cJSON_GetObjectItem(note,"items")));
+    cJSON_Delete(note);
+    note_ack(); final("reply","note","Side chat"); assert_replied("Side chat");
+    muse_hatch_turn_cancel();
+    /* Back to the main chat: no session_id at all. */
+    chat_sid[0]=0; begin(); release();
+    snprintf(body,sizeof(body),"%s%s",note_head,MUSE_HATCH_NOTE_TAIL);
+    note=cJSON_Parse(body); assert(note && !cJSON_GetObjectItem(note,"session_id")); cJSON_Delete(note);
+    assert(!strcmp(note_head,MUSE_HATCH_NOTE_HEAD));
+    /* A head that doesn't fit isn't sent half-built. */
+    char small[40]; assert(!muse_chat_note_head("gadget-0a1b2c3d4e5f",small,sizeof(small)));
+    assert(!muse_chat_sub_body("gadget-0a1b2c3d4e5f",small,10));
+}
 int main(int argc,char **argv) {
     assert(argc==2); muse_hatch_start();
     switch(atoi(argv[1])) {
@@ -345,6 +375,7 @@ int main(int argc,char **argv) {
     case 8: rejected_deltas(); break;
     case 9: rejected_before_ack(); break;
     case 10: bounded_rejections(); break;
+    case 11: side_chat(); break;
     default: return 2;
     }
     muse_hatch_turn_cancel();
@@ -402,3 +433,6 @@ int main(int argc,char **argv) {
 
     def test_rejection_capacity_preserves_correlation_and_resets(self):
         self.run_case(10)
+
+    def test_side_chat_names_its_session_in_the_note_and_subscription(self):
+        self.run_case(11)

@@ -632,6 +632,43 @@ static void set_face(const char *name)
 }
 
 /*
+ * The Muse chat turns go to: "chat_sid" prints it, "chat_sid=ID" picks a side
+ * chat ("chat_sid=" or "=main" the main one, "=gadget" this gadget's own), and
+ * "chat_sub=0" or "=1" says whether the reply subscription names it
+ * (muse_chat_set_subscribe_session). Each answers with
+ *   @chat_sid {"chat":"main|gadget|custom","session_id":ID,"subscribe_session":BOOL}
+ * or "@chat_sid.error" and why.
+ */
+static void chat_sid_command(const char *line)
+{
+    if (!strncmp(line, "chat_sub=", 9)) {
+        muse_chat_set_subscribe_session(strcmp(line + 9, "0") != 0);
+    } else if (line[8] == '=') {
+        const char *want = line + 9;
+        char gadget[MUSE_CHAT_SID_MAX + 1];
+        muse_settings_gadget_chat_sid(gadget);
+        if (!strcmp(want, "main")) {
+            want = "";
+        } else if (!strcmp(want, "gadget")) {
+            want = gadget;
+        }
+        if (!muse_settings_set_chat_sid(want)) {
+            printf("@chat_sid.error \"%s\": use 1 to %d letters, digits and dashes, main or gadget\n", want,
+                   MUSE_CHAT_SID_MAX);
+            fflush(stdout);
+            return;
+        }
+    }
+    char sid[MUSE_CHAT_SID_MAX + 1], gadget[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(sid);
+    muse_settings_gadget_chat_sid(gadget);
+    printf("@chat_sid {\"chat\":\"%s\",\"session_id\":\"%s\",\"subscribe_session\":%s}\n",
+           !sid[0] ? "main" : !strcmp(sid, gadget) ? "gadget" : "custom", sid,
+           muse_chat_subscribe_session() ? "true" : "false");
+    fflush(stdout);
+}
+
+/*
  * Console-only commands; false for setup commands. Their buffers are taken
  * per command: without PSRAM, static ones would hold internal RAM for good.
  */
@@ -678,6 +715,10 @@ static bool console_command(char *line, bool whole)
         set_face(line + 5);
         return true;
     }
+    if (!strcmp(line, "chat_sid") || !strncmp(line, "chat_sid=", 9) || !strncmp(line, "chat_sub=", 9)) {
+        chat_sid_command(line);
+        return true;
+    }
     if (strncmp(line, "chat", 4) != 0) {
         return false;
     }
@@ -709,8 +750,9 @@ static bool console_command(char *line, bool whole)
  * the device's state, "power" the battery meter (muse_battery.h) and
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
  * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
- * (see set_face), and "chat=" sends a typed message to Hatch (see chat_line
- * and tools/muse/chat.py).
+ * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
+ * and tools/muse/chat.py), and "chat_sid=" picks the chat it goes to (see
+ * chat_sid_command).
  */
 static void serial_task(void *arg)
 {
