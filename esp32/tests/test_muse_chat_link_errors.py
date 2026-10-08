@@ -361,8 +361,24 @@ static void side_chat(void) {
     note=cJSON_Parse(body); assert(note && !cJSON_GetObjectItem(note,"session_id")); cJSON_Delete(note);
     assert(!strcmp(note_head,MUSE_HATCH_NOTE_HEAD));
     /* A head that doesn't fit isn't sent half-built. */
-    char small[40]; assert(!muse_chat_note_head("6d757365-6761-4467-8000-0a1b2c3d4e5f",small,sizeof(small)));
+    char small[40]; assert(!muse_chat_note_head("6d757365-6761-4467-8000-0a1b2c3d4e5f","",small,sizeof(small)));
     assert(!muse_chat_sub_body("6d757365-6761-4467-8000-0a1b2c3d4e5f",small,10));
+    /* A message with the audio (the gadget mode's contract), escaped for JSON. */
+    const char *said="[gadget mode: DESK] \"Quotes\", a \\ and\ta tab \xe2\x80\x94 kept\n\x01";
+    char head[MUSE_CHAT_NOTE_HEAD_MAX];
+    size_t n=muse_chat_note_head("6d757365-6761-4467-8000-0a1b2c3d4e5f",said,head,sizeof(head));
+    assert(n==strlen(head));
+    snprintf(body,sizeof(body),"%sAAAA%s",head,MUSE_HATCH_NOTE_TAIL);
+    note=cJSON_Parse(body); assert(note);
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(note,"message")),said));
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(note,"session_id")),"6d757365-6761-4467-8000-0a1b2c3d4e5f"));
+    cJSON *file=cJSON_GetArrayItem(cJSON_GetObjectItem(note,"items"),0);
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(file,"data_base64")),"AAAA"));
+    cJSON_Delete(note);
+    /* No message is the plain head; one that doesn't fit isn't cut. */
+    assert(muse_chat_note_head("",NULL,head,sizeof(head)) && !strcmp(head,MUSE_HATCH_NOTE_HEAD));
+    char longer[MUSE_CHAT_NOTE_HEAD_MAX]; memset(longer,'"',sizeof(longer)-1); longer[sizeof(longer)-1]=0;
+    assert(!muse_chat_note_head("",longer,head,sizeof(head)));
 }
 int main(int argc,char **argv) {
     assert(argc==2); muse_hatch_start();

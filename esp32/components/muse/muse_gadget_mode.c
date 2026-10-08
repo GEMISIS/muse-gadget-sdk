@@ -17,7 +17,6 @@
 #include "muse_gadget_mode.h"
 
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -27,14 +26,13 @@
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
-#include "muse_chat.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_wifi.h"
 
 static const char *TAG = "muse_mode";
 
-#define TICK_MS 2000            /* Wi-Fi and the pending message */
+#define TICK_MS 2000            /* Wi-Fi, and saving what chats were told */
 #define SCHEDULE_TICKS 30       /* the schedule: every minute */
 #define NIGHT_FROM_H 21
 #define NIGHT_TO_H 5
@@ -61,7 +59,7 @@ static const char *const KEYS[MUSE_GADGET_MODE_COUNT] = {
     [MUSE_GADGET_ON_THE_GO] = "on_the_go",
 };
 
-/* What the Muse is told when the mode changes to each. */
+/* What a chat is told of each mode, after the words of its next message. */
 static const char *const CONTRACTS[MUSE_GADGET_MODE_COUNT] = {
     [MUSE_GADGET_DESK] =
         "[gadget mode: DESK] DESK mode is on. Be proactive: offer feedback, suggest follow-ups, "
@@ -76,9 +74,29 @@ static const char *const CONTRACTS[MUSE_GADGET_MODE_COUNT] = {
         "explicitly asked (hotspot data).",
 };
 
+/* ---- Telling the chats ---- */
+
+const char *muse_gadget_mode_context(const char *sid, int *mode)
+{
+    muse_gadget_mode_t m = muse_gadget_mode();
+    if (mode) {
+        *mode = m;
+    }
+    return muse_settings_chat_told(sid ? sid : "") == (int)m ? NULL : CONTRACTS[m];
+}
+
+void muse_gadget_mode_told(const char *sid, int mode)
+{
+    if (!sid || mode < 0 || mode >= MUSE_GADGET_MODE_COUNT || muse_settings_chat_told(sid) == mode) {
+        return;
+    }
+    ESP_LOGI(TAG, "chat %s told: %s mode", sid[0] ? sid : "main", NAMES[mode]);
+    muse_settings_chat_set_told(sid, mode);
+}
+
+/* ---- The schedule ---- */
+
 static SemaphoreHandle_t s_lock;
-static TaskHandle_t s_task;
-static volatile int s_pending = -1;         /* the mode whose message is still to go, or -1 */
 static volatile uint32_t s_suggest_seq;     /* bumped to offer On-the-go */
 
 /* LVGL task only. */
@@ -96,6 +114,11 @@ muse_gadget_mode_t muse_gadget_mode(void)
 const char *muse_gadget_mode_name(muse_gadget_mode_t mode)
 {
     return mode < MUSE_GADGET_MODE_COUNT ? NAMES[mode] : "?";
+}
+
+const char *muse_gadget_mode_key(muse_gadget_mode_t mode)
+{
+    return mode < MUSE_GADGET_MODE_COUNT ? KEYS[mode] : NULL;
 }
 
 bool muse_gadget_mode_parse(const char *name, muse_gadget_mode_t *out)
@@ -174,13 +197,9 @@ static void apply(muse_gadget_mode_t mode, const char *why)
     if (mode == muse_gadget_mode()) {
         return;
     }
-    ESP_LOGI(TAG, "%s mode (%s)", NAMES[mode], why);
+    ESP_LOGI(TAG, "%s mode (%s): each chat hears it with its next message", NAMES[mode], why);
     muse_settings_set_gadget_mode(mode);
     muse_state_set_caption("%s MODE", mode == MUSE_GADGET_DESK ? "DESK" : mode == MUSE_GADGET_NIGHT ? "NIGHT" : "ON-THE-GO");
-    s_pending = mode;   /* the latest change is the one the Muse needs */
-    if (s_task) {
-        xTaskNotifyGive(s_task);
-    }
 }
 
 void muse_gadget_mode_pick(muse_gadget_mode_t mode)
@@ -195,82 +214,6 @@ void muse_gadget_mode_pick(muse_gadget_mode_t mode)
     muse_settings_set_mode_override(true, clock_valid(&now, &tm) ? next_boundary(now) : 0);
     apply(mode, "picked");
     xSemaphoreGive(s_lock);
-}
-
-/*
- * The chats told which mode since boot, so switching back to one doesn't tell
- * it again (each told message stays in that chat's history). With s_lock held.
- */
-#define TOLD_MAX (MUSE_CHATS_MAX + 4)
-static struct {
-    char sid[MUSE_CHAT_SID_MAX + 1];   /* "" for the main chat */
-    int8_t mode;
-} s_told[TOLD_MAX];
-static int s_told_n;
-
-static int told_mode(const char *sid)
-{
-    for (int i = 0; i < s_told_n; i++) {
-        if (!strcmp(s_told[i].sid, sid)) {
-            return s_told[i].mode;
-        }
-    }
-    return -1;
-}
-
-static void set_told(const char *sid, int mode)
-{
-    int i = 0;
-    while (i < s_told_n && strcmp(s_told[i].sid, sid)) {
-        i++;
-    }
-    if (i == s_told_n) {
-        if (s_told_n == TOLD_MAX) {
-            memmove(&s_told[0], &s_told[1], sizeof(s_told[0]) * (TOLD_MAX - 1));   /* full: the oldest goes */
-            i = TOLD_MAX - 1;
-        } else {
-            s_told_n++;
-        }
-        strlcpy(s_told[i].sid, sid, sizeof(s_told[i].sid));
-    }
-    s_told[i].mode = (int8_t)mode;
-}
-
-static void resend(bool started)
-{
-    if (!s_lock) {
-        return;
-    }
-    muse_gadget_mode_t mode = muse_gadget_mode();
-    char sid[MUSE_CHAT_SID_MAX + 1];
-    muse_settings_chat_sid(sid);
-    if (!started && muse_settings_chat_untitled(sid)) {
-        /* Told once the first message has titled it (muse_gadget_mode_chat_started). */
-        ESP_LOGI(TAG, "%s mode: telling the new chat after its first message", NAMES[mode]);
-        return;
-    }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    if (told_mode(sid) == (int)mode) {
-        xSemaphoreGive(s_lock);
-        ESP_LOGI(TAG, "%s mode: this chat was told already", NAMES[mode]);
-        return;
-    }
-    s_pending = mode;
-    xSemaphoreGive(s_lock);
-    ESP_LOGI(TAG, "%s mode: telling the Muse again", NAMES[mode]);
-    if (s_task) {
-        xTaskNotifyGive(s_task);
-    }
-}
-
-void muse_gadget_mode_resend(void)
-{
-    resend(false);
-}
-
-void muse_gadget_mode_chat_started(void)
-{
-    resend(true);
 }
 
 bool muse_gadget_mode_set_away(void)
@@ -374,46 +317,6 @@ static void check_network(void)
     s_suggest_seq++;
 }
 
-/* The pending mode's message, once the Muse can take a typed turn: one isn't
- * taken while a voice turn runs, so wait those out. */
-static void send_pending(void)
-{
-    int mode = s_pending;
-    if (mode < 0) {
-        return;
-    }
-#if CONFIG_MUSE_HATCH
-    float t;
-    muse_mode_t face = muse_state_mode(&t);
-    if (!muse_hatch_ready() || muse_hatch_turn_busy() || face == MUSE_MODE_LISTENING
-        || face == MUSE_MODE_THINKING || face == MUSE_MODE_SPEAKING) {
-        return;   /* try again next tick */
-    }
-    char *text = strdup(CONTRACTS[mode]);
-    if (!text) {
-        return;
-    }
-    char sid[MUSE_CHAT_SID_MAX + 1];
-    muse_settings_chat_sid(sid);
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    bool current = s_pending == mode;
-    if (current) {
-        s_pending = -1;
-        set_told(sid, mode);
-    }
-    xSemaphoreGive(s_lock);
-    if (!current) {
-        free(text);   /* changed again meanwhile: send that one next */
-        return;
-    }
-    ESP_LOGI(TAG, "telling the Muse: %s mode", NAMES[mode]);
-    muse_hatch_text_turn(text);   /* frees it */
-#else
-    ESP_LOGW(TAG, "%s mode: this build can't send the Muse a typed turn", NAMES[mode]);
-    s_pending = -1;
-#endif
-}
-
 static void mode_task(void *arg)
 {
     (void)arg;
@@ -422,9 +325,8 @@ static void mode_task(void *arg)
             check_schedule();
         }
         check_network();
-        send_pending();
-        muse_settings_chats_flush();   /* titles the Muse gave new chats */
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(TICK_MS));
+        muse_settings_chats_flush();   /* titles the Muse gave new chats, and what chats were told */
+        vTaskDelay(pdMS_TO_TICKS(TICK_MS));
     }
 }
 
@@ -433,7 +335,7 @@ void muse_gadget_mode_start(void)
     s_lock = xSemaphoreCreateMutex();
     ESP_LOGI(TAG, "%s mode%s", NAMES[muse_gadget_mode()], muse_settings_mode_override(NULL) ? " (picked)" : "");
     /* Internal stack: it writes NVS, which can't run with a stack in PSRAM. */
-    if (!s_lock || xTaskCreate(mode_task, "muse_mode", 3072, NULL, 3, &s_task) != pdPASS) {
+    if (!s_lock || xTaskCreate(mode_task, "muse_mode", 3072, NULL, 3, NULL) != pdPASS) {
         ESP_LOGE(TAG, "couldn't start the mode schedule");
     }
 }

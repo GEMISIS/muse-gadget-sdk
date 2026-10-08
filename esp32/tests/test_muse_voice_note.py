@@ -245,8 +245,14 @@ static int64_t open_stream(kind_t kind, const char *verb, const char *path, cons
     return 7;
 }
 /* muse_settings.h: notes go to the main chat, so the head has no session_id. */
-#define MUSE_CHAT_SID_MAX 36
 static void muse_settings_chat_sid(char out[MUSE_CHAT_SID_MAX + 1]) { out[0] = 0; }
+static bool muse_settings_chat_untitled(const char *) { return false; }
+/* muse_gadget_mode.h: the main chat last heard another mode when the test says so. */
+static const char *muse_gadget_mode_context(const char *, int *mode) { *mode = 0; return getenv("NOTE_MODE_CONTEXT"); }
+/* A dictated turn whose dictation failed: the kept recording goes as the note. */
+static bool send_reset(int64_t) { return true; }
+static void free_rec(void) { free(s_turn.rec); s_turn.rec = nullptr; }
+static bool pump_mic(void) { CHECK(!"dictation is down"); return false; }
 static void mark(mark_t) {}
 static int64_t now_us(void) { return 4242; }
 static const char *failed = "-";
@@ -271,15 +277,22 @@ int main(int argc, char **argv)
     s_turn.chunk = static_cast<uint8_t *>(malloc(DICT_CHUNK_BYTES + sizeof(MUSE_HATCH_NOTE_TAIL)));
     s_turn.note = static_cast<uint8_t *>(malloc(NOTE_PART_BYTES));
     s_turn.phase = P_LISTEN;
-    bool ok = open_note();
+    /* NOTE_DICTATED: the recording is kept for dictation, which failed; the note goes on the release. */
+    bool dictated = getenv("NOTE_DICTATED");
+    if (dictated) {
+        s_turn.dictating = s_turn.dict_failed = true;
+        s_turn.rec = static_cast<uint8_t *>(malloc(NOTE_MAX_BYTES));
+    }
+    bool ok = dictated || open_note();
     while (ok && s_turn.phase == P_LISTEN && mic_avail < mic_len) {
         mic_avail = mic_len - mic_avail < step ? mic_len : mic_avail + step;
-        ok = record_note();
+        ok = dictated ? record_dictated() : record_note();
     }
     if (ok && s_turn.phase == P_LISTEN && release) {
         s_turn.end_requested = true;
-        ok = record_note();
+        ok = dictated ? record_dictated() : record_note();
     }
+    CHECK(!dictated || s_turn.phase != P_WAIT_REPLY || !s_turn.rec);
     printf("ok=%d failed=", ok);
     for (const char *c = failed; *c; c++) putchar(*c == ' ' ? '_' : *c);
     static const char *const phases[] = {"idle", "listen", "wait_final", "wait_reply"};
@@ -293,6 +306,7 @@ int main(int argc, char **argv)
     free(mic);
     free(s_turn.chunk);
     free(s_turn.note);
+    free(s_turn.rec);
     return 0;
 }
 '''
@@ -318,7 +332,7 @@ class HatchVoiceNote(NoteRequestAssertions, unittest.TestCase):
 
         constants = source[source.index('#define MIC_RATE'):source.index('/* ---- Voice task')]
         types = source[source.index('enum phase_t'):source.index('/* 10 KB')]
-        note = source[source.index('static bool send_note_part('):source.index('static void send_chat(')]
+        note = source[source.index('static void message_to('):source.index('static void send_chat(')]
         code = r'''
 #include <cstdint>
 #include <cstdio>
@@ -331,6 +345,7 @@ class HatchVoiceNote(NoteRequestAssertions, unittest.TestCase):
 /* Not assert(): the fakes must still check under -DNDEBUG. */
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #c); exit(3); } } while (0)
 typedef struct fake_stream *StreamBufferHandle_t;
+#define MUSE_CHAT_SID_MAX 36
 ''' + constants + line('enum kind_t') + line('enum mark_t') + types + HATCH_DRIVER + note + HATCH_MAIN
         (out / 'note.cpp').write_text(code)
         flags = ['-Wall', '-Wextra', '-Werror', *SANITIZE,
@@ -352,10 +367,12 @@ typedef struct fake_stream *StreamBufferHandle_t;
                 raise AssertionError(result.stdout + result.stderr)
         cls.binary = out / 'note'
 
-    def record(self, pcm, step, release=True, sched=()):
+    def record(self, pcm, step, release=True, sched=(), context=None, dictated=False):
+        env = {**ENV, **({'NOTE_MODE_CONTEXT': context} if context else {}),
+               **({'NOTE_DICTATED': '1'} if dictated else {})}
         ran = subprocess.run([str(self.binary), str(step), '1' if release else '0',
                               ','.join(map(str, sched)) or '-'],
-                             input=pcm, capture_output=True, env=ENV)
+                             input=pcm, capture_output=True, env=env)
         self.assertEqual(ran.returncode, 0, ran.stderr.decode(errors='replace'))
         self.assertEqual(ran.stderr, b'')
         return parse_run(ran.stdout)
@@ -404,6 +421,34 @@ typedef struct fake_stream *StreamBufferHandle_t;
         pcm = pcm_bytes(20 * self.MIC + 3200, 6)
         run = self.record(pcm, 30000, release=False)
         self.assert_sent(run, pcm[:20 * self.MIC])
+
+    def test_failed_dictation_sends_the_kept_recording_as_the_note(self):
+        # A new chat's first turn is dictated, its recording kept; dictation
+        # hearing nothing sends that recording on the release, as the same note.
+        for n in (2 * self.PART_PCM - 44, self.PART_PCM - 44 + 3 * self.PART_PCM + 1000):
+            pcm = pcm_bytes(n, n)
+            with self.subTest(n=n):
+                self.assert_sent(self.record(pcm, 320, dictated=True), pcm)
+        pcm = pcm_bytes(20 * self.MIC + 3200, 8)   # the 20 s cap ends it too
+        self.assert_sent(self.record(pcm, 30000, release=False, dictated=True), pcm[:20 * self.MIC])
+        run = self.record(pcm_bytes(3200, 9), 320, dictated=True)
+        self.assertEqual((run['failed'], run['parts']), ("DIDN'T CATCH THAT", []))
+
+    def test_mode_contract_goes_as_the_message(self):
+        # A chat that last heard another gadget mode gets the contract as the
+        # note's text, escaped; the audio is as ever.
+        context = ('[gadget mode: ON-THE-GO] ON-THE-GO mode is on. Keep replies to two sentences max. '
+                   'Captions only — no spoken replies unless explicitly asked. "Quoted"')
+        pcm = pcm_bytes(self.MIC, 7)
+        run = self.record(pcm, 320, context=context)
+        self.assertTrue(run['ok'])
+        request = json.loads(run['body'])
+        wav = base64.b64decode(request['items'][0].pop('data_base64'), validate=True)
+        self.assertEqual(request, {'message': context, 'output_modality': 'text', 'items': [
+            {'type': 'file', 'mime_type': 'audio/wav', 'filename': 'voice_note.wav'}]})
+        self.assertEqual(wav, riff_header(16000) + pcm)
+        # The head: the empty message's two quotes now hold the contract, as UTF-8.
+        self.assertEqual(run['parts'][0], len(HEAD) + len(json.dumps(context, ensure_ascii=False).encode()) - 2)
 
 
 if __name__ == '__main__':
