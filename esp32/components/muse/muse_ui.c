@@ -825,10 +825,10 @@ static void set_reply_box(answer_layout_t *l, int cols, int lines, int top, int 
     l->top = top;
 }
 
-/* The hint icons, and the readouts' corner, that `box` (screen coordinates) covers go while layout l is up. */
+/* The hint icons, and "up next", that `box` (screen coordinates) covers go while layout l is up. */
 static int hide_under(answer_layout_t *l, int n, const lv_area_t *box)
 {
-    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_corner(), muse_home_extras_up_next() };
+    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_up_next() };
     const int cap = sizeof(l->hides) / sizeof(l->hides[0]);
     for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]) && n < cap; i++) {
         if (!hints[i]) {
@@ -2033,7 +2033,7 @@ static void set_meter_visible(bool visible)
 static void update_power(float now)
 {
     if (!s_power_lbl || now < s_next_power_update) {
-        return;   /* or the battery's in the corner (muse_home_extras.c) */
+        return;   /* or Muse shows the battery himself (muse_pixel.h) */
     }
     s_next_power_update = now + 1.0f;
 
@@ -2257,10 +2257,10 @@ static float update_plugged(muse_mode_t mode, float now, bool face)
 }
 
 /*
- * The battery, on Muse himself (muse_pixel.h): tired as it runs down under
- * TIRED_PCT, the most at TIRED_FULL_PCT, unless charging or in bed; and the
- * level on his belly while charging (or on USB power, full), or for
- * BELLY_PAT_S after a pat.
+ * The battery, on Muse himself (muse_pixel.h; the face has no readout of
+ * its own): tired as it runs down under TIRED_PCT, the most at
+ * TIRED_FULL_PCT, unless charging or in bed; and the level on his belly
+ * while charging (or on USB power, full), or for BELLY_PAT_S after a pat.
  */
 #define TIRED_PCT 40
 #define TIRED_FULL_PCT 10
