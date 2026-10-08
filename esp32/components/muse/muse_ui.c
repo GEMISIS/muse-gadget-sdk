@@ -176,7 +176,7 @@ static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
 static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
-static bool s_flipped;      /* the screen turned 180 degrees (muse_board_t.set_flip) */
+static int s_turn;          /* quarter turns the screen's turned (muse_board_t.set_turn) */
 
 /*
  * While Muse is thinking or speaking it shrinks to make room for the reply:
@@ -475,7 +475,7 @@ static lv_align_t turn_align(lv_align_t a)
 /* Beside its button, which is across the screen while it's turned. */
 static void place_hint(lv_obj_t *icon, const muse_button_hint_t *h)
 {
-    if (s_flipped) {
+    if (s_turn == 2) {
         lv_obj_align(icon, turn_align(h->align), -h->x, -h->y);
     } else {
         lv_obj_align(icon, h->align, h->x, h->y);
@@ -514,19 +514,19 @@ static void build_button_icons(lv_obj_t *face)
  */
 static void update_flip(float now)
 {
-    bool flip = muse_board->set_flip && muse_orient_flipped(now);
-    if (flip == s_flipped) {
+    int turn = muse_board->set_turn ? muse_orient_turn(now) : 0;
+    if (turn == s_turn) {
         return;
     }
-    s_flipped = flip;
-    muse_board->set_flip(flip);
+    s_turn = turn;
+    muse_board->set_turn(turn);
     if (s_mic_icon) {
         place_hint(s_mic_icon, &muse_board->talk_hint);
     }
     if (s_aux_icon) {
         place_hint(s_aux_icon, &muse_board->aux_hint);
     }
-    muse_power_menu_set_flipped(flip);
+    muse_power_menu_set_turn(turn);
     lv_obj_invalidate(lv_screen_active());   /* with the layers over it */
 }
 

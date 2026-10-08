@@ -176,25 +176,41 @@ static void send_sleep(void *sleep)
     esp_lcd_panel_io_tx_param(s_io, (0x02 << 24) | ((*(bool *)sleep ? 0x10 : 0x11) << 8), NULL, 0);
 }
 
-static void send_flip(void *flipped)
+/*
+ * MADCTL for each quarter turn from upright. The BSP's init leaves 0xA0
+ * (MY | MV); MX | MV (0x60) is that turned 180 degrees, and the two without
+ * MV (0x00, MX | MY) the sideways ones, the panel being square. Which of
+ * those is which way round is SIDEWAYS_SWAPPED's to say (muse_orient.c
+ * names a turn by the way the board's top edge points).
+ */
+#define MADCTL_MX 0x40
+#define MADCTL_MY 0x80
+#define MADCTL_MV 0x20
+#define SIDEWAYS_SWAPPED 0
+static const uint8_t MADCTL_TURN[4] = {
+    MADCTL_MY | MADCTL_MV,
+    SIDEWAYS_SWAPPED ? MADCTL_MX | MADCTL_MY : 0x00,
+    MADCTL_MX | MADCTL_MV,
+    SIDEWAYS_SWAPPED ? 0x00 : MADCTL_MX | MADCTL_MY,
+};
+
+static void send_turn(void *madctl)
 {
-    /* The BSP's init leaves MADCTL at 0xA0 (MY | MV), which the driver keeps;
-     * MX in place of MY is the same picture turned 180 degrees (0x60). */
-    bool f = *(bool *)flipped;
-    esp_lcd_panel_mirror(s_panel, f, !f);
+    esp_lcd_panel_io_tx_param(s_io, (0x02 << 24) | (0x36 << 8), madctl, 1);
 }
 
 /*
- * Touch is mirrored in software (esp_lcd_touch.c: mirror x, then y, then
- * swap). Upright that's mirror y and swap: the screen's (x, y) is
- * (H - ty, tx). Turned it's (W - x, H - y) = (ty, W - tx), which is mirror x
- * and swap, the panel being square.
+ * Touch follows the panel bit for bit: esp_lcd_touch mirrors x, then y, then
+ * swaps (esp_lcd_touch.c), as MX, MY and MV turn the picture. Upright that's
+ * mirror y and swap: the screen's (x, y) is (H - ty, tx).
  */
-static void set_flip(bool flipped)
+static void set_turn(int quarters)
 {
-    muse_lcd_bands_run(send_flip, &flipped);
-    esp_lcd_touch_set_mirror_x(s_tp, flipped);
-    esp_lcd_touch_set_mirror_y(s_tp, !flipped);
+    uint8_t madctl = MADCTL_TURN[quarters & 3];
+    muse_lcd_bands_run(send_turn, &madctl);
+    esp_lcd_touch_set_mirror_x(s_tp, madctl & MADCTL_MX);
+    esp_lcd_touch_set_mirror_y(s_tp, madctl & MADCTL_MY);
+    esp_lcd_touch_set_swap_xy(s_tp, madctl & MADCTL_MV);
 }
 
 /* Plain SLPIN/SLPOUT over the QSPI command path. The driver's own sleep also
@@ -296,7 +312,7 @@ static const muse_board_t s_board = {
     .set_brightness = set_brightness,
     .panel_sleep = panel_sleep,
     .display_pause = display_pause,
-    .set_flip = set_flip,
+    .set_turn = set_turn,
     .audio_init = audio_init,
     .mic_slot = -1,
     .set_mic_gain = set_mic_gain,
