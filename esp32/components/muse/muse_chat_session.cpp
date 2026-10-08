@@ -189,6 +189,9 @@ static std::atomic<bool> s_sub_with_sid{false};
 #endif
 static std::atomic<bool> s_chat_check{false};
 static char s_sub_sid[MUSE_CHAT_SID_MAX + 1];
+/* The subscription for s_sub_sid came back 404: a side chat the Muse only
+ * starts with its first message. It's opened again once one is taken. */
+static bool s_sub_missing;
 
 /* ---- Streams on the connection ---- */
 
@@ -841,6 +844,7 @@ static bool subscription_stale(void)
 static bool open_subscription(void)
 {
     s_last_seq = 0;
+    s_sub_missing = false;
     char sid[MUSE_CHAT_SID_MAX + 1], body[MUSE_CHAT_SUB_BODY_MAX];
     wanted_sub_sid(sid);
     if (!muse_chat_sub_body(sid, body, sizeof(body))) {
@@ -1985,6 +1989,8 @@ static bool stream_end(stream_t *s, bool ok)
         s_turn.chat_id = 0;
         if (!ok) {
             turn_fail("MUSE DIDN'T TAKE IT");
+        } else if (s_sub_missing && !open_subscription()) {
+            return false;   /* the chat exists now: its replies need the subscription */
         }
         break;
     case K_TTS:
@@ -2003,6 +2009,15 @@ static bool on_http_error(stream_t *s, const ApplicationResponseView &resp)
     memcpy(body, resp.body.data(), n);
     body[n] = '\0';
     ESP_LOGW(TAG, "stream %lld: HTTP %d %s", (long long)s->id, (int)resp.status, body);
+    if (s->kind == K_SUB && resp.status == 404 && s_sub_sid[0]) {
+        /* Not there until a message starts it: keep the connection, and
+         * subscribe once the next one (the mode's, or the user's) is taken. */
+        ESP_LOGI(TAG, "chat %s isn't on the Muse yet: subscribing after its first message", s_sub_sid);
+        close_stream(s);
+        s_conn.sub_id = 0;
+        s_sub_missing = true;
+        return true;
+    }
     /* No falling back to a subscription with {} on a refusal: a side chat's
      * replies only arrive on one that names it, so that would lose them all
      * (">chat_sub=0" still switches it by hand). */

@@ -197,13 +197,59 @@ void muse_gadget_mode_pick(muse_gadget_mode_t mode)
     xSemaphoreGive(s_lock);
 }
 
+/*
+ * The chats told which mode since boot, so switching back to one doesn't tell
+ * it again (each told message stays in that chat's history). With s_lock held.
+ */
+#define TOLD_MAX (MUSE_CHATS_MAX + 4)
+static struct {
+    char sid[MUSE_CHAT_SID_MAX + 1];   /* "" for the main chat */
+    int8_t mode;
+} s_told[TOLD_MAX];
+static int s_told_n;
+
+static int told_mode(const char *sid)
+{
+    for (int i = 0; i < s_told_n; i++) {
+        if (!strcmp(s_told[i].sid, sid)) {
+            return s_told[i].mode;
+        }
+    }
+    return -1;
+}
+
+static void set_told(const char *sid, int mode)
+{
+    int i = 0;
+    while (i < s_told_n && strcmp(s_told[i].sid, sid)) {
+        i++;
+    }
+    if (i == s_told_n) {
+        if (s_told_n == TOLD_MAX) {
+            memmove(&s_told[0], &s_told[1], sizeof(s_told[0]) * (TOLD_MAX - 1));   /* full: the oldest goes */
+            i = TOLD_MAX - 1;
+        } else {
+            s_told_n++;
+        }
+        strlcpy(s_told[i].sid, sid, sizeof(s_told[i].sid));
+    }
+    s_told[i].mode = (int8_t)mode;
+}
+
 void muse_gadget_mode_resend(void)
 {
     if (!s_lock) {
         return;
     }
     muse_gadget_mode_t mode = muse_gadget_mode();
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(sid);
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (told_mode(sid) == (int)mode) {
+        xSemaphoreGive(s_lock);
+        ESP_LOGI(TAG, "%s mode: this chat was told already", NAMES[mode]);
+        return;
+    }
     s_pending = mode;
     xSemaphoreGive(s_lock);
     ESP_LOGI(TAG, "%s mode: telling the Muse again", NAMES[mode]);
@@ -332,10 +378,13 @@ static void send_pending(void)
     if (!text) {
         return;
     }
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(sid);
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool current = s_pending == mode;
     if (current) {
         s_pending = -1;
+        set_told(sid, mode);
     }
     xSemaphoreGive(s_lock);
     if (!current) {
