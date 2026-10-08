@@ -2256,6 +2256,39 @@ static float update_plugged(muse_mode_t mode, float now, bool face)
     return pt < PLUGGED_S ? 1.0f - pt / PLUGGED_S : 0.0f;
 }
 
+/*
+ * The battery, on Muse himself (muse_pixel.h): tired as it runs down under
+ * TIRED_PCT, the most at TIRED_FULL_PCT, unless charging or in bed; and the
+ * level on his belly while charging (or on USB power, full), or for
+ * BELLY_PAT_S after a pat.
+ */
+#define TIRED_PCT 40
+#define TIRED_FULL_PCT 10
+#define BELLY_PAT_S 3.0f
+
+static void pose_battery(muse_pose_t *pose, float now)
+{
+    static float patted_at = -100.0f;
+    static bool was_happy;
+    bool happy = pose->happy > 0.0f;
+    if (happy && !was_happy) {
+        patted_at = now;
+    }
+    was_happy = happy;
+    muse_power_t p = muse_state_power();
+    if (p.battery_pct < 0) {
+        return;   /* no battery, or no reading yet */
+    }
+    pose->battery = true;
+    pose->battery_pct = p.battery_pct;
+    pose->charging = p.charging || p.usb;
+    pose->belly = pose->charging || now - patted_at < BELLY_PAT_S;
+    if (!pose->charging && !pose->bed && p.battery_pct < TIRED_PCT) {
+        float f = (float)(TIRED_PCT - p.battery_pct) / (TIRED_PCT - TIRED_FULL_PCT);
+        pose->tired = f < 1.0f ? f : 1.0f;
+    }
+}
+
 static volatile bool s_snapshot;
 
 /* Streams the screen over the USB cable as base64 RGB565 (bench testing; needs
@@ -2358,6 +2391,7 @@ static void frame_tick(lv_timer_t *timer)
         .holding = holding,
         .plugged = update_plugged(mode, now, !photo_shown()),
     };
+    pose_battery(&pose, now);
     /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
      * (or an earthquake, or being plugged in). */
     pose.sleepy = pose.bed && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f
