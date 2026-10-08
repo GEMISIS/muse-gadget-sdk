@@ -15,11 +15,10 @@
  */
 
 /*
- * The face's readouts (muse_home_extras.h). The battery goes in the bottom
- * right corner behind a battery icon, which says what the number is, right
- * of the captions and clear of the page dots; muse_ui.c hides it while a
- * reply's page would run over it. The clock goes on top, above the state
- * (CLOCK_Y), and grows big on the Night face.
+ * The face's readouts (muse_home_extras.h). The clock goes on top, above the
+ * state (CLOCK_Y), and grows big on the Night face. The battery is Muse's
+ * own to show (muse_pixel.h): a badge beside him when it runs low, and the
+ * level on his belly while he charges.
  */
 #include "muse_home_extras.h"
 
@@ -34,23 +33,10 @@
 #include "muse_up_next.h"
 
 #define COLOR_TEXT MUSE_COLOR_FACE_TEXT   /* the clock: between dim and the captions' colour */
-#define COLOR_DIM MUSE_COLOR_DIM
-#define COLOR_LOW MUSE_COLOR_DANGER       /* battery under LOW_PCT */
-#define LOW_PCT 15
-/* In from the right edge: the screen's corners are rounded, and at 16 px in
- * the battery's last digit was cut off by the curve. */
-#define EDGE 40
-/* The corner: a line of montserrat_16, right-aligned, at the very bottom
- * (x 360-440, y 452-470 on 480 px): under the captions (which end at 419)
- * and a heard reply's page (451), so it stays up through one. The row above
- * it is "up next"'s. */
-#define CORNER_W 80
-#define CORNER_H 18
-#define CORNER_BOTTOM 10
 /* "Up next" (muse_up_next.h): a pill centred over the page dots (y 412-446
  * on 480 px), a bell and the line in unscii, Muse's own pixel type, ending
- * in dots past UP_TEXT_W. Clear of the battery's corner; a reply's page
- * hides it as it does the battery, and the Night face leaves it out. */
+ * in dots past UP_TEXT_W. A reply's page hides it, and the Night face
+ * leaves it out. */
 #define UP_TEXT_W 290
 #define CAPTION_S 6.0f          /* a new caption keeps the pill out of its way this long */
 #define UP_H 34
@@ -74,8 +60,6 @@
 #endif
 
 static lv_obj_t *s_clock;
-static lv_obj_t *s_corner;
-static lv_obj_t *s_batt;
 #if CONFIG_MUSE_GADGET_UP_NEXT
 static void on_up_clicked(lv_event_t *e);
 #endif
@@ -99,14 +83,6 @@ static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, 
 void muse_home_extras_build(lv_obj_t *face)
 {
     s_clock = label(face, FONT_CLOCK, COLOR_TEXT, LV_ALIGN_TOP_MID, 0, CLOCK_Y + (muse_board->height - 466) / 2);
-
-    /* A fixed box, so muse_ui.c can tell what a reply's page would cover. */
-    s_corner = lv_obj_create(face);
-    lv_obj_remove_style_all(s_corner);
-    lv_obj_set_size(s_corner, CORNER_W, CORNER_H);
-    lv_obj_align(s_corner, LV_ALIGN_BOTTOM_RIGHT, -EDGE, -CORNER_BOTTOM);
-    lv_obj_remove_flag(s_corner, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
-    s_batt = label(s_corner, &lv_font_montserrat_16, COLOR_DIM, LV_ALIGN_TOP_RIGHT, 0, 0);
 #if CONFIG_MUSE_GADGET_UP_NEXT
     s_up = lv_obj_create(face);
     lv_obj_remove_style_all(s_up);
@@ -155,11 +131,6 @@ void muse_home_extras_set_24h(bool on)
 lv_obj_t *muse_home_extras_clock(void)
 {
     return s_clock;
-}
-
-lv_obj_t *muse_home_extras_corner(void)
-{
-    return s_corner;
 }
 
 #if CONFIG_MUSE_GADGET_UP_NEXT
@@ -245,20 +216,6 @@ void muse_home_extras_tick(float now)
         memmove(buf, buf + 1, strlen(buf));   /* 9:30 PM, not 09:30 PM */
     }
     set_text(s_clock, buf);
-
-    /* The icon says it's the battery: a bolt while charging, else how full.
-     * No reading (no battery), nothing: the screen's on, so there's power. */
-    muse_power_t p = muse_state_power();
-    buf[0] = '\0';
-    if (p.battery_pct >= 0) {
-        const char *icon = p.charging ? LV_SYMBOL_CHARGE
-                         : p.battery_pct >= 88 ? LV_SYMBOL_BATTERY_FULL
-                         : p.battery_pct >= 63 ? LV_SYMBOL_BATTERY_3
-                         : p.battery_pct >= 38 ? LV_SYMBOL_BATTERY_2
-                         : p.battery_pct >= LOW_PCT ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
-        snprintf(buf, sizeof(buf), "%s %d%%", icon, p.battery_pct);
-    }
-    set_text(s_batt, buf);
 #if CONFIG_MUSE_GADGET_UP_NEXT
     /* Faded rather than hidden: a reply's layout unhides it on the way out.
      * Only on a quiet face: idle, with no caption (what was heard, the
@@ -290,9 +247,4 @@ void muse_home_extras_tick(float now)
         up_show(show);
     }
 #endif
-    static bool low;
-    if (low != (p.battery_pct >= 0 && p.battery_pct < LOW_PCT && !p.charging)) {
-        low = !low;
-        lv_obj_set_style_text_color(s_batt, lv_color_hex(low ? COLOR_LOW : COLOR_DIM), 0);
-    }
 }
