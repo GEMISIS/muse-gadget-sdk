@@ -69,6 +69,8 @@ static const char *TAG = "muse_voice";
 #endif
 #define HELD_MAX 4
 #define HELD_TRIES 8                            /* then a saved note is dropped */
+#define HELD_MIN_FRAMES (MUSE_AUDIO_RATE / 2)    /* shorter isn't worth saving: a brush of the key */
+#define HELD_STALE_US (120LL * 1000000)          /* in reach, a saved note this old has missed its moment */
 #define HELD_POLL_MS 5000                       /* resting with notes saved: check for Wi-Fi this often */
 #define HELD_KEEP_US (30LL * 60 * 1000000)      /* muse_voice_notes_waiting() */
 #define RETRY_MIN_US (15LL * 1000000)
@@ -677,7 +679,7 @@ static void hold_rec(bool tried)
         go_idle("COULDN'T SAVE THE NOTE");
         return;
     }
-    if (!s_rec_n) {   /* nothing captured: realloc to 0 would free s_rec and return NULL */
+    if (s_rec_n < HELD_MIN_FRAMES) {   /* none (realloc to 0 would free s_rec), or a brush of the key */
         drop_rec();
         go_idle("HOLD LONGER TO TALK");
         return;
@@ -844,8 +846,18 @@ static bool held_due(void)
         return false;
     }
     int64_t now = esp_timer_get_time();
-    s_waiting = now - s_held[0].at_us < HELD_KEEP_US;
     bool ready = muse_hatch_ready();
+    /* In reach, an old saved note is dropped rather than answered minutes late. */
+    while (ready && s_held_count && now - s_held[0].at_us > HELD_STALE_US) {
+        ESP_LOGW(TAG, "dropping a saved note from %llds ago", (long long)((now - s_held[0].at_us) / 1000000));
+        drop_oldest();
+    }
+    if (!s_held_count) {
+        was_ready = ready;
+        s_waiting = false;
+        return false;
+    }
+    s_waiting = now - s_held[0].at_us < HELD_KEEP_US;
     if (ready && !was_ready) {
         s_next_send_us = 0;
         s_send_backoff_us = RETRY_MIN_US;
@@ -1023,6 +1035,16 @@ static void voice_task(void *arg)
             pending_down = false;
             continue;
         }
+#if HOLD_NOTES
+        /* In reach, what's said now goes first: older saved notes would only
+         * hold it up, and be answered after it anyway. */
+        if (s_held_count && muse_hatch_ready()) {
+            ESP_LOGW(TAG, "a new note goes first: dropping %d saved", s_held_count);
+            while (s_held_count) {
+                drop_oldest();
+            }
+        }
+#endif
         size_t held;
         char why[96];
         bool ok = record(pending_down, &held, why, sizeof(why));
