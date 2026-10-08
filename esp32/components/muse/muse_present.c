@@ -33,6 +33,7 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
@@ -257,6 +258,24 @@ EXT_RAM_BSS_ATTR static struct {
 } s_asked[ASKED_KEPT];
 EXT_RAM_BSS_ATTR static int s_asked_next;
 
+/*
+ * The task's own: each ask goes to a fresh chat, never listed, and has the
+ * Muse delete the one before (the last answered ask's), so they don't pile
+ * up in the Muse app. Kept in RAM: a restart leaves at most one behind.
+ */
+EXT_RAM_BSS_ATTR static char s_ask_sid[MUSE_CHAT_SID_MAX + 1];
+EXT_RAM_BSS_ATTR static char s_ask_prev[MUSE_CHAT_SID_MAX + 1];
+
+static void new_sid(char out[MUSE_CHAT_SID_MAX + 1])
+{
+    uint8_t u[16];
+    esp_fill_random(u, sizeof(u));
+    u[6] = (u[6] & 0x0f) | 0x40;
+    u[8] = (u[8] & 0x3f) | 0x80;
+    snprintf(out, MUSE_CHAT_SID_MAX + 1, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             u[0], u[1], u[2], u[3], u[4], u[5], u[6], u[7], u[8], u[9], u[10], u[11], u[12], u[13], u[14], u[15]);
+}
+
 /* The task's own: the request under way. */
 EXT_RAM_BSS_ATTR static bool s_asking;
 EXT_RAM_BSS_ATTR static uint32_t s_asking_hash;
@@ -310,6 +329,7 @@ static void ask_tick(void)
             return;   /* the request gives up by itself after two minutes */
         }
         s_asking = false;
+        strlcpy(s_ask_prev, s_ask_sid, sizeof(s_ask_prev));   /* deleted with the next ask */
         if (st == MUSE_CHAT_BG_DONE) {
             ESP_LOGI(TAG, "\"%s\": Muse answered \"%s\"", s_asking_label, reply);
         } else {
@@ -346,17 +366,26 @@ static void ask_tick(void)
     if (!muse_hatch_ready()) {
         return;   /* out of reach for now */
     }
-    char gadget[MUSE_CHAT_SID_MAX + 1], msg[PATH_MAX_LEN + LABEL_MAX + 320];
-    muse_settings_gadget_chat_sid(gadget);
+    char msg[PATH_MAX_LEN + LABEL_MAX + 512];
     uint32_t hash = path_hash(path);
     unquote(path);
     unquote(label);
-    snprintf(msg, sizeof(msg),
-             "Send the image at \"%s\" (\"%s\") to this gadget with display.show_image, as a baseline JPEG "
-             "of 480x480 or smaller (convert it if need be): base64 chunks of up to 16 KiB in order from "
-             "offset 0, final=true on the last. Don't create links. Reply with just: sent.",
+    /* Small: every byte goes as base64 Muse writes out, about 45 s per
+     * 16 KiB chunk, so a 240 px JPEG (one chunk) shows in under a minute. */
+    int n = 0;
+    if (s_ask_prev[0]) {
+        n = snprintf(msg, sizeof(msg),
+                     "First, quietly delete the chat with session id %s (an earlier one of these); don't "
+                     "mention it. Then: ", s_ask_prev);
+    }
+    snprintf(msg + n, sizeof(msg) - n,
+             "Send the image at \"%s\" (\"%s\") to this gadget with display.show_image: first make a copy "
+             "scaled to 240x240 (keep the aspect, fit inside), saved as a baseline JPEG at about 70%% quality, "
+             "under 16 KiB, then send that copy in one chunk (offset 0, final=true), or in chunks of up to 16 KiB if it "
+             "won't fit. Don't create links. Reply with just: sent.",
              path, label);
-    if (!muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_IMAGE, gadget, msg)) {
+    new_sid(s_ask_sid);
+    if (!muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_IMAGE, s_ask_sid, msg)) {
         return;   /* someone else's request is under way, or a turn: next time */
     }
     s_asking = true;
