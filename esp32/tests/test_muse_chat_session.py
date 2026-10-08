@@ -6,7 +6,8 @@ send_chat for a chat that last heard another mode, told once the Muse acks),
 the background requests (bg_t): their own streams, their reply kept and
 never emitted, waiting out a turn, and a new chat's 404 subscription, and a
 reply's image (delta.presentation): Muse asked to push its workspace file,
-its turn's text untouched."""
+its turn's text untouched, and one written into the text as Markdown: taken
+out of it, and asked for the same way when no event named one."""
 import os
 from pathlib import Path
 import shlex
@@ -481,6 +482,40 @@ static void images() {
     present(GADGET_SID, "widget-8");
     assert(asks == 4 && console_events == 1 && !captions && !resets);
 }
+/* An image written into the reply's text as Markdown: out of the text, asked for once it's done. */
+#define PANDA_FILE "workspace/muse-gadget-216/images/red-panda-480.jpg"
+static void text_images() {
+    static char texts[MAX_MSGS * TEXT_MAX];
+    s_turn.texts = texts;
+    asks = 0;
+    begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "", "Here you go! ![red pa");
+    event("delta.text_append", "reply", "", "nda](sandbox://" PANDA_FILE ")");
+    assert(!strcmp(texts, "Here you go! "));
+    event("delta.text_append", "reply", "", " Cute, right?");
+    assert(!strcmp(texts, "Here you go! Cute, right?") && s_turn.msgs[0].len == strlen(texts));
+    assert(asks == 0);   /* not until the message is done */
+    event("delta.message_done", "reply");
+    assert(asks == 1 && !strcmp(ask_path, PANDA_FILE) && !strcmp(ask_label, "red panda"));
+    assert(s_turn.msgs[0].tts == TTS_QUEUED);
+    /* Only an image: nothing left to say or show. */
+    begin();
+    event("message.assistant", "only", "note", "![red panda](sandbox://" PANDA_FILE ")");
+    assert(asks == 2 && !s_turn.msgs[0].len && s_turn.msgs[0].tts == TTS_NONE);
+    /* An event showing one: the text's isn't asked for as well. */
+    begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "", "Look! ![x](sandbox://workspace/other.jpg)");
+    present(GADGET_SID, "widget-9");
+    event("delta.message_done", "reply");
+    assert(asks == 3 && !strcmp(ask_path, "workspace/muse-gadget-216/images/red panda.jpg"));
+    /* Typed: from the final text, which is all there is. */
+    begin(true);
+    event("message.assistant", "typed", "note", "See ![chart](https://h.metaaivm.com/media/raw/workspace/c.jpg)");
+    assert(asks == 4 && !strcmp(ask_path, "workspace/c.jpg") && !strcmp(ask_label, "chart"));
+    s_turn.texts = nullptr;
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -490,6 +525,7 @@ int main(int argc, char **argv) {
     case 3: inline_mode(); break;
     case 4: background(); break;
     case 5: images(); break;
+    case 6: text_images(); break;
     default: return 2;
     }
 }
@@ -533,3 +569,6 @@ int main(int argc, char **argv) {
 
     def test_reply_image_is_asked_for_by_its_file_beside_its_text(self):
         self.run_case(5)
+
+    def test_markdown_image_in_the_text_is_taken_out_and_asked_for(self):
+        self.run_case(6)
