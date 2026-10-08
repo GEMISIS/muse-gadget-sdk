@@ -96,10 +96,15 @@ class MuseChatMdTest(unittest.TestCase):
         steps, _ = self.stream(long)
         self.assertEqual(steps[-1][0], long)
 
-    def test_only_workspace_files_are_kept(self):
+    def test_the_first_image_is_kept_web_or_workspace(self):
+        # A web image counts too: Muse fetches it to push it (muse_present_ask).
         _, img = self.stream("![chart](https://example.com/a.png) and "
                              "![](https://b58af2c5.metaaivm.com/media/raw/workspace/x/y.jpg)")
+        self.assertEqual(img, ("https://example.com/a.png", "chart"))
+        _, img = self.stream("![](https://b58af2c5.metaaivm.com/media/raw/workspace/x/y.jpg)")
         self.assertEqual(img, ("workspace/x/y.jpg", "image"))
+        _, img = self.stream("![x](ftp://example.com/a.png)")
+        self.assertEqual(img, ("", ""))
 
     def test_find_and_file(self):
         self.assertEqual(self.run_harness("find", f"ok {PANDA}").split("\x1f"),
