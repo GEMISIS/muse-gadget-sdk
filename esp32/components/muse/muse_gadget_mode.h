@@ -53,6 +53,8 @@ void muse_gadget_mode_start(void);
 muse_gadget_mode_t muse_gadget_mode(void);
 /* By hand: holds until the next 05:00 or 21:00. */
 void muse_gadget_mode_pick(muse_gadget_mode_t mode);
+/* Tells the Muse the current mode again, as a change does (another chat picked). */
+void muse_gadget_mode_resend(void);
 /* "desk", "night" or "on_the_go"; false for anything else. */
 bool muse_gadget_mode_parse(const char *name, muse_gadget_mode_t *out);
 /* "Desk", "Night", "On-the-go". */

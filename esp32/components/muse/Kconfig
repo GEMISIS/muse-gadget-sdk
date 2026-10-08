@@ -179,6 +179,19 @@ menu "Muse"
             them. Needs PSRAM. Without it, voice notes go over Home Link's own
             session to its paired VM and replies are shown as text.
 
+    config MUSE_CHAT_SUBSCRIBE_SESSION
+        bool "Name the chosen chat when subscribing to replies"
+        depends on MUSE_ENABLED
+        default y
+        help
+            With a chat other than the main one picked (Settings > Muse, or
+            the set_chat command), turns carry its session_id. This also
+            names it in the reply subscription, {"session_id":"..."} instead
+            of {}, in case the subscription only carries one chat's replies.
+            Turn it off if replies from a side chat stop arriving. On boards
+            with Muse's own voice session, ">chat_sub=0" or "=1" on the
+            serial console switches it until the next restart.
+
     config MUSE_TTS_PICO
         bool "Speak replies on the device (SVOX Pico, en-US)"
         depends on MUSE_HATCH && SPIRAM

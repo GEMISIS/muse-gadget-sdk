@@ -16,9 +16,11 @@
 
 #include "muse_settings.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
@@ -49,6 +51,7 @@ static struct {
     char host[MUSE_HOST_MAX + 1];
     char vm[MUSE_VM_MAX + 1];
     char token[MUSE_TOKEN_MAX + 1];
+    char chat_sid[MUSE_CHAT_SID_MAX + 1];
 } s = {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
@@ -144,6 +147,10 @@ esp_err_t muse_settings_init(void)
     load_str("host", s.host, sizeof(s.host));
     load_str("vm", s.vm, sizeof(s.vm));
     load_str("token", s.token, sizeof(s.token));
+    load_str("chat_sid", s.chat_sid, sizeof(s.chat_sid));
+    if (s.chat_sid[0] && !muse_settings_chat_sid_valid(s.chat_sid)) {
+        s.chat_sid[0] = '\0';
+    }
 
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
@@ -152,6 +159,7 @@ esp_err_t muse_settings_init(void)
     ESP_LOGI(TAG, "vol %d%s, mic %d dB, bright %d, sleep %ds, wifi %s (%s), ble %s, muse %s",
              s.volume, s.speaker_on ? "" : " (speaker off)", s.mic_gain, s.brightness, s.sleep_s, s.wifi_on ? "on" : "off",
              "network saved by Link", s.ble_on ? "on" : "off", s.token[0] ? "token set" : "no token");
+    ESP_LOGI(TAG, "muse chat: %s", s.chat_sid[0] ? s.chat_sid : "main");
     return ESP_OK;
 }
 
@@ -225,6 +233,30 @@ size_t muse_settings_hatch_token_len(void)
     size_t n;
     LOCKED(n = strlen(s.token));
     return n;
+}
+
+void muse_settings_chat_sid(char out[MUSE_CHAT_SID_MAX + 1])
+{
+    LOCKED(strlcpy(out, s.chat_sid, MUSE_CHAT_SID_MAX + 1));
+}
+
+void muse_settings_gadget_chat_sid(char out[MUSE_CHAT_SID_MAX + 1])
+{
+    uint8_t m[6] = { 0 };
+    esp_read_mac(m, ESP_MAC_WIFI_STA);
+    snprintf(out, MUSE_CHAT_SID_MAX + 1, "gadget-%02x%02x%02x%02x%02x%02x", m[0], m[1], m[2], m[3], m[4], m[5]);
+}
+
+bool muse_settings_chat_sid_valid(const char *sid)
+{
+    size_t n = 0;
+    for (; sid && sid[n]; n++) {
+        char c = sid[n];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-')) {
+            return false;
+        }
+    }
+    return n >= 1 && n <= MUSE_CHAT_SID_MAX;
 }
 
 void muse_settings_set_volume(int pct)
@@ -369,4 +401,27 @@ esp_err_t muse_settings_set_hatch_token(const char *token, bool append)
         notify(MUSE_SETTING_HATCH);
     }
     return err;
+}
+
+bool muse_settings_set_chat_sid(const char *sid)
+{
+    if (!sid) {
+        sid = "";
+    }
+    if (sid[0] && !muse_settings_chat_sid_valid(sid)) {
+        return false;
+    }
+    bool changed = false;
+    LOCKED({
+        changed = strcmp(s.chat_sid, sid) != 0;
+        if (changed) {
+            strlcpy(s.chat_sid, sid, sizeof(s.chat_sid));
+            save_str("chat_sid", s.chat_sid);
+        }
+    });
+    if (changed) {
+        ESP_LOGI(TAG, "muse chat: %s", sid[0] ? sid : "main");
+        notify(MUSE_SETTING_CHAT);
+    }
+    return true;
 }

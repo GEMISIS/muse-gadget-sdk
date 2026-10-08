@@ -197,6 +197,21 @@ void muse_gadget_mode_pick(muse_gadget_mode_t mode)
     xSemaphoreGive(s_lock);
 }
 
+void muse_gadget_mode_resend(void)
+{
+    if (!s_lock) {
+        return;
+    }
+    muse_gadget_mode_t mode = muse_gadget_mode();
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_pending = mode;
+    xSemaphoreGive(s_lock);
+    ESP_LOGI(TAG, "%s mode: telling the Muse again", NAMES[mode]);
+    if (s_task) {
+        xTaskNotifyGive(s_task);
+    }
+}
+
 bool muse_gadget_mode_set_away(void)
 {
     muse_wifi_status_t w;

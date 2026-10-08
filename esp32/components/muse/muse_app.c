@@ -55,6 +55,10 @@ static void on_setting(muse_setting_t what)
     case MUSE_SETTING_HATCH:
         muse_hatch_config_changed();
         break;
+    case MUSE_SETTING_CHAT:
+        muse_chat_changed();
+        muse_gadget_mode_resend();   /* the new chat hasn't been told the mode */
+        break;
     default:
         break;   /* brightness, sleep and the speaker are polled where they're used */
     }

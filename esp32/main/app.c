@@ -1898,6 +1898,9 @@ static cJSON *on_ws_command(
     if (strcmp(command, "set_mode") == 0) {
         return gadget_set_mode_command(params);
     }
+    if (strcmp(command, "set_chat") == 0) {
+        return gadget_set_chat_command(params);
+    }
 #endif
 #if CONFIG_HOMEHUB_VOICE
     if (strcmp(command, "voice.configure") == 0) {

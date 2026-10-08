@@ -74,6 +74,25 @@ static void muse_gadget_mode_pick(muse_gadget_mode_t mode) {
     s_picks++;
 }
 
+// ---- Fakes for muse_settings.h ----
+
+#define MUSE_CHAT_SID_MAX 64
+#define GADGET_SID "gadget-0a1b2c3d4e5f"
+
+static char s_chat_sid[MUSE_CHAT_SID_MAX + 1];
+static int s_chat_sets;
+
+static void muse_settings_gadget_chat_sid(char out[MUSE_CHAT_SID_MAX + 1]) {
+    strcpy(out, GADGET_SID);
+}
+
+static bool muse_settings_set_chat_sid(const char *sid) {
+    assert(strlen(sid) <= MUSE_CHAT_SID_MAX);
+    strcpy(s_chat_sid, sid);
+    s_chat_sets++;
+    return true;
+}
+
 #include "gadget_commands.inc"
 
 // ---- Checks ----
@@ -167,9 +186,66 @@ static void test_set_mode(void) {
     }
 }
 
+static void expect_chat(const char *json, const char *chat, const char *sid) {
+    cJSON *p = json ? params(json) : NULL;
+    cJSON *result = gadget_set_chat_command(p);
+    expect_ok(result);
+    cJSON *payload = cJSON_GetObjectItem(result, "payload");
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "chat")), chat));
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "session_id")), sid));
+    assert(!strcmp(s_chat_sid, sid));
+    cJSON_Delete(result);
+    cJSON_Delete(p);
+}
+
+static void test_set_chat(void) {
+    // Wrong types, characters the id can't hold, and too long: nothing saved.
+    const char *const bad[] = {
+        "{\"session_id\":42}", "{\"session_id\":true}", "{\"session_id\":[\"a\"]}",
+        "{\"session_id\":\"../x\"}", "{\"session_id\":\"side chat\"}",
+        "{\"session_id\":\"side_chat\"}", "{\"session_id\":\"caf\\u00e9\"}",
+        "{\"session_id\":\"a\\\"b\"}",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        cJSON *p = params(bad[i]);
+        cJSON *result = gadget_set_chat_command(p);
+        expect_error(result, "invalid_param");
+        cJSON_Delete(p);
+    }
+    char long_id[MUSE_CHAT_SID_MAX + 2];
+    memset(long_id, 'a', sizeof(long_id) - 1);
+    long_id[sizeof(long_id) - 1] = '\0';
+    cJSON *p = cJSON_CreateObject();
+    cJSON_AddStringToObject(p, "session_id", long_id);
+    expect_error(gadget_set_chat_command(p), "invalid_param");
+    cJSON_Delete(p);
+    assert(s_chat_sets == 0);
+
+    // Exactly the limit fits, and a custom id is kept as given.
+    long_id[MUSE_CHAT_SID_MAX] = '\0';
+    char json[128];
+    snprintf(json, sizeof(json), "{\"session_id\":\"%s\"}", long_id);
+    expect_chat(json, "custom", long_id);
+    expect_chat("{\"session_id\":\"Side-Chat-2\"}", "custom", "Side-Chat-2");
+
+    // The gadget's own chat, by name or by its id.
+    expect_chat("{\"session_id\":\"gadget\"}", "gadget", GADGET_SID);
+    expect_chat("{\"session_id\":\"" GADGET_SID "\"}", "gadget", GADGET_SID);
+
+    // The main chat: no params, no session_id, null, empty or "main".
+    expect_chat(NULL, "main", "");
+    expect_chat("{\"session_id\":\"x\"}", "custom", "x");
+    expect_chat("{}", "main", "");
+    expect_chat("{\"session_id\":null}", "main", "");
+    expect_chat("{\"session_id\":\"\"}", "main", "");
+    expect_chat("{\"session_id\":\"main\"}", "main", "");
+    assert(s_chat_sets == 10);
+}
+
 int main(void) {
     test_show_text();
     test_set_mode();
+    test_set_chat();
     printf("gadget commands ok\n");
     return 0;
 }
