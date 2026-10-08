@@ -44,7 +44,8 @@ static const char *TAG = "muse_tts";
 
 #define PCM_BYTES (PICOTTS_SAMPLE_RATE * 2)       /* 1 s of speech ahead of the reader */
 #define STEP_FRAMES 127                           /* the most the engine hands over per step */
-#define STACK_BYTES (16 * 1024)                   /* in PSRAM: the task never writes flash */
+#define STACK_BYTES (48 * 1024)                   /* in PSRAM: the task never writes flash; Pico's text
+                                                   * pass (picopr) recursed past 16 KB on a long reply */
 #define PRIORITY 3                                /* below the chat session (5) and the voice task (6) */
 #define STOP_WAIT_MS 300                          /* for a stopped utterance to wind down */
 #define CHARS_PER_S 14                            /* Pico's pace, for a replay's captions */
@@ -173,8 +174,8 @@ static void speak(unsigned r)
     } else {
         atomic_store(&s_done, r);
         /* Under 1.0 keeps ahead of the speaker; the reply buffer absorbs the rest. */
-        ESP_LOGI(TAG, "spoke %.2fs in %.2fs (%.2fx real time)", (double)frames / PICOTTS_SAMPLE_RATE, secs,
-                 frames ? secs * PICOTTS_SAMPLE_RATE / frames : 0.0);
+        ESP_LOGI(TAG, "spoke %.2fs in %.2fs (%.2fx real time), stack %u bytes spare", (double)frames / PICOTTS_SAMPLE_RATE,
+                 secs, frames ? secs * PICOTTS_SAMPLE_RATE / frames : 0.0, (unsigned)uxTaskGetStackHighWaterMark(NULL));
     }
 }
 

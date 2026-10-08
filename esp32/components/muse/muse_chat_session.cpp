@@ -136,13 +136,17 @@ static const char *TAG = "muse_chat_session";
 #define NOTE_PART_BYTES (DICT_CHUNK_BYTES / 4 * 3)   /* staged PCM that base64s to one body chunk */
 /*
  * The Muse titles a new chat by its first message, and a voice note's is an
- * audio file ("Transcribe audio file"). So the first turn of a new chat
- * (muse_settings_chat_untitled) is transcribed here first, on
- * /api/voice/dictation, and the words go as a text message; the recording is
- * kept, and goes as a voice note after all if dictation hears nothing. Set to
- * 1 to do this for every voice turn.
+ * audio file ("Transcribe audio file"). Dictation would let the words go as
+ * text instead, but /api/voice/dictation answers 403, so DICTATE_NEW_CHAT is
+ * off: a new chat's first note asks the Muse to retitle the chat from what
+ * was said (RETITLE_ASK), which it does in the same turn (sessions.updated).
+ * DICTATE_EVERY_TURN dictates every voice turn, for when dictation works.
  */
+#define DICTATE_NEW_CHAT 0
 #define DICTATE_EVERY_TURN 0
+#define RETITLE_ASK                                                                                    \
+    "This is the first message in a new chat. As well as answering my voice message, rename this chat " \
+    "to a short title (2 to 5 words) for what I asked. Don't mention the renaming."
 #define DICT_FINAL_WAIT_US (6 * 1000000LL) /* dictating: release -> transcript, before the note goes instead */
 
 #define MAX_MSGS 8
@@ -1135,7 +1139,7 @@ static void turn_begin(uint32_t gen)
     if (VOICE_NOTE) {
         char sid[MUSE_CHAT_SID_MAX + 1];
         muse_settings_chat_sid(sid);
-        if ((DICTATE_EVERY_TURN || muse_settings_chat_untitled(sid)) && dictate_begin()) {
+        if ((DICTATE_EVERY_TURN || (DICTATE_NEW_CHAT && muse_settings_chat_untitled(sid))) && dictate_begin()) {
             ESP_LOGI(TAG, "%s: transcribing it here, to send the words", DICTATE_EVERY_TURN ? "voice turn" : "a new chat's first turn");
             s_turn.phase = P_LISTEN;
             return;
@@ -1262,12 +1266,17 @@ static bool open_note(void)
     }
     char sid[MUSE_CHAT_SID_MAX + 1], head[MUSE_CHAT_NOTE_HEAD_MAX];
     muse_settings_chat_sid(sid);
-    /* The mode goes as the text with the audio, but not to a chat the Muse
-     * hasn't titled yet: it would be titled by that. Its next message tells it. */
+    /* The mode goes as the text with the audio; a new chat's first note asks
+     * for a title as well, ahead of it (RETITLE_ASK). */
     int mode = -1;
-    const char *ctx = muse_settings_chat_untitled(sid) ? nullptr : muse_gadget_mode_context(sid, &mode);
+    const char *ctx = muse_gadget_mode_context(sid, &mode);
+    static char first[MUSE_CHAT_NOTE_MESSAGE_MAX + 1];
+    bool fresh = muse_settings_chat_untitled(sid);
+    if (fresh) {
+        snprintf(first, sizeof(first), "%s%s%s", RETITLE_ASK, ctx ? "\n\n" : "", ctx ? ctx : "");
+    }
     message_to(sid, ctx ? mode : -1);
-    size_t n = muse_chat_note_head(sid, ctx, head, sizeof(head));
+    size_t n = muse_chat_note_head(sid, fresh ? first : ctx, head, sizeof(head));
     if (sid[0] || ctx) {
         ESP_LOGI(TAG, "voice note to chat %s%s%s", sid[0] ? sid : "main", ctx ? ", telling it: " : "",
                  ctx ? muse_gadget_mode_name((muse_gadget_mode_t)mode) : "");
