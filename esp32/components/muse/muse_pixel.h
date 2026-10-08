@@ -74,6 +74,9 @@ typedef struct {
      * in bed). Idle only: heavy lids, a slower bob, a slouch, yawns, and at
      * the most, nodding off. A renderer may leave it alone. */
     float tired;
+    /* No Wi-Fi: a little signal-with-a-slash badge on the floor at Muse's
+     * right (the battery's is at his left). A renderer may leave it alone. */
+    bool offline;
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */
