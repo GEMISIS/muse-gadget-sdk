@@ -432,6 +432,50 @@ static bool update_power(void)
 }
 
 /*
+ * Plugged in to charge: Muse cheers, a hop and a lightning bolt on the face
+ * (muse_ui_plugged) and a little jingle (MUSE_EARCON_CHARGE), if he's idle
+ * with no turn under way. Asleep, the screen wakes for it; but asleep at
+ * night he stays asleep, and at night there's no jingle. A plug again within
+ * CHEER_GAP_MS (a loose cable) isn't cheered again, unless `forced` (">charge").
+ */
+#define CHEER_GAP_MS 10000
+
+static void cheer_plugged(const char *why, bool forced)
+{
+    static TickType_t last;
+    static bool cheered;
+    TickType_t now = xTaskGetTickCount();
+    bool night = muse_gadget_mode() == MUSE_GADGET_NIGHT;
+    const char *quiet = muse_state_mode(NULL) != MUSE_MODE_IDLE || muse_hatch_turn_busy() ? "busy"
+                        : night && muse_state_asleep()                                   ? "asleep at night"
+                        : !forced && cheered && now - last < pdMS_TO_TICKS(CHEER_GAP_MS) ? "just cheered"
+                                                                                          : NULL;
+    if (quiet) {
+        ESP_LOGI(TAG, "%s: no cheer (%s)", why, quiet);
+        return;
+    }
+    cheered = true;
+    last = now;
+    ESP_LOGI(TAG, "%s: cheering%s", why, night ? " (night: no jingle)" : "");
+    set_asleep(false, why);
+    muse_ui_plugged();
+    if (!night) {
+        muse_voice_earcon(MUSE_EARCON_CHARGE);
+    }
+}
+
+/* USB power or charging arriving, after the first reading (so not at boot): cheer_plugged. */
+static void note_plug(const muse_power_t *p)
+{
+    static int was = -1;   /* powered at the last reading; -1 before the first */
+    int powered = p->usb || p->charging;
+    if (was == 0 && powered) {
+        cheer_plugged("plugged in", false);
+    }
+    was = powered;
+}
+
+/*
  * Low power for WIFI_NAP_MS: Wi-Fi off, since keeping it associated costs
  * more than the rest of the chip. It rejoins when the screen wakes or USB
  * power arrives; meanwhile nothing reaches the device over the network.
@@ -517,6 +561,7 @@ static void input_task(void *arg)
             if (muse_board->read_power && muse_board->read_power(&p) == ESP_OK) {
                 muse_state_set_power(&p);
                 muse_battery_note_power(&p, muse_state_on_battery());
+                note_plug(&p);
             }
         }
 
@@ -816,6 +861,10 @@ static bool console_command(char *line, bool whole)
         muse_ui_quake();   /* as a shake of the board would */
         return true;
     }
+    if (!strcmp(line, "charge")) {
+        cheer_plugged("serial", true);   /* as plugging in would */
+        return true;
+    }
 #if CONFIG_MUSE_GADGET_UP_NEXT
     if (!strcmp(line, "brief")) {
         muse_up_next_refresh();
@@ -868,7 +917,8 @@ static bool console_command(char *line, bool whole)
  * the device's state, "power" the battery meter (muse_battery.h) and
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
  * two minutes asleep on battery would; 'w' rejoins), "quake" shakes Muse
- * up as a shake of the board does, "brief" asks the Muse for the face's
+ * up as a shake of the board does, "charge" cheers as plugging in does
+ * (cheer_plugged), "brief" asks the Muse for the face's
  * "up next" line now and "brief?" prints it (muse_up_next.h), "face=" shows a face
  * (see set_face), "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and "chat_sid=", "chat_new=" and "chats" pick
