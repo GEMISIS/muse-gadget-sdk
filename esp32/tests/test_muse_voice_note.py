@@ -246,7 +246,6 @@ static int64_t open_stream(kind_t kind, const char *verb, const char *path, cons
 }
 /* muse_settings.h: notes go to the main chat, so the head has no session_id. */
 static void muse_settings_chat_sid(char out[MUSE_CHAT_SID_MAX + 1]) { out[0] = 0; }
-static bool muse_settings_chat_untitled(const char *) { return false; }
 /* muse_gadget_mode.h: the main chat last heard another mode when the test says so. */
 static const char *muse_gadget_mode_context(const char *, int *mode) { *mode = 0; return getenv("NOTE_MODE_CONTEXT"); }
 /* A dictated turn whose dictation failed: the kept recording goes as the note. */

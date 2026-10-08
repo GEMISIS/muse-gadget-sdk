@@ -17,15 +17,18 @@
 #include "muse_gadget_mode.h"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
+#include "muse_chat.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_wifi.h"
@@ -317,6 +320,62 @@ static void check_network(void)
     s_suggest_seq++;
 }
 
+/* A chat to have retitled (muse_gadget_mode_retitle), with s_lock held; "" for none. */
+static char s_retitle[MUSE_CHAT_SID_MAX + 1];
+static int64_t s_retitle_at;
+
+void muse_gadget_mode_retitle(const char *sid)
+{
+    if (!s_lock || !sid || !sid[0]) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(s_retitle, sid, sizeof(s_retitle));
+    s_retitle_at = esp_timer_get_time();
+    xSemaphoreGive(s_lock);
+}
+
+/*
+ * The typed turn that has the Muse retitle a chat: once no turn is running
+ * (the first reply's done) and the chat's still the one picked; its reply
+ * only reaches the console. Given up after a couple of minutes.
+ */
+static void send_retitle(void)
+{
+#if CONFIG_MUSE_HATCH
+    char sid[MUSE_CHAT_SID_MAX + 1], cur[MUSE_CHAT_SID_MAX + 1];
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    strlcpy(sid, s_retitle, sizeof(sid));
+    bool stale = sid[0] && esp_timer_get_time() - s_retitle_at > 120 * 1000000LL;
+    if (stale) {
+        s_retitle[0] = '\0';
+    }
+    xSemaphoreGive(s_lock);
+    if (!sid[0] || stale) {
+        return;
+    }
+    float t;
+    muse_mode_t face = muse_state_mode(&t);
+    if (!muse_hatch_ready() || muse_hatch_turn_busy() || face == MUSE_MODE_LISTENING || face == MUSE_MODE_THINKING
+        || face == MUSE_MODE_SPEAKING) {
+        return;   /* next tick */
+    }
+    muse_settings_chat_sid(cur);
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_retitle[0] = '\0';
+    xSemaphoreGive(s_lock);
+    if (strcmp(cur, sid) != 0) {
+        return;   /* moved on to another chat: leave it be */
+    }
+    char *ask = strdup("Rename this chat to a short title (2 to 5 words) for what I asked in my voice message. "
+                       "Reply with just the new title.");
+    if (ask) {
+        ESP_LOGI(TAG, "asking the Muse to retitle chat %s", sid);
+        muse_hatch_text_turn(ask);   /* frees it */
+    }
+#endif
+}
+
 static void mode_task(void *arg)
 {
     (void)arg;
@@ -325,6 +384,7 @@ static void mode_task(void *arg)
             check_schedule();
         }
         check_network();
+        send_retitle();
         muse_settings_chats_flush();   /* titles the Muse gave new chats, and what chats were told */
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
     }

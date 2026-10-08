@@ -63,6 +63,9 @@ void muse_gadget_mode_pick(muse_gadget_mode_t mode);
  * once the Muse takes the message, pass it to muse_gadget_mode_told().
  */
 const char *muse_gadget_mode_context(const char *sid, int *mode);
+/* Chat `sid` was titled after an audio file: once its turn is done, ask the
+ * Muse, in a typed turn whose reply isn't shown, to retitle it. */
+void muse_gadget_mode_retitle(const char *sid);
 /* The Muse took a message that told chat `sid` this mode (saved, as
  * muse_settings_chat_set_told). */
 void muse_gadget_mode_told(const char *sid, int mode);
