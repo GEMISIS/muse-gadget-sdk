@@ -30,11 +30,12 @@
 #include "muse_extras.h"
 #include "muse_state.h"
 #include "muse_dialog.h"
+#include "muse_style.h"
 #include "muse_up_next.h"
 
-#define COLOR_TEXT 0xb9b2d8     /* between muse_ui.c's dim and caption colours */
-#define COLOR_DIM 0x8b84a8
-#define COLOR_LOW 0xff7a7a      /* battery under LOW_PCT */
+#define COLOR_TEXT MUSE_COLOR_FACE_TEXT   /* the clock: between dim and the captions' colour */
+#define COLOR_DIM MUSE_COLOR_DIM
+#define COLOR_LOW MUSE_COLOR_DANGER       /* battery under LOW_PCT */
 #define LOW_PCT 15
 /* In from the right edge: the screen's corners are rounded, and at 16 px in
  * the battery's last digit was cut off by the curve. */
@@ -55,7 +56,7 @@
 #define UP_BOTTOM 34
 #define COLOR_UP_BG 0x1d1733
 #define COLOR_UP_EDGE 0x5b3fa0
-#define COLOR_UP_ICON 0xa77dff
+#define COLOR_UP_ICON MUSE_COLOR_ACCENT
 #define COLOR_UP_TEXT 0xe4defa
 /* Top centre, over the state (muse_ui.c's STATE_Y) and Muse's head; the
  * corner holds the connectivity icons. Offsets are for a 466 px tall
