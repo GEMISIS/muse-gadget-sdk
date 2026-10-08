@@ -63,6 +63,7 @@ static const char *TAG = "board";
 #define PMU_KEY_EVERY 2         /* poll the PMU over I2C every 20 ms */
 #define PWR_LONG_MS 1500        /* the power menu; the hardware cuts power at 10 s */
 
+static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_touch_handle_t s_tp;
 static muse_gpio_button_t s_talk, s_boot;
@@ -116,15 +117,14 @@ static lv_display_t *display_start(lv_indev_t **touch)
         return NULL;
     }
 
-    esp_lcd_panel_handle_t panel;
     const bsp_display_config_t panel_cfg = {
         .max_transfer_sz = LCD_CHUNK_BYTES,
     };
-    if (bsp_display_new(&panel_cfg, &panel, &s_io) != ESP_OK) {
+    if (bsp_display_new(&panel_cfg, &s_panel, &s_io) != ESP_OK) {
         return NULL;
     }
     const esp_lv_adapter_display_config_t disp_cfg = {
-        .panel = panel,
+        .panel = s_panel,
         .panel_io = s_io,
         .profile = {
             .interface = ESP_LV_ADAPTER_PANEL_IF_OTHER,
@@ -175,6 +175,27 @@ static void set_brightness(int pct)
 static void send_sleep(void *sleep)
 {
     esp_lcd_panel_io_tx_param(s_io, (0x02 << 24) | ((*(bool *)sleep ? 0x10 : 0x11) << 8), NULL, 0);
+}
+
+static void send_flip(void *flipped)
+{
+    /* The BSP's init leaves MADCTL at 0xA0 (MY | MV), which the driver keeps;
+     * MX in place of MY is the same picture turned 180 degrees (0x60). */
+    bool f = *(bool *)flipped;
+    esp_lcd_panel_mirror(s_panel, f, !f);
+}
+
+/*
+ * Touch is mirrored in software (esp_lcd_touch.c: mirror x, then y, then
+ * swap). Upright that's mirror y and swap: the screen's (x, y) is
+ * (H - ty, tx). Turned it's (W - x, H - y) = (ty, W - tx), which is mirror x
+ * and swap, the panel being square.
+ */
+static void set_flip(bool flipped)
+{
+    muse_lcd_bands_run(send_flip, &flipped);
+    esp_lcd_touch_set_mirror_x(s_tp, flipped);
+    esp_lcd_touch_set_mirror_y(s_tp, !flipped);
 }
 
 /* Plain SLPIN/SLPOUT over the QSPI command path, as on the 1.75C, rather than
@@ -269,6 +290,7 @@ static const muse_board_t s_board = {
     .set_brightness = set_brightness,
     .panel_sleep = panel_sleep,
     .display_pause = display_pause,
+    .set_flip = set_flip,
     .audio_init = audio_init,
     .mic_slot = -1,
     .set_mic_gain = set_mic_gain,

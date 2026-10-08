@@ -40,6 +40,7 @@
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
+#include "muse_orient.h"
 #include "muse_pixel.h"
 #include "muse_power_menu.h"
 #include "muse_settings.h"
@@ -147,6 +148,7 @@ static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
 static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
+static bool s_flipped;      /* the screen turned 180 degrees (muse_board_t.set_flip) */
 
 /*
  * While Muse is thinking or speaking it shrinks to make room for the reply:
@@ -422,12 +424,38 @@ static void set_mic_color(uint32_t color)
     }
 }
 
+/* An alignment seen from the other side of the centre, as on a turned screen. */
+static lv_align_t turn_align(lv_align_t a)
+{
+    switch (a) {
+    case LV_ALIGN_TOP_LEFT: return LV_ALIGN_BOTTOM_RIGHT;
+    case LV_ALIGN_TOP_MID: return LV_ALIGN_BOTTOM_MID;
+    case LV_ALIGN_TOP_RIGHT: return LV_ALIGN_BOTTOM_LEFT;
+    case LV_ALIGN_BOTTOM_LEFT: return LV_ALIGN_TOP_RIGHT;
+    case LV_ALIGN_BOTTOM_MID: return LV_ALIGN_TOP_MID;
+    case LV_ALIGN_BOTTOM_RIGHT: return LV_ALIGN_TOP_LEFT;
+    case LV_ALIGN_LEFT_MID: return LV_ALIGN_RIGHT_MID;
+    case LV_ALIGN_RIGHT_MID: return LV_ALIGN_LEFT_MID;
+    default: return a;
+    }
+}
+
+/* Beside its button, which is across the screen while it's turned. */
+static void place_hint(lv_obj_t *icon, const muse_button_hint_t *h)
+{
+    if (s_flipped) {
+        lv_obj_align(icon, turn_align(h->align), -h->x, -h->y);
+    } else {
+        lv_obj_align(icon, h->align, h->x, h->y);
+    }
+}
+
 /* Icons beside the physical buttons, in place of an instruction caption. */
 static void build_button_icons(lv_obj_t *face)
 {
     const muse_button_hint_t *t = &muse_board->talk_hint, *a = &muse_board->aux_hint;
     s_mic_icon = make_mic(face, s_tall ? 24 : s_small ? 12 : 26);
-    lv_obj_align(s_mic_icon, t->align, t->x, t->y);
+    place_hint(s_mic_icon, t);
     set_mic_color(COLOR_DIM);
 
     /* Without touch the aux button opens the menu rather than sleeping. A board
@@ -437,7 +465,31 @@ static void build_button_icons(lv_obj_t *face)
     }
     s_aux_icon = make_label(face, s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28, COLOR_DIM);
     lv_label_set_text(s_aux_icon, muse_board->touch ? LV_SYMBOL_POWER : LV_SYMBOL_LIST);
-    lv_obj_align(s_aux_icon, a->align, a->x, a->y);
+    place_hint(s_aux_icon, a);
+}
+
+/*
+ * Turns the screen over when the board is (muse_orient.h): the panel and
+ * touch on the board's side, then everything redrawn the new way round.
+ * LVGL draws as ever; only the icons beside the keys move, the keys now
+ * being along the bottom. Their spot was checked against the reply pages
+ * the right way up (add_hides); turned, the 2.16's talk icon goes to the
+ * bottom left corner, clear of the pages and the captions.
+ */
+static void update_flip(float now)
+{
+    bool flip = muse_board->set_flip && muse_orient_flipped(now);
+    if (flip == s_flipped) {
+        return;
+    }
+    s_flipped = flip;
+    muse_board->set_flip(flip);
+    place_hint(s_mic_icon, &muse_board->talk_hint);
+    if (s_aux_icon) {
+        place_hint(s_aux_icon, &muse_board->aux_hint);
+    }
+    muse_power_menu_set_flipped(flip);
+    lv_obj_invalidate(lv_screen_active());   /* with the layers over it */
 }
 
 static void on_canvas_clicked(lv_event_t *e)
@@ -1508,6 +1560,7 @@ static void frame_tick(lv_timer_t *timer)
         s_last_mode = mode;
     }
     muse_power_menu_tick(now);
+    update_flip(now);   /* asleep too, so it wakes the right way up */
     if (update_sleep()) {
         return;
     }

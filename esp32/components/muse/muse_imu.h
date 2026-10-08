@@ -49,8 +49,13 @@ void muse_imu_tick(void);
 #if CONFIG_MUSE_GADGET_IMU
 /* Today's steps, or -1 without the IMU. Any task. */
 int muse_imu_steps(void);
+/* The acceleration in g, on the chip's axes, when it last lay still for a
+ * second and a half: which way up it is, as the axis pointing up reads +1 g.
+ * False until it has. Any task. */
+bool muse_imu_gravity(float out[3]);
 #else
 static inline int muse_imu_steps(void) { return -1; }
+static inline bool muse_imu_gravity(float out[3]) { (void)out; return false; }
 #endif
 
 #ifdef __cplusplus
