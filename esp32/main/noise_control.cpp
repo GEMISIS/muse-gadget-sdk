@@ -816,7 +816,7 @@ static json_send_status send_json_body_chunk(esp_tls_t *tls, ClientSession &sess
     }
     // Recheck both budgets before EVERY chunk, including retained registration:
     // the queue-boundary sample cannot cover later turns of a paused message.
-    if (!noise_tx_has_dma_headroom(nullptr)
+    if (!noise_tx_has_control_headroom()
         || !noise_tx_has_contiguous_dma_headroom()) {
         return json_send_status::Pending;
     }
@@ -2260,7 +2260,7 @@ static session_result_t run_session(stack_monitor_t *stack) {
             }
         }
         pending_result pr;
-        while (!control_tx.json && noise_tx_has_dma_headroom(nullptr)
+        while (!control_tx.json && noise_tx_has_control_headroom()
                && xQueueReceive(s_result_q, &pr, 0) == pdTRUE) {
             if (!noise_ctrl_session_is_current(
                     pr.session_generation, session_generation)) {

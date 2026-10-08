@@ -61,6 +61,12 @@ bool noise_tx_has_dma_headroom(size_t *dma_free);
 // Muse builds only.
 bool noise_tx_has_dma_headroom_reclaiming(size_t reclaimable);
 
+// The control channel's margin (registration, invoke results, every control
+// chunk): the burst margin above, except on the S3-2.16 Muse build, whose
+// internal RAM rests near it and whose control messages are at most one 8 KiB
+// chunk at a time, so a smaller one: left at 16 KiB, link.register sat unsent.
+bool noise_tx_has_control_headroom(void);
+
 // Small contiguous AES-allocation floor, independent of the total-free burst
 // margin above. Control chunks and tunnel pings require BOTH checks. This
 // largest-block heap walk is intentionally absent from the tunnel batch hot
