@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -47,28 +48,55 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label);
 /*
  * Asks Muse, in the background (muse_chat_bg_ask_for, in a chat of its own),
  * to push the image at `path` (a workspace file, or an http(s) URL Muse
- * downloads) with display.show_image, unless Muse pushes one by itself first:
- * every mode's contract asks it to, in the same turn (muse_gadget_mode.c).
- * So the request waits for the reply's turn to be over (muse_present_turn_over),
- * then MUSE_PRESENT_PUSH_WAIT_US more; any image pushed meanwhile
- * (muse_present_bytes) calls it off. Then it goes once no turn runs and no
- * other background request is under way, giving up after two minutes. A
- * newer image replaces one still waiting; one asked for in the last ten
- * minutes isn't asked for again. Nothing shows until the push is all here.
- * Any task.
+ * downloads) with display.show_image: straight away, beside the turn that
+ * named it, once no other background request is under way, giving up after
+ * two minutes. Every mode's contract asks Muse to push it by itself in that
+ * turn too (muse_gadget_mode.c): one pushed first calls off a request not
+ * gone yet, and of two pushes while the request is under way only the first
+ * shows. A newer image replaces one still waiting; one asked for in the last
+ * ten minutes isn't asked for again. Nothing shows until the push is all
+ * here. Any task.
  */
-#define MUSE_PRESENT_PUSH_WAIT_US (15 * 1000000LL)
 void muse_present_ask(const char *path, const char *label);
-
-/* The reply's turn is over (or there's none): an image muse_present_ask
- * holds back is asked for MUSE_PRESENT_PUSH_WAIT_US from now, unless one is
- * pushed meanwhile. Any task. */
-void muse_present_turn_over(void);
 
 /* Counts the pushed images handled: shown, or dropped as unshowable. Moves
  * once the face has the image (muse_ui_present), which then takes it out of
  * Muse's pocket. Any task. */
 uint32_t muse_present_seq(void);
+
+/*
+ * Waiting for an image (a reply's speech held for it): on starts the clock
+ * muse_present_progress estimates by, off stops it. Any task.
+ */
+void muse_present_wait(bool on);
+
+/* A display.show_image chunk taken: `received` bytes so far of `size` (0 if
+ * not said). Any task. */
+void muse_present_chunk(size_t received, size_t size);
+
+/* How far the image waited for has got, 0-100, or -1 when none is waited
+ * for. Any task. */
+int muse_present_progress(void);
+
+/*
+ * The estimate behind it: Muse writes the image out as base64 before any of
+ * it arrives, about a minute, so until bytes come it eases towards 90% over
+ * that, then follows the bytes; 99% until it's shown.
+ */
+#define MUSE_PRESENT_EXPECTED_US (60 * 1000000LL)
+static inline int muse_present_estimate(int64_t waited_us, size_t received, size_t size)
+{
+    /* 90 * (1 - e^(-t/T)), T half the expected wait: 78% by then, 88% at twice it. */
+    double x = waited_us > 0 ? (double)waited_us * 2 / MUSE_PRESENT_EXPECTED_US : 0;
+    int p = (int)(90.0 * (1.0 - exp(-x)));
+    if (received && size) {
+        int got = (int)((uint64_t)received * 100 / size);
+        p = got > p ? got : p;
+    } else if (received) {
+        p = p > 90 ? p : 90;
+    }
+    return p < 0 ? 0 : p > 99 ? 99 : p;
+}
 
 #ifdef __cplusplus
 }

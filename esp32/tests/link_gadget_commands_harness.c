@@ -228,6 +228,13 @@ static bool muse_present_bytes(uint8_t *data, size_t len, const char *label) {
     return true;
 }
 
+// How far the push has got, for the caption's percentage.
+static size_t s_chunk_received, s_chunk_size;
+static void muse_present_chunk(size_t received, size_t size) {
+    s_chunk_received = received;
+    s_chunk_size = size;
+}
+
 #include "gadget_commands.inc"
 
 // ---- Checks ----
@@ -614,6 +621,7 @@ static void test_show_image_chunks(void) {
     assert(s_presents == 1 && s_presented_len == len && !memcmp(s_presented, img, len));
     assert(!strcmp(s_presented_label, "red panda"));
     assert(!s_push.buf && !s_push.len);   // handed over, not kept
+    assert(s_chunk_received == len && s_chunk_size == len);   // all of it, for the percentage
 
     // The same image again within two minutes isn't shown twice; after, it is.
     s_now_us += 60 * 1000000LL;
