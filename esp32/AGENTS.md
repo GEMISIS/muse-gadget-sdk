@@ -364,10 +364,12 @@ The default avatar is in `avatar/`: its renderer (`muse_pixel.c`) and
 its animation (`jollybot.gif`, and `happy_anim.c/.h` made from it by
 `tools/gen_happy_anim.py`).
 
-Third-party code keeps its upstream license and header: `minimp3.h` (CC0) and
-`main/pixel_font.c` (BSD-2-Clause, Adafruit). Don't restyle them or replace
-their headers with the Apache one; `components/minimp3/README.md` says how to
-update minimp3.
+Third-party code keeps its upstream license and header: `minimp3.h` (CC0),
+`main/pixel_font.c` (BSD-2-Clause, Adafruit) and `components/libwebp/src`
+(libwebp 1.5.0's decoder, BSD-3-Clause, its `COPYING` and `PATENTS` beside
+it). Don't restyle them or replace their headers with the Apache one;
+`components/minimp3/README.md` says how to update minimp3, and
+`components/libwebp/CMakeLists.txt` which of libwebp's files are kept.
 
 The Apache License doesn't cover the Jollybot avatar in `avatar/`. Its files
 carry only a Meta copyright line; don't add the Apache header to them.
@@ -498,8 +500,14 @@ the VM won't serve to the gadget. Every gadget mode's contract
 (`muse_gadget_mode.c`), and a reminder after every message, ask Muse to push
 an image it shows in the same turn, as a 200x200 JPEG under 12 KB in one
 chunk; `muse_present_ask()` also asks it straight away in a background request
-beside the turn, and the first push wins. A voice reply's speech waits for the
+beside the turn, and the first push wins. A web image Muse writes into a reply
+is fetched straight from the web first. A voice reply's speech waits for the
 image ("GETTING THE IMAGE... 40%", the ring showing the same), up to a cap.
+Baseline JPEG is decoded by the ROM's decoder; with
+`CONFIG_MUSE_PRESENT_FORMATS` (the 2.16), PNG and WebP too
+(`components/muse/muse_image.c`, `tests/test_muse_image.py`), all in PSRAM.
+Progressive JPEG isn't shown: neither the ROM decoder nor `esp_new_jpeg`
+reads it.
 
 Muse sees the command once the board reconnects with the new firmware. Keep
 the management commands that `on_ws_command()` also handles (`device.list_vms`,

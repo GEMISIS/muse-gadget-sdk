@@ -44,6 +44,9 @@
 #include "rom/tjpgd.h"
 
 #include "muse_chat.h"
+#if CONFIG_MUSE_PRESENT_FORMATS
+#include "muse_image.h"
+#endif
 #include "muse_mem.h"
 #include "muse_sd.h"
 #include "muse_settings.h"
@@ -55,6 +58,7 @@ static const char *TAG = "muse_present";
 #define TASK_STACK (20 * 1024)          /* in PSRAM: the decoder, asking, and a TLS fetch of a web image */
 #define WEB_MAX (768 * 1024)            /* a web image bigger than this goes to Muse to shrink */
 #define WEB_TIMEOUT_MS 6000
+#define WEB_BUFFER 16384                /* esp_http_client's receive buffer (PSRAM: over the 4 KB internal limit) */
 #define TASK_PRIORITY 3                 /* under the UI (5), the chat session (5) and draw_url's (4) */
 #define JOBS 3                          /* the one being shown, the next, and a nudge to ask */
 #define JPEG_POOL_BYTES 3100            /* the ROM decoder's work pool, as its documentation asks */
@@ -180,6 +184,62 @@ static uint16_t *resize(const uint16_t *src, int sw, int sh, int dw, int dh)
     return dst;
 }
 
+/*
+ * Sizes `img` (iw x ih RGB565, taken whatever happens) to fit the screen and
+ * to the size Muse holds it up, and hands both to the face. False if it
+ * couldn't be.
+ */
+static bool present_pixels(const job_t *job, uint16_t *img, int iw, int ih, int sw, int sh, int photo)
+{
+    int fw, fh, hw = 0, hh = 0;
+    fit(iw, ih, sw, sh, &fw, &fh);
+    if (photo) {
+        fit(iw, ih, photo, photo, &hw, &hh);
+    }
+    int64_t t0 = esp_timer_get_time();
+    uint16_t *full = fw == iw && fh == ih ? img : resize(img, iw, ih, fw, fh);
+    uint16_t *held = photo ? resize(img, iw, ih, hw, hh) : NULL;
+    if (full != img) {
+        heap_caps_free(img);
+    }
+    if (!full || (photo && !held)) {
+        ESP_LOGW(TAG, "\"%s\": out of memory", job->label);
+        heap_caps_free(full);
+        heap_caps_free(held);
+        return false;
+    }
+    ESP_LOGI(TAG, "\"%s\": sized to %dx%d and %dx%d in %d ms", job->label, fw, fh, hw, hh, (int)ms_since(t0));
+    if (!muse_ui_present(full, fw, fh, held, hw, hh, job->sharper)) {
+        ESP_LOGW(TAG, "\"%s\": the face didn't take it", job->label);
+        heap_caps_free(full);
+        heap_caps_free(held);
+        return false;
+    }
+    return true;
+}
+
+#if CONFIG_MUSE_PRESENT_FORMATS
+/* A PNG or WebP (muse_image.h): decoded to fit the screen, then as a JPEG's. */
+static bool show_other(const job_t *job, muse_image_kind_t kind)
+{
+    int sw, sh, photo;
+    if (!muse_ui_present_sizes(&sw, &sh, &photo)) {
+        ESP_LOGW(TAG, "\"%s\": no screen to show it on", job->label);
+        return false;
+    }
+    int64_t t0 = esp_timer_get_time();
+    muse_image_t img;
+    char err[64];
+    if (!muse_image_decode(job->data, job->len, sw, sh, &img, err, sizeof(err))) {
+        ESP_LOGW(TAG, "\"%s\": %s: %s", job->label, muse_image_kind_name(kind), err);
+        return false;
+    }
+    ESP_LOGI(TAG, "\"%s\": %dx%d %s, decoded to %dx%d in %d ms", job->label, img.src_w, img.src_h,
+             muse_image_kind_name(kind), img.w, img.h, (int)ms_since(t0));
+    return present_pixels(job, img.px, img.w, img.h, sw, sh, photo);
+}
+#endif
+
 /* Decodes and hands it to the face; false if it couldn't be. */
 static bool show_jpeg(const job_t *job)
 {
@@ -196,14 +256,10 @@ static bool show_jpeg(const job_t *job)
     jpeg_t j = { .data = job->data, .len = job->len };
     JDEC jd;
     JRESULT rc = jd_prepare(&jd, jpeg_in, pool, JPEG_POOL_BYTES, &j);
-    uint16_t *full = NULL, *held = NULL;
-    int fw = 0, fh = 0, hw = 0, hh = 0;
+    int fw = 0, fh = 0;
     uint8_t scale = 0;
     if (rc == JDR_OK) {
         fit(jd.width, jd.height, sw, sh, &fw, &fh);
-        if (photo) {
-            fit(jd.width, jd.height, photo, photo, &hw, &hh);
-        }
         /* The most the decoder can shrink it and still leave as much as the screen shows. */
         while (scale < 3 && (int)(jd.width >> (scale + 1)) >= fw && (int)(jd.height >> (scale + 1)) >= fh) {
             scale++;
@@ -226,45 +282,45 @@ static bool show_jpeg(const job_t *job)
         heap_caps_free(j.out);
         return false;
     }
-    int64_t t1 = esp_timer_get_time();
-    full = fw == j.w && fh == j.h ? j.out : resize(j.out, j.w, j.h, fw, fh);
-    held = photo ? resize(j.out, j.w, j.h, hw, hh) : NULL;
-    if (full != j.out) {
-        heap_caps_free(j.out);
-    }
-    if (!full || (photo && !held)) {
-        ESP_LOGW(TAG, "\"%s\": out of memory", job->label);
-        heap_caps_free(full);
-        heap_caps_free(held);
-        return false;
-    }
-    ESP_LOGI(TAG, "\"%s\": %ux%u JPEG, decoded at 1/%d in %d ms, sized to %dx%d and %dx%d in %d ms", job->label,
-             (unsigned)jd.width, (unsigned)jd.height, 1 << scale, (int)((t1 - t0) / 1000), fw, fh, hw, hh,
-             (int)ms_since(t1));
-    if (!muse_ui_present(full, fw, fh, held, hw, hh, job->sharper)) {
-        ESP_LOGW(TAG, "\"%s\": the face didn't take it", job->label);
-        heap_caps_free(full);
-        heap_caps_free(held);
-        return false;
-    }
-    return true;
+    ESP_LOGI(TAG, "\"%s\": %ux%u JPEG, decoded at 1/%d to %dx%d in %d ms", job->label, (unsigned)jd.width,
+             (unsigned)jd.height, 1 << scale, j.w, j.h, (int)ms_since(t0));
+    return present_pixels(job, j.out, j.w, j.h, sw, sh, photo);
 }
 
 /* ---- Fetching a web image ourselves --------------------------------------- */
 
 static bool run(job_t *job);
 
+/* Whether the bytes are a format shown here. */
+static bool can_show(const uint8_t *d, size_t len)
+{
+    bool jpeg = len > 3 && d[0] == 0xFF && d[1] == 0xD8;
+#if CONFIG_MUSE_PRESENT_FORMATS
+    muse_image_kind_t kind = muse_image_kind(d, len);
+    return jpeg || kind == MUSE_IMAGE_PNG || kind == MUSE_IMAGE_WEBP;
+#else
+    return jpeg;
+#endif
+}
+
 typedef struct {
     uint8_t *buf;
     size_t len, cap;
     bool too_big;
+    int64_t connected_us, first_us;   /* for the log: the handshake, then the bytes */
 } fetch_t;
 
 static esp_err_t fetch_event(esp_http_client_event_t *ev)
 {
     fetch_t *f = ev->user_data;
+    if (ev->event_id == HTTP_EVENT_ON_CONNECTED && !f->connected_us) {
+        f->connected_us = esp_timer_get_time();
+    }
     if (ev->event_id != HTTP_EVENT_ON_DATA || f->too_big) {
         return ESP_OK;
+    }
+    if (!f->first_us) {
+        f->first_us = esp_timer_get_time();
     }
     if (esp_http_client_get_status_code(ev->client) != 200) {
         return ESP_OK;   /* a redirect's body, or an error page */
@@ -305,7 +361,7 @@ static bool show_from_web(const char *url, const char *label)
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = WEB_TIMEOUT_MS,
-        .buffer_size = 2048,
+        .buffer_size = WEB_BUFFER,
         .buffer_size_tx = 1024,
         .max_redirection_count = 4,
         .event_handler = fetch_event,
@@ -316,19 +372,30 @@ static bool show_from_web(const char *url, const char *label)
     if (!http) {
         return false;
     }
+#if CONFIG_MUSE_PRESENT_FORMATS
+    esp_http_client_set_header(http, "Accept", "image/jpeg,image/png,image/webp;q=0.9,image/*;q=0.5");
+#else
     esp_http_client_set_header(http, "Accept", "image/jpeg,image/*;q=0.8");
+#endif
     esp_err_t err = esp_http_client_perform(http);
     int status = esp_http_client_get_status_code(http);
     esp_http_client_cleanup(http);
-    bool jpeg = f.len > 3 && f.buf[0] == 0xFF && f.buf[1] == 0xD8;
-    if (err != ESP_OK || status != 200 || f.too_big || !jpeg) {
-        ESP_LOGW(TAG, "\"%s\": couldn't fetch it here (%s, HTTP %d, %u bytes%s%s) in %d ms: asking Muse", label,
-                 esp_err_to_name(err), status, (unsigned)f.len, f.too_big ? ", too big" : "",
-                 f.len && !jpeg ? ", not a JPEG" : "", (int)ms_since(t0));
+    bool showable = f.len > 3 && can_show(f.buf, f.len);
+    int64_t t1 = esp_timer_get_time();
+    /* Connecting (DNS, TCP, TLS) apart from the bytes: which one was slow. */
+    int connect_ms = f.connected_us ? (int)((f.connected_us - t0) / 1000) : -1;
+    int body_ms = f.first_us ? (int)((t1 - f.first_us) / 1000) : 0;
+    int kbps = body_ms > 0 ? (int)((uint64_t)f.len * 8 / body_ms) : 0;
+    if (err != ESP_OK || status != 200 || f.too_big || !showable) {
+        ESP_LOGW(TAG, "\"%s\": couldn't fetch it here (%s, HTTP %d, %u bytes%s%s) in %d ms (connected in %d, "
+                 "%d kbit/s): asking Muse", label, esp_err_to_name(err), status, (unsigned)f.len,
+                 f.too_big ? ", too big" : "", f.len && !showable ? ", a format not shown here" : "",
+                 (int)ms_since(t0), connect_ms, kbps);
         heap_caps_free(f.buf);
         return false;
     }
-    ESP_LOGI(TAG, "\"%s\": fetched here: %u bytes in %d ms", label, (unsigned)f.len, (int)ms_since(t0));
+    ESP_LOGI(TAG, "\"%s\": fetched here: %u bytes in %d ms (connected in %d ms, then %d ms at %d kbit/s)", label,
+             (unsigned)f.len, (int)ms_since(t0), connect_ms, body_ms, kbps);
     job_t job = { .data = f.buf, .len = f.len };
     strlcpy(job.label, label, sizeof(job.label));
     bool shown = run(&job);
@@ -552,14 +619,29 @@ static bool run(job_t *job)
 {
     const uint8_t *d = job->data;
     bool jpeg = job->len > 3 && d[0] == 0xFF && d[1] == 0xD8;
+#if CONFIG_MUSE_PRESENT_FORMATS
+    muse_image_kind_t kind = muse_image_kind(d, job->len);
+    if (!jpeg && kind != MUSE_IMAGE_PNG && kind != MUSE_IMAGE_WEBP) {
+        ESP_LOGW(TAG, "\"%s\": %s: only JPEG, PNG and WebP are shown", job->label, muse_image_kind_name(kind));
+        return false;
+    }
+    const char *ext = jpeg ? "jpg" : muse_image_kind_ext(kind);
+#else
     bool png = job->len > 8 && !memcmp(d, "\x89PNG", 4);
     if (!jpeg) {
         ESP_LOGW(TAG, "\"%s\": %s: only JPEG is shown", job->label, png ? "a PNG" : "not an image");
         return false;
     }
-    if (muse_sd_ready() && muse_sd_queue_image(job->data, job->len, "jpg")) {
+    const char *ext = "jpg";
+#endif
+    if (muse_sd_ready() && muse_sd_queue_image(job->data, job->len, ext)) {
         ESP_LOGI(TAG, "\"%s\": queued for the microSD card", job->label);
     }
+#if CONFIG_MUSE_PRESENT_FORMATS
+    if (!jpeg) {
+        return show_other(job, kind);
+    }
+#endif
     return show_jpeg(job);
 }
 
