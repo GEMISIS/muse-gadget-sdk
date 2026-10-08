@@ -2143,6 +2143,8 @@ static void on_event(cJSON *line)
         }
         const char *code = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_code"));
         const char *status = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "status"));
+        ESP_LOGI(TAG, "%s: activity %s \"%s\", status %s", event, code ?: "-",
+                 cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_text")) ?: "", status ?: "-");
         bool was = s_turn.agent_busy;
         if (code) {
             s_turn.agent_busy = code[0] && strcmp(code, "online") && strcmp(code, "idle");
