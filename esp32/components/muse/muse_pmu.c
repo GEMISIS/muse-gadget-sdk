@@ -26,7 +26,9 @@ static const char *TAG = "muse_pmu";
 #define REG_STATUS1 0x00        /* bit5 VBUS good, bit3 battery present */
 #define REG_STATUS2 0x01        /* bits[6:5] 01 = charging */
 #define REG_COMMON_CFG 0x10     /* bit0 = soft power-off */
-#define REG_IRQ_LEVEL 0x27      /* bits[5:4] long-press time, [3:2] power-key hold-to-off time */
+#define REG_PWRON_STATUS 0x20   /* what turned it on: bit0 PWR key, bit1 battery in, bit2 VBUS in */
+#define REG_PWROFF_STATUS 0x21  /* what turned it off: bit0 PWR held, bit1 software, bit3 battery low */
+#define REG_IRQ_LEVEL 0x27      /* bits[5:4] long-press time, [3:2] power-key hold-to-off time, [1:0] hold-to-on */
 #define REG_ADC_ENABLE 0x30     /* bit0 = battery voltage */
 #define REG_VBAT_H 0x34         /* bits[4:0]; 1 mV per count with REG_VBAT_L */
 #define REG_VBAT_L 0x35
@@ -75,6 +77,14 @@ esp_err_t muse_pmu_init(i2c_master_bus_handle_t bus, bool key_irqs)
 
     uint8_t v;
     ESP_RETURN_ON_ERROR(rd(REG_IRQ_LEVEL, &v), TAG, "AXP2101 not responding");
+    /* Why it last went off and came on, and how long PWR is held to turn it
+     * on: what to look at when it won't power up on battery. */
+    uint8_t on_src = 0, off_src = 0;
+    rd(REG_PWRON_STATUS, &on_src);
+    rd(REG_PWROFF_STATUS, &off_src);
+    static const char *const ON_HOLD[] = { "128 ms", "512 ms", "1 s", "2 s" };
+    ESP_LOGI(TAG, "power-on source %02x, last power-off source %02x, PWR held %s to power on", on_src, off_src,
+             ON_HOLD[v & 0x03]);
     ESP_RETURN_ON_ERROR(wr(REG_IRQ_LEVEL, (v & ~0x0C) | PKEY_OFF_10S), TAG, "set off time");
 
     if (key_irqs) {
