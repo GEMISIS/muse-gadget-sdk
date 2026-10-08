@@ -261,6 +261,8 @@ static lv_obj_t *s_photo_card, *s_photo_pic;
 static lv_obj_t *s_photo_full, *s_photo_full_pic;
 static lv_obj_t *s_arm[2][2];   /* each arm's outline, then its fur */
 static lv_obj_t *s_paw[2];
+static lv_obj_t *s_photo_dismiss;   /* the whole face, while a photo is out: a tap puts it away */
+static volatile bool s_photo_out;   /* a photo is up or on its way up, for muse_ui_present() */
 EXT_RAM_BSS_ATTR static lv_point_precise_t s_arm_pts[2][2];
 
 static const char *const MODE_NAMES[MUSE_MODE_COUNT] = {
@@ -1024,12 +1026,11 @@ static lv_obj_t *make_arm(lv_obj_t *face, int width, uint32_t color, lv_point_pr
 
 static void photo_full_show(void);
 
+/* While he holds a photo, a tap anywhere on the face puts it away. */
 static void on_photo_clicked(lv_event_t *e)
 {
     (void)e;
-    if (s_photo.phase == PHOTO_RISE || s_photo.phase == PHOTO_HOLD) {
-        photo_full_show();
-    }
+    photo_put_away((float)esp_timer_get_time() / 1e6f, "tapped");
 }
 
 /* On the face, over everything else on it: the arms, the card, the paws on its corners. */
@@ -1052,6 +1053,13 @@ static void build_photo(lv_obj_t *face)
     lv_obj_remove_flag(s_photo_card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_photo_card, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(s_photo_card, on_photo_clicked, LV_EVENT_CLICKED, NULL);
+    /* Over the whole face while a photo's out (photo_tick): any tap puts it away. */
+    s_photo_dismiss = lv_obj_create(face);
+    lv_obj_remove_style_all(s_photo_dismiss);
+    lv_obj_set_size(s_photo_dismiss, lv_pct(100), lv_pct(100));
+    lv_obj_remove_flag(s_photo_dismiss, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_photo_dismiss, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_photo_dismiss, on_photo_clicked, LV_EVENT_CLICKED, NULL);
     s_photo_pic = lv_image_create(s_photo_card);
     lv_image_set_inner_align(s_photo_pic, LV_IMAGE_ALIGN_STRETCH);   /* sized as the card grows */
     lv_obj_remove_flag(s_photo_pic, LV_OBJ_FLAG_CLICKABLE);
@@ -1593,6 +1601,16 @@ static void photo_place(float rise, float now)
 static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding)
 {
     *holding = false;
+    /* Out (on its way up, or up): taps anywhere put it away, and a sharper
+     * copy may take its place. Going down, it's on its way back already. */
+    bool out = s_photo.phase == PHOTO_REACH || s_photo.phase == PHOTO_RISE || s_photo.phase == PHOTO_HOLD;
+    s_photo_out = out;
+    if (s_photo_dismiss && out != !lv_obj_has_flag(s_photo_dismiss, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_set_flag(s_photo_dismiss, LV_OBJ_FLAG_HIDDEN, !out);
+        if (out) {
+            lv_obj_move_foreground(s_photo_dismiss);
+        }
+    }
     xSemaphoreTake(s_image_mutex, portMAX_DELAY);
     photo_px_t next = s_photo.next;
     s_photo.next = (photo_px_t){ 0 };
@@ -2624,10 +2642,16 @@ bool muse_ui_present_sizes(int *screen_w, int *screen_h, int *photo_px)
     return true;
 }
 
-bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int hh)
+bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int hh, bool sharper)
 {
     if (!s_ready || !full || fw <= 0 || fh <= 0 || fw > s_w || fh > s_h || (s_photo_px && !held)) {
         return false;
+    }
+    if (sharper && !s_photo_out) {
+        ESP_LOGI(TAG, "sharper copy dropped: the photo's been put away");
+        heap_caps_free(full);
+        heap_caps_free(held);
+        return true;
     }
     xSemaphoreTake(s_image_mutex, portMAX_DELAY);
     photo_px_free(&s_photo.next);   /* one not taken yet: this is newer */
