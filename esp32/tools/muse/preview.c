@@ -43,9 +43,9 @@ static void save(const char *dir, const char *name)
 
 static void shot(const char *dir, const char *name, muse_pose_t p)
 {
-    /* Run a second of frames so palette blending and eyes settle. */
+    /* Run a few seconds of frames so palette blending, eyes and tiredness settle. */
     float end = p.t;
-    for (float t = end - 1.5f; t <= end; t += 0.04f) {
+    for (float t = end - 3.0f; t <= end; t += 0.04f) {
         muse_pose_t q = p;
         q.t = t;
         q.mode_t = p.mode_t - (end - t);
@@ -74,5 +74,16 @@ int main(int argc, char **argv)
     shot(dir, "reach", (muse_pose_t){ .mode = MUSE_MODE_SPEAKING, .t = 130.2f, .mode_t = 2, .level = 0.3f, .reach = 1 });
     shot(dir, "holding", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 140.6f, .mode_t = 9, .holding = true });
     shot(dir, "plugged", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 150.2f, .mode_t = 9, .plugged = 0.8f });
+    /* The battery: tiring as it runs down (yawning in the first 2.4 s of every 13, or of
+     * every 9 under 13%, nodding off 5-7 s in), the badge at 20% or less, the belly charging. */
+    shot(dir, "tired", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 163.5f, .mode_t = 9, .battery = true, .battery_pct = 25, .tired = 0.5f });
+    shot(dir, "low", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 172.0f, .mode_t = 9, .battery = true, .battery_pct = 18, .tired = 0.73f });
+    shot(dir, "yawn", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 183.2f, .mode_t = 9, .battery = true, .battery_pct = 18, .tired = 0.73f });
+    shot(dir, "very_low", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 192.4f, .mode_t = 9, .battery = true, .battery_pct = 6, .tired = 1 });
+    shot(dir, "nodding", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 195.0f, .mode_t = 9, .battery = true, .battery_pct = 6, .tired = 1 });
+    shot(dir, "charging_low", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 200.3f, .mode_t = 9, .battery = true, .battery_pct = 8, .charging = true, .belly = true });
+    shot(dir, "charging", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 210.3f, .mode_t = 9, .battery = true, .battery_pct = 57, .charging = true, .belly = true });
+    shot(dir, "bed_low", (muse_pose_t){ .mode = MUSE_MODE_IDLE, .t = 230.1f, .mode_t = 9, .bed = true, .sleepy = true, .battery = true, .battery_pct = 15 });
+    shot(dir, "charged", (muse_pose_t){ .mode = MUSE_MODE_SPEAKING, .t = 220.3f, .mode_t = 2, .level = 0.4f, .battery = true, .battery_pct = 100, .charging = true, .belly = true });
     return 0;
 }

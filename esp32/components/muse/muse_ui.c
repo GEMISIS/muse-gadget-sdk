@@ -825,10 +825,10 @@ static void set_reply_box(answer_layout_t *l, int cols, int lines, int top, int 
     l->top = top;
 }
 
-/* The hint icons, and the readouts' corner, that `box` (screen coordinates) covers go while layout l is up. */
+/* The hint icons, and "up next", that `box` (screen coordinates) covers go while layout l is up. */
 static int hide_under(answer_layout_t *l, int n, const lv_area_t *box)
 {
-    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_corner(), muse_home_extras_up_next() };
+    lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon, muse_home_extras_up_next() };
     const int cap = sizeof(l->hides) / sizeof(l->hides[0]);
     for (size_t i = 0; i < sizeof(hints) / sizeof(hints[0]) && n < cap; i++) {
         if (!hints[i]) {
@@ -2033,7 +2033,7 @@ static void set_meter_visible(bool visible)
 static void update_power(float now)
 {
     if (!s_power_lbl || now < s_next_power_update) {
-        return;   /* or the battery's in the corner (muse_home_extras.c) */
+        return;   /* or Muse shows the battery himself (muse_pixel.h) */
     }
     s_next_power_update = now + 1.0f;
 
@@ -2256,6 +2256,51 @@ static float update_plugged(muse_mode_t mode, float now, bool face)
     return pt < PLUGGED_S ? 1.0f - pt / PLUGGED_S : 0.0f;
 }
 
+/*
+ * The battery, on Muse himself (muse_pixel.h; the face has no readout of
+ * its own): tired as it runs down under TIRED_PCT, the most at
+ * TIRED_FULL_PCT, unless charging or in bed; and the level on his belly
+ * while charging (or on USB power, full), or for BELLY_PAT_S after a pat.
+ */
+#define TIRED_PCT 40
+#define TIRED_FULL_PCT 10
+#define BELLY_PAT_S 3.0f
+
+static volatile int s_fake_batt = -1;   /* ">batt=": 0..100, +0x100 charging; -1 for the real one */
+
+void muse_ui_fake_battery(int pct, bool charging)
+{
+    s_fake_batt = pct < 0 ? -1 : (pct > 100 ? 100 : pct) | (charging ? 0x100 : 0);
+}
+
+static void pose_battery(muse_pose_t *pose, float now)
+{
+    static float patted_at = -100.0f;
+    static bool was_happy;
+    bool happy = pose->happy > 0.0f;
+    if (happy && !was_happy) {
+        patted_at = now;
+    }
+    was_happy = happy;
+    muse_power_t p = muse_state_power();
+    int fake = s_fake_batt;
+    if (fake >= 0) {
+        p.battery_pct = fake & 0xff;
+        p.charging = p.usb = fake & 0x100;
+    }
+    if (p.battery_pct < 0) {
+        return;   /* no battery, or no reading yet */
+    }
+    pose->battery = true;
+    pose->battery_pct = p.battery_pct;
+    pose->charging = p.charging || p.usb;
+    pose->belly = pose->charging || now - patted_at < BELLY_PAT_S;
+    if (!pose->charging && !pose->bed && p.battery_pct < TIRED_PCT) {
+        float f = (float)(TIRED_PCT - p.battery_pct) / (TIRED_PCT - TIRED_FULL_PCT);
+        pose->tired = f < 1.0f ? f : 1.0f;
+    }
+}
+
 static volatile bool s_snapshot;
 
 /* Streams the screen over the USB cable as base64 RGB565 (bench testing; needs
@@ -2358,6 +2403,7 @@ static void frame_tick(lv_timer_t *timer)
         .holding = holding,
         .plugged = update_plugged(mode, now, !photo_shown()),
     };
+    pose_battery(&pose, now);
     /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
      * (or an earthquake, or being plugged in). */
     pose.sleepy = pose.bed && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f

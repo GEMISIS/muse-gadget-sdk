@@ -54,6 +54,7 @@ enum {
     C_BOLT,      /* plugged in (pose->plugged): the lightning bolt */
     C_BOLTL,
     C_BOLTD,
+    C_BATT,      /* the battery (pose->battery): its badge, or the bolt on the belly; set per frame */
     C_COUNT,
 };
 
@@ -115,6 +116,8 @@ static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
 static bool s_scheme_init;
 static uint16_t s_pal[C_COUNT];
 static uint16_t s_pal_dim[C_COUNT];
+
+static rgb_t s_batt;            /* C_BATT this frame */
 
 static uint8_t s_fb[W * H];
 static uint8_t s_mask[W * H];
@@ -233,6 +236,7 @@ static void update_palette(const scheme_t *target, float dt)
     pal[C_AURA1] = scale_rgb(acc, 0.16f);
     pal[C_AURA2] = scale_rgb(acc, 0.34f);
     pal[C_SPK] = mix(acc, pal[C_WHITE], 0.45f);
+    pal[C_BATT] = s_batt;
 
     for (int i = 0; i < C_COUNT; i++) {
         s_pal[i] = to565(pal[i]);
@@ -314,6 +318,7 @@ typedef struct {
 } eyes_t;
 
 static eyes_t s_eyes = { .next_blink = 1.5f, .blink_start = -10, .next_gaze = 1.0f };
+static float s_tired;   /* pose->tired, eased; 0 but idle */
 
 static float eyes_update(const muse_pose_t *p, float dt)
 {
@@ -351,6 +356,7 @@ static float eyes_update(const muse_pose_t *p, float dt)
         tgy = 0;
         break;
     default:
+        tgy += 0.5f * s_tired;   /* tired: looking down */
         break;
     }
     if (p->reach > 0.3f) {
@@ -365,7 +371,7 @@ static float eyes_update(const muse_pose_t *p, float dt)
     e->gy += (tgy - e->gy) * k;
 
     /* Blink curve: 0 = open, 1 = shut. */
-    float bt = (p->t - e->blink_start) / 0.16f;
+    float bt = (p->t - e->blink_start) / (0.16f + 0.3f * s_tired);   /* tired: slow, heavy blinks */
     if (bt < 0 || bt > 1) {
         return 0;
     }
@@ -696,6 +702,11 @@ static void draw_eye(float ex, float ey, float openness, eye_style_t style, floa
     /* Lids close from the top: skip the upper rows as openness drops. */
     int skip = iround((1 - openness) * (n - 1));
     stamp(rows + skip, n - skip, cx - 2, cy - 2 + skip, C_IRIS, skip ? C_IRIS : C_SHINE);
+    if (skip) {
+        for (int i = -2; i <= 1; i++) {
+            px(cx + i, cy - 2 + skip, C_BROW);   /* the lid, heavy over it */
+        }
+    }
 }
 
 static void draw_blush(int x, int y, float strength)
@@ -722,6 +733,7 @@ typedef enum {
     MOUTH_GRIN,
     MOUTH_FLAT,
     MOUTH_WOBBLE,   /* dizzy: a zigzag, its phase flipped by `open` */
+    MOUTH_YAWN,     /* tired: a tall O */
 } mouth_t;
 
 static void draw_mouth(int x, int y, mouth_t m, float open)
@@ -767,6 +779,11 @@ static void draw_mouth(int x, int y, mouth_t m, float open)
     case MOUTH_WOBBLE: {
         static const char *const S[] = { ".#.#.", "#.#.#", ".#.#." };
         stamp(S + (open > 0.5f), 2, x - 2, y, C_MOUTH, C_MOUTH);
+        break;
+    }
+    case MOUTH_YAWN: {
+        static const char *const S[] = { ".##.", "#oo#", "#oo#", "#oo#", ".##." };
+        stamp(S, 5, x - 2, y - 1, C_MOUTH, C_TONGUE);
         break;
     }
     }
@@ -935,6 +952,120 @@ static void draw_bolt(float x, float y, float t, float amount)
     stamp(BOLT, 9, x0, y0, pulse > 0.6f ? C_BOLTL : C_BOLT, C_BOLT);
     px(x0 + 4, y0, C_WHITE);   /* a glint */
     px(x0 + 1, y0 + 4, pulse > 0.6f ? C_WHITE : C_BOLTL);
+}
+
+/* ---------------------------------------------------------------------------
+ * The battery (pose->battery)
+ * ------------------------------------------------------------------------- */
+
+#define BATT_LOW 20             /* the badge at this or less */
+#define BATT_CRIT 10            /* red and blinking under this */
+
+/* C_BATT: the badge's yellow or red, or the belly bolt's red to yellow to green as it fills. */
+static rgb_t batt_colour(const muse_pose_t *p)
+{
+    static const uint32_t RED = 0xff3b30, YELLOW = 0xffd23f, GREEN = 0x3ddc5a;
+    if (!p->charging) {
+        return hex_rgb(p->battery_pct < BATT_CRIT ? RED : YELLOW);
+    }
+    float f = clampf(p->battery_pct / 100.0f, 0, 1);
+    return f < 0.5f ? mix(hex_rgb(RED), hex_rgb(YELLOW), f * 2) : mix(hex_rgb(YELLOW), hex_rgb(GREEN), f * 2 - 1);
+}
+
+/*
+ * Run low: a battery standing on the floor at Muse's left, its frame and
+ * what's left in it in C_BATT; x its left column, y its bottom row. Under
+ * BATT_CRIT it fades in and out, dithered.
+ */
+static void draw_low_badge(int x, int y, int pct, float t)
+{
+    static const char *const BATT[] = {
+        "..###..",
+        "#######",
+        "#ooooo#",
+        "#ooooo#",
+        "#ooooo#",
+        "#ooooo#",
+        "#ooooo#",
+        "#ooooo#",
+        "#ooooo#",
+        "#######",
+    };
+    int y0 = y - 9;
+    int fill = pct < BATT_CRIT ? 1 : 2;   /* rows of charge left */
+    float vis = pct < BATT_CRIT ? 0.55f + 0.45f * sinf(t * 3.5f) : 1.0f;
+    for (int r = 0; r < 10; r++) {
+        for (int c = 0; BATT[r][c]; c++) {
+            char ch = BATT[r][c];
+            if (ch == '.' || bayer(x + c, y0 + r) >= vis * 1.15f) {
+                continue;
+            }
+            bool full = ch == 'o' && r >= 9 - fill;
+            px(x + c, y0 + r, ch == '#' || full ? C_BATT : C_SHADOW);
+        }
+    }
+}
+
+/* 3x5 digits, then %: an octal digit a row, from the top, its 4 bit the left. */
+static const uint16_t GLYPHS[11] = {
+    075557, 026227, 071747, 071317, 055711, 074717, 074757, 071122, 075757, 075717,
+    051245,
+};
+
+/* A glyph on the body only, so an arm in front stays in front. */
+static void belly_glyph(uint16_t g, int x, int y, uint8_t c)
+{
+    for (int r = 0; r < 5; r++) {
+        for (int k = 0; k < 3; k++) {
+            int xx = x + k, yy = y + r;
+            if (((g >> ((4 - r) * 3 + 2 - k)) & 1) && (unsigned)xx < W && (unsigned)yy < H
+                && s_mask[yy * W + xx] == M_BODY) {
+                px(xx, yy, c);
+            }
+        }
+    }
+}
+
+/*
+ * The level on Muse's belly (pose->belly): a little dark screen with the
+ * number in it, after a bolt in C_BATT while charging. Its top at row y,
+ * centred on x.
+ */
+static void draw_belly(int x, int y, int pct, bool charging, float t)
+{
+    static const uint16_t BOLT = 012724;   /* ..# .#. ### .#. #.. */
+    int d[3], n = 0;
+    pct = pct < 0 ? 0 : pct > 100 ? 100 : pct;
+    if (pct >= 100) {
+        d[n++] = 1;
+    }
+    if (pct >= 10) {
+        d[n++] = pct / 10 % 10;
+    }
+    d[n++] = pct % 10;
+    int w = n * 4 + 3 + (charging ? 4 : 0);   /* the bolt, the digits, the % */
+    int x0 = x - (w + 4) / 2, x1 = x0 + w + 3, y1 = y + 8;
+    for (int yy = y; yy <= y1; yy++) {
+        for (int xx = x0; xx <= x1; xx++) {
+            bool ex = xx == x0 || xx == x1, ey = yy == y || yy == y1;
+            if ((ex && ey) || (unsigned)xx >= W || (unsigned)yy >= H || s_mask[yy * W + xx] != M_BODY) {
+                continue;   /* round corners; and not over an arm */
+            }
+            px(xx, yy, ex || ey ? C_OUT : C_SHADOW);
+        }
+    }
+    int gx = x0 + 2;
+    if (charging) {
+        belly_glyph(BOLT, gx, y + 2, C_BATT);
+        if (fracf(t * 0.7f) < 0.15f) {
+            px(gx + 1, y + 4, C_WHITE);   /* a glint now and then */
+        }
+        gx += 4;
+    }
+    for (int i = 0; i < n; i++, gx += 4) {
+        belly_glyph(GLYPHS[d[i]], gx, y + 2, C_WHITE);
+    }
+    belly_glyph(GLYPHS[10], gx, y + 2, C_WHITE);
 }
 
 /* The earthquake itself: grit shaken down from above. */
@@ -1149,7 +1280,36 @@ void muse_pixel_render(const muse_pose_t *p)
     float level = p->level;
     float t = p->t;
 
+    if (p->battery) {
+        s_batt = batt_colour(p);
+    }
     update_palette(&SCHEMES[mode], dt);
+
+    /* Tired (pose->tired): idle, up, and not cheering, reeling or showing
+     * something. Slow to tire, quick to perk up. */
+    bool can_tire = mode == MUSE_MODE_IDLE && !p->bed && !p->holding && p->reach <= 0.0f && p->happy <= 0.0f
+                    && p->plugged <= 0.0f && p->dizzy <= 0.0f;
+    float tired_to = can_tire ? clampf(p->tired, 0, 1) : 0.0f;
+    s_tired += (tired_to - s_tired) * (1.0f - expf(-dt * (tired_to > s_tired ? 1.5f : 6.0f)));
+    float tired = s_tired;
+    /* A yawn every so often (0..1..0), and at the most, nodding off between. */
+    float yawn = 0, nod = 0;
+    if (can_tire && tired > 0.35f) {
+        float period = tired > 0.9f ? 9.0f : 13.0f;
+        float ph = fmodf(p->t, period);
+        if (ph < 2.4f) {
+            yawn = sinf(ph / 2.4f * 3.1416f);
+        } else if (tired > 0.9f && ph >= 5.0f && ph < 7.0f) {
+            nod = sinf((ph - 5.0f) / 2.0f * 3.1416f);
+        }
+    }
+    /* The idle bob's phase, slowing as he tires (a phase, so it doesn't jump). */
+    static float s_idle_ph;
+    s_idle_ph += dt * 1.8f * (1.0f - 0.45f * tired);
+    if (s_idle_ph > 100.0f * TAU) {
+        s_idle_ph -= 100.0f * TAU;
+    }
+
     float blink = eyes_update(p, dt);
 
     /* In bed: lying back asleep (0) or sat up (1), eased between. */
@@ -1178,7 +1338,7 @@ void muse_pixel_render(const muse_pose_t *p)
         lean = sinf(t * 18.0f) * (p->mode_t < 0.6f ? 1.0f : 0.0f);
         break;
     default:
-        bob = sinf(t * 1.8f) * 1.0f;
+        bob = sinf(s_idle_ph) * (1.0f + 0.3f * tired);
         break;
     }
     if (asleep) {
@@ -1205,8 +1365,8 @@ void muse_pixel_render(const muse_pose_t *p)
 
     float breathe = sinf(t * breathe_rate + 1.0f) * 0.03f;
     avatar_t j;
-    j.a = 16.0f * (1 + breathe) * (2.0f - squash) + level * 0.8f;
-    j.b = 23.0f * (1 - breathe) * squash;
+    j.a = 16.0f * (1 + breathe) * (2.0f - squash) + level * 0.8f + 0.6f * tired;
+    j.b = 23.0f * (1 - breathe) * squash * (1.0f - 0.05f * tired + 0.05f * yawn);   /* a slouch; a stretch to yawn */
     j.cx = 32.0f + lean;
     j.cy = 56.5f - j.b + bob * 0.5f - hop;   /* feet stay near the ground */
     if (bed) {
@@ -1217,10 +1377,11 @@ void muse_pixel_render(const muse_pose_t *p)
     j.fx = j.cx + lean * 0.3f;
     j.fy = j.cy - j.b * 0.30f + bob * 0.3f;
     j.fy += clampf(p->reach, 0, 1) * 1.2f;   /* face down, at the pocket */
+    j.fy += 0.8f * tired + 1.5f * nod;        /* head hanging; dropping as he nods off */
 
     /* ---- background layers ---- */
     float aura_r = 29.0f + level * 4.0f + sinf(t * 1.5f) * 1.0f;
-    float aura_s = (0.75f * boot + level * 0.4f) * fade * (bed ? 1.0f - 0.65f * lie : 1.0f);
+    float aura_s = (0.75f * boot + level * 0.4f) * fade * (bed ? 1.0f - 0.65f * lie : 1.0f) * (1.0f - 0.35f * tired);
     draw_aura(j.cx, j.cy - 3, aura_r, aura_s);
     if (bed) {
         draw_headboard();
@@ -1243,6 +1404,7 @@ void muse_pixel_render(const muse_pose_t *p)
     }
     spk_speed += 2.4f * plug;                /* plugged in: a whirl of them */
     spk_count += (int)(6.0f * plug + 0.5f);
+    spk_count = (int)(spk_count * (1.0f - 0.6f * tired) + 0.5f);   /* tired: fewer */
     draw_sparkles(p, j.cx, j.cy, false, spk_speed, spk_count);
 
     /* ---- limbs ---- */
@@ -1279,15 +1441,17 @@ void muse_pixel_render(const muse_pose_t *p)
         break;
     }
     default: {
-        float sway = sinf(t * 1.8f + 0.6f) * 0.08f;
+        float sway = sinf(s_idle_ph + 0.6f) * 0.08f * (1.0f - 0.6f * tired);
         if (cheer) {
             /* Arms up and wiggling. */
             float wig = sinf(t * 14.0f) * 0.25f;
             arms[0] = (limb_t){ j.cx - adx - 1.0f, j.cy - 4.0f, 2.4f + wig };
             arms[1] = (limb_t){ j.cx + adx + 1.0f, j.cy - 4.0f, -2.4f - wig };
         } else {
-            arms[0] = (limb_t){ j.cx - adx, ay, -0.3f + sway };
-            arms[1] = (limb_t){ j.cx + adx, ay, 0.3f - sway };
+            /* Tired: hanging lower, and out in a stretch to yawn. */
+            float hang = ay + 1.5f * tired - 3.0f * yawn, out = 0.9f * yawn;
+            arms[0] = (limb_t){ j.cx - adx - yawn, hang, -0.3f + sway - out };
+            arms[1] = (limb_t){ j.cx + adx + yawn, hang, 0.3f - sway + out };
         }
         break;
     }
@@ -1303,6 +1467,10 @@ void muse_pixel_render(const muse_pose_t *p)
     draw_avatar(&j, arms, feet, !p->holding);
     if (reach > 0 || p->holding) {
         draw_pocket(iround(j.cx + 10.0f), iround(j.cy + 12.0f));
+    } else if (p->battery && p->belly && !bed && s_size >= 2 * W) {
+        /* The level on the belly (in bed, the quilt's over it); the digits
+         * need cells of 2 px or more. */
+        draw_belly(iround(j.cx), iround(j.cy + 5.0f), p->battery_pct, p->charging, t);
     }
 
     /* ---- face ---- */
@@ -1337,6 +1505,19 @@ void muse_pixel_render(const muse_pose_t *p)
         open = clampf((1.0f - p->mode_t / 1.0f) * 1.5f, 0, 1);
         mouth = MOUTH_SMILE;
         break;
+    case MUSE_MODE_IDLE:
+        /* Tired: heavy lids and a straight face; shut to yawn, or nod off. */
+        open *= 1.0f - 0.5f * tired;
+        if (tired > 0.5f) {
+            mouth = MOUTH_FLAT;
+        }
+        if (yawn > 0.25f) {
+            open = 0;
+            mouth = MOUTH_YAWN;
+        } else if (nod > 0.15f) {
+            open = 0;
+        }
+        break;
     default:
         break;
     }
@@ -1357,6 +1538,13 @@ void muse_pixel_render(const muse_pose_t *p)
 
     draw_eye(j.fx - eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
     draw_eye(j.fx + eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
+    if (tired > 0.6f && style == EYES_NORMAL) {
+        for (int side = -1; side <= 1; side += 2) {
+            int ex = iround(j.fx + side * eye_dx), ey = iround(eye_y) + 2;
+            px(ex - 1, ey, C_SKIND);   /* bags under them */
+            px(ex, ey, C_SKIND);
+        }
+    }
 
     /* Tiny brows for the expressive states. */
     int bl = iround(j.fx - eye_dx), br = iround(j.fx + eye_dx), by = iround(eye_y) - 4;
@@ -1369,6 +1557,7 @@ void muse_pixel_render(const muse_pose_t *p)
     }
 
     float blush = 0.55f + happy * 0.45f + (mode == MUSE_MODE_SPEAKING ? 0.15f : 0.0f) + (p->holding ? 0.2f : 0.0f) + plug * 0.3f;
+    blush *= 1.0f - 0.5f * tired;   /* tired: pale */
     draw_blush(iround(j.fx - j.fa * 0.72f), iround(eye_y + 2), blush);
     draw_blush(iround(j.fx + j.fa * 0.72f), iround(eye_y + 2), blush);
 
@@ -1411,5 +1600,11 @@ void muse_pixel_render(const muse_pose_t *p)
     if (asleep && s_rise < 0.5f) {
         draw_zs(j.cx + 10, top + 1, t);
     }
-
+    if (nod > 0.3f) {
+        static const char *const Z[] = { "####", "..#.", ".#..", "####" };
+        stamp(Z, 4, iround(j.cx + 10), iround(top - nod * 3.0f), C_SPK, C_SPK);   /* nodding off */
+    }
+    if (p->battery && !p->charging && p->battery_pct <= BATT_LOW) {
+        draw_low_badge(7, 57, p->battery_pct, t);   /* on the floor at his left */
+    }
 }
