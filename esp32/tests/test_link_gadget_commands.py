@@ -96,9 +96,14 @@ class LinkGadgetCommandsTest(unittest.TestCase):
         scratch = noise[noise.index("#if CONFIG_MUSE_HATCH\n#define SVC_FRAME_SCRATCH"):]
         size = re.search(r"#define SVC_FRAME_SCRATCH \((\d+) \* 1024\)", scratch)
         self.assertGreaterEqual(int(size.group(1)) * 1024, (kib * 1024 + 2) // 3 * 4 + 2048)
-        # The background request asks for the same chunks.
+        # The background request, the description and every mode's contract
+        # ask for an image small enough for one of those chunks.
         present = (ROOT / "components/muse/muse_present.c").read_text()
-        self.assertIn(f"to {kib} KiB", present)
+        mode = (ROOT / "components/muse/muse_gadget_mode.c").read_text()
+        for text in (present, desc[:desc.index("image_required")], mode):
+            kb = int(re.search(r"under (\d+) KB", text).group(1))
+            self.assertLessEqual(kb * 1000, kib * 1024)
+            self.assertRegex(text, r"one chunk")
         self.assertIn(f"{kib} KiB", (ROOT / "AGENTS.md").read_text())
 
     def test_present_limit_matches_the_firmware(self):

@@ -7,7 +7,10 @@ the background requests (bg_t): their own streams, their reply kept and
 never emitted, waiting out a turn, and a new chat's 404 subscription, and a
 reply's image (delta.presentation): Muse asked to push its workspace file,
 its turn's text untouched, and one written into the text as Markdown: taken
-out of it, and asked for the same way when no event named one."""
+out of it, and asked for the same way when no event named one. While a voice
+reply's image is on its way, its speech (production start_tts/decode) and
+captions wait, "DOWNLOADING IMAGE..." up, until the image is held up, Muse's
+reply has been in a while with no push, or a cap."""
 import os
 from pathlib import Path
 import shlex
@@ -36,6 +39,9 @@ class ChatSession(unittest.TestCase):
         reset = source[source.index('static bool turn_start('):source.index('/* A dictated turn (DICTATE_EVERY_TURN)')]
         message_to = source[source.index('static void message_to('):source.index('/* Base64-encodes the staged PCM')]
         send_chat = source[source.index('static void send_chat('):source.index('static void post_chat(')]
+        speech = source[source.index('/* ---- Turn: speech'):source.index('/* ---- Background requests')]
+        caption = source[source.index('extern "C" bool muse_hatch_turn_caption('):
+                         source.index('extern "C" size_t muse_hatch_turn_read(')]
         mode_source = (ROOT / 'components/muse/muse_gadget_mode.c').read_text()
         contexts = mode_source[mode_source.index('static const char *const NAMES['):
                                mode_source.index('/* ---- The schedule ---- */')]
@@ -98,15 +104,17 @@ void test_set_mode(int mode);
 static turn_t s_turn;
 static char s_reply_shown[EV_TEXT];
 static int64_t s_last_seq, s_marks[4];
-static int captions, console_events, sent_events;
-enum mark_t { M_TEXT, M_DONE, M_ACK };
+static int captions, console_events, sent_events, image_events;
+static char image_caption[EV_TEXT];
+enum mark_t { M_TEXT, M_DONE, M_ACK, M_TTS, M_MP3, M_AUDIO };
 static void mark(mark_t) {}
 static void muse_gadget_mode_retitle(const char *) {}
 static char s_voice_new_sid[MUSE_CHAT_SID_MAX + 1];
 static bool muse_settings_chat_retitle(const char *, const char *, bool *) { return false; }
 static void muse_settings_chat_set_titling(const char *) {}
 static void muse_settings_chat_titled(const char *) {}
-static int64_t now_us() { return 12345; }
+static int64_t s_now = 12345;
+static int64_t now_us() { return s_now; }
 static char chat_sid[MUSE_CHAT_SID_MAX + 1], posted[4096];
 static void muse_settings_chat_sid(char out[MUSE_CHAT_SID_MAX + 1]) { strlcpy(out, chat_sid, MUSE_CHAT_SID_MAX + 1); }
 static void *psram_alloc(size_t n) { return malloc(n); }
@@ -144,9 +152,13 @@ static stream_t *find_stream(int64_t id) {
 static void close_stream(stream_t *s) { if (s) s->kind = K_NONE; }
 static bool send_reset(int64_t id) { resets++; close_stream(find_stream(id)); return true; }
 static bool send_body(int64_t, const uint8_t *, size_t, bool) { return false; }
-static void emit(muse_hatch_ev_t type, const char *) {
+static void emit(muse_hatch_ev_t type, const char *text) {
     if (type == MUSE_HATCH_EV_REPLY) captions++;
     if (type == MUSE_HATCH_EV_SENT) sent_events++;
+    if (type == MUSE_HATCH_EV_IMAGE) {
+        image_events++;
+        strlcpy(image_caption, text, sizeof(image_caption));
+    }
 }
 void muse_hatch_console(const char *, const char *, const char *, ...) { console_events++; }
 void muse_hatch_tail_words(const char *text, char *out, size_t cap) { strlcpy(out, text, cap); }
@@ -160,7 +172,29 @@ static bool subscription_stale() { return false; }
 static void disconnect(const char *) { disconnects++; }
 bool muse_hatch_configured() { return true; }
 static void resampler_init(resampler_t *, int, int) {}
-''' + reset + message_to + send_chat + handlers + background + r'''
+/* The reply audio, as the voice task would take it: counted. */
+static int s_out;
+static size_t pcm_sent;
+static std::atomic<uint32_t> s_gen{0};
+static int16_t s_pcm[MINIMP3_MAX_SAMPLES_PER_FRAME], s_pcm16[MINIMP3_MAX_SAMPLES_PER_FRAME];
+static size_t xStreamBufferSpacesAvailable(int) { return 1 << 20; }
+static size_t xStreamBufferSend(int, const void *, size_t n, int) { pcm_sent += n / sizeof(int16_t); return n; }
+extern "C" int mp3dec_decode_frame(mp3dec_t *, const uint8_t *, int, mp3d_sample_t *, mp3dec_frame_info_t *info) {
+    *info = mp3dec_frame_info_t{};
+    return 0;
+}
+static size_t resample(resampler_t *, const int16_t *, size_t n, int16_t *) { return n; }
+static int turns_done;
+static void turn_done(bool) { turns_done++; s_turn.phase = P_IDLE; }
+static void on_dictation_end(bool) {}
+static void log_marks() {}
+/* What muse_present.h says: images handled, and the turn over. */
+static uint32_t fake_seq;
+static int turn_overs;
+static uint32_t img_seq() { return fake_seq; }
+static void img_turn_over() { turn_overs++; }
+#pragma GCC diagnostic ignored "-Wunused-function"
+''' + reset + message_to + send_chat + handlers + speech + caption + background + r'''
 /* Asking Muse to push a reply's image (muse_present_ask). */
 static int asks;
 static char ask_path[512], ask_label[64];
@@ -450,6 +484,7 @@ static void images() {
     event("delta.message_start", "reply", "note");
     event("delta.text_append", "reply", "", "Here's a red panda. ");
     present(GADGET_SID, "widget-1");
+    assert(s_turn.img_hold);   /* the rest waits for the image: hold_until_shown */
     /* Muse is asked to push it, by its workspace file: nothing is fetched, no URL used. */
     assert(asks == 1 && !strcmp(ask_path, "workspace/muse-gadget-216/images/red panda.jpg"));
     assert(!strcmp(ask_label, "red panda") && !strcmp(s_img_last, "widget-1"));
@@ -458,7 +493,7 @@ static void images() {
     event("delta.message_done", "reply");
     assert(s_turn.nmsgs == 1 && s_turn.msgs[0].done);
     assert(s_turn.msgs[0].len == strlen("Here's a red panda. It should be showing on the gadget now."));
-    assert(captions == 2 && !console_events);
+    assert(captions == 1 && !console_events);
     /* The same one again, another chat's, or one that isn't an image: nothing. */
     present(GADGET_SID, "widget-1");
     present("6d757365-0000-4000-8000-000000000000", "widget-2");
@@ -516,6 +551,112 @@ static void text_images() {
     assert(asks == 4 && !strcmp(ask_path, "workspace/c.jpg") && !strcmp(ask_label, "chart"));
     s_turn.texts = nullptr;
 }
+/* ---- A voice reply's speech waits for its image ---- */
+static char hold_texts[MAX_MSGS * TEXT_MAX];
+static void hold_begin() {
+    s_turn.texts = hold_texts;
+    asks = turn_overs = image_events = turns_done = 0;
+    pcm_sent = 0;
+    begin();
+    strlcpy(s_turn.sid, GADGET_SID, sizeof(s_turn.sid));
+}
+/* One go round the session task's loop, `ms` on. */
+static void tick(int64_t ms = 1000) {
+    s_now += ms * 1000;
+    start_tts();
+    decode();
+    check_turn();
+}
+static bool caption_is(const char *want) {
+    char page[256];
+    return muse_hatch_turn_caption(0, page, sizeof(page)) && !strcmp(page, want);
+}
+static void hold_until_shown() {
+    hold_begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "", "Here's a dog. ");
+    assert(captions == 1);
+    present(GADGET_SID, "dog-1");
+    assert(asks == 1 && s_turn.img_hold && image_events == 1 && !strcmp(image_caption, IMG_CAPTION));
+    event("delta.text_append", "reply", "", "Good boy!");
+    event("delta.message_done", "reply");
+    assert(captions == 1 && s_turn.msgs[0].tts == TTS_QUEUED);   /* its words come with its speech */
+    assert(caption_is(IMG_CAPTION));
+    for (int i = 0; i < 10; i++) {
+        tick();
+        assert(!pcm_sent && s_turn.msgs[0].tts == TTS_QUEUED && s_turn.phase == P_WAIT_REPLY);
+        assert(caption_is(IMG_CAPTION));
+    }
+    /* Muse's reply has been all in a while: the request after the turn may go once it's over. */
+    assert(turn_overs == 1 && s_turn.img_over_us);
+    /* Shown: Muse takes it out of his pocket and holds it up first. */
+    fake_seq++;
+    tick(10);
+    assert(!pcm_sent && s_turn.img_hold && s_turn.img_shown_us);
+    tick(IMG_RISE_US / 1000);
+    assert(!s_turn.img_hold && pcm_sent && captions == 2 && s_turn.msgs[0].tts != TTS_QUEUED);
+    assert(caption_is("Here's a dog. Good boy!"));
+    for (int i = 0; i < 10 && s_turn.phase != P_IDLE; i++) tick();
+    assert(turns_done == 1 && image_events == 1);
+}
+static void hold_times_out() {
+    /* No push: the speech goes on once the reply's been in IMG_PUSH_WAIT_US. */
+    hold_begin();
+    present(GADGET_SID, "fox-1");
+    event("message.assistant", "reply", "note", "Here's a fox.");
+    assert(s_turn.img_hold && s_turn.msgs[0].tts == TTS_QUEUED);
+    tick(SETTLE_US / 1000);
+    assert(s_turn.img_over_us == s_now && turn_overs == 1 && !pcm_sent);
+    tick(IMG_PUSH_WAIT_US / 1000 - 1);
+    assert(s_turn.img_hold && !pcm_sent);
+    tick(1);
+    assert(!s_turn.img_hold && pcm_sent && captions == 1);
+    /* Muse still at work all along: the cap. */
+    hold_begin();
+    present(GADGET_SID, "fox-2");
+    event("message.assistant", "reply", "note", "Here's a fox.");
+    s_turn.agent_busy = true;
+    while (now_us() - s_turn.img_hold_us < IMG_HOLD_CAP_US - 1000000) {
+        tick();
+        assert(s_turn.img_hold && !pcm_sent && !s_turn.img_over_us);
+    }
+    tick();
+    assert(!s_turn.img_hold && pcm_sent);
+    /* Cancelled (barge-in): nothing waits. */
+    hold_begin();
+    present(GADGET_SID, "fox-3");
+    assert(s_turn.img_hold);
+    begin();   /* the next press: turn_start ends this one */
+    assert(!s_turn.img_hold);
+    s_turn.texts = nullptr;
+}
+static void not_held() {
+    /* Muse pushed one by itself this turn already: not asked for, not waited for. */
+    hold_begin();
+    fake_seq++;
+    present(GADGET_SID, "owl-1");
+    assert(!asks && !s_turn.img_hold && !image_events);
+    /* Typed: nothing spoken to hold. */
+    hold_begin();
+    s_turn.text = true;
+    present(GADGET_SID, "owl-2");
+    assert(asks == 1 && !s_turn.img_hold && !image_events);
+    /* The speech has started: not cut off. */
+    hold_begin();
+    s_turn.pcm_out = 100;
+    present(GADGET_SID, "owl-3");
+    assert(asks == 1 && !s_turn.img_hold && !image_events);
+    /* A Markdown image holds it as soon as it's whole in the text, before the speech starts. */
+    hold_begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "", "Here's an owl! ![owl](sandbox://workspace/owl.jpg)");
+    assert(s_turn.img_hold && image_events == 1 && !asks && !captions);
+    event("delta.message_done", "reply");
+    assert(asks == 1 && !strcmp(ask_path, "workspace/owl.jpg"));
+    tick();
+    assert(!pcm_sent);
+    s_turn.texts = nullptr;
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -526,6 +667,9 @@ int main(int argc, char **argv) {
     case 4: background(); break;
     case 5: images(); break;
     case 6: text_images(); break;
+    case 7: hold_until_shown(); break;
+    case 8: hold_times_out(); break;
+    case 9: not_held(); break;
     default: return 2;
     }
 }
@@ -572,3 +716,12 @@ int main(int argc, char **argv) {
 
     def test_markdown_image_in_the_text_is_taken_out_and_asked_for(self):
         self.run_case(6)
+
+    def test_speech_and_captions_wait_for_the_image_until_its_shown(self):
+        self.run_case(7)
+
+    def test_speech_goes_on_without_a_push_or_after_the_cap(self):
+        self.run_case(8)
+
+    def test_no_wait_once_pushed_typed_or_speaking(self):
+        self.run_case(9)
