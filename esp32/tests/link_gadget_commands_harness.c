@@ -189,6 +189,7 @@ static esp_err_t muse_settings_chat_add(const char *name, char sid_out[MUSE_CHAT
 // ---- Fakes for esp_heap_caps.h, esp_timer.h and muse_present.h ----
 
 #define CONFIG_MUSE_HATCH 1
+#define EXT_RAM_BSS_ATTR
 #define MALLOC_CAP_8BIT (1 << 2)
 #define MALLOC_CAP_SPIRAM (1 << 10)
 #define MUSE_PRESENT_MAX (512 * 1024)
