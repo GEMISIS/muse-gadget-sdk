@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise production PSRAM reply handlers with host-side event sinks, and the
 gadget mode a message carries (muse_gadget_mode.c's contracts, appended by
-send_chat for a chat that last heard another mode, told once the Muse acks)."""
+send_chat for a chat that last heard another mode, told once the Muse acks),
+and the background requests (bg_t): their own streams, their reply kept and
+never emitted, waiting out a turn, and a new chat's 404 subscription."""
 import os
 from pathlib import Path
 import shlex
@@ -27,6 +29,7 @@ class ChatSession(unittest.TestCase):
         kinds = source[source.index('enum kind_t'):source.index('#define MAX_STREAMS')]
         types = source[source.index('enum phase_t'):source.index('/* 10 KB')]
         handlers = source[source.index('static int find_msg('):source.index('/* ---- Turn: speech')]
+        background = source[source.index('/* ---- Background requests'):source.index('/* ---- Inbound dispatch')]
         reset = source[source.index('static bool turn_start('):source.index('/* A dictated turn (DICTATE_EVERY_TURN)')]
         message_to = source[source.index('static void message_to('):source.index('/* Base64-encodes the staged PCM')]
         send_chat = source[source.index('static void send_chat('):source.index('static void post_chat(')]
@@ -64,6 +67,7 @@ void test_set_mode(int mode) { s_mode = mode; }
 '''
         (out / 'mode.c').write_text(mode_code)
         code = r'''
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -75,6 +79,8 @@ void test_set_mode(int mode) { s_mode = mode; }
 #include "minimp3.h"
 #include "muse_chat_priv.h"
 #define ESP_LOGI(...) ((void)0)
+#define ESP_LOGW(tag, ...) ((void)snprintf(nullptr, 0, __VA_ARGS__))
+#define EXT_RAM_BSS_ATTR
 #define MUSE_CHAT_SID_MAX 36
 typedef enum { MUSE_GADGET_DESK, MUSE_GADGET_NIGHT, MUSE_GADGET_ON_THE_GO, MUSE_GADGET_MODE_COUNT } muse_gadget_mode_t;
 extern "C" {
@@ -99,12 +105,37 @@ static void muse_settings_chat_sid(char out[MUSE_CHAT_SID_MAX + 1]) { strlcpy(ou
 static void *psram_alloc(size_t n) { return malloc(n); }
 static void heap_caps_free(void *p) { free(p); }
 static void free_rec() {}
-static int64_t open_stream(kind_t kind, const char *, const char *, const char *, const char *, const char *body,
+/* The streams a background request opens, as the session would keep them. */
+static stream_t streams[4];
+static int64_t next_id = 100;
+static char bg_sub_body[256], bg_chat_body[1024];
+static int bg_subs, bg_posts, resets, disconnects;
+static int64_t open_stream(kind_t kind, const char *, const char *path, const char *, const char *, const char *body,
                            bool end_body) {
-    assert(kind == K_CHAT && body && end_body);
-    strlcpy(posted, body, sizeof(posted));
-    return 7;
+    assert(body && end_body);
+    if (kind == K_CHAT) {
+        strlcpy(posted, body, sizeof(posted));
+        return 7;
+    }
+    assert(kind == K_BG_SUB ? !strcmp(path, "/chat/subscribe") : kind == K_BG_CHAT && !strcmp(path, "/chat/stream"));
+    strlcpy(kind == K_BG_SUB ? bg_sub_body : bg_chat_body, body, kind == K_BG_SUB ? sizeof(bg_sub_body) : sizeof(bg_chat_body));
+    (kind == K_BG_SUB ? bg_subs : bg_posts)++;
+    for (auto &s : streams) {
+        if (s.kind == K_NONE) {
+            s = stream_t{};
+            s.id = next_id++;
+            s.kind = kind;
+            return s.id;
+        }
+    }
+    abort();
 }
+static stream_t *find_stream(int64_t id) {
+    for (auto &s : streams) if (s.kind != K_NONE && s.id == id) return &s;
+    return nullptr;
+}
+static void close_stream(stream_t *s) { if (s) s->kind = K_NONE; }
+static bool send_reset(int64_t id) { resets++; close_stream(find_stream(id)); return true; }
 static bool send_body(int64_t, const uint8_t *, size_t, bool) { return false; }
 static void emit(muse_hatch_ev_t type, const char *) {
     if (type == MUSE_HATCH_EV_REPLY) captions++;
@@ -119,10 +150,10 @@ static void turn_finish() { s_turn.phase = P_IDLE; }
 static void turn_fail(const char *) { turn_finish(); }
 static bool ensure_connected() { return true; }
 static bool subscription_stale() { return false; }
-static void disconnect(const char *) {}
+static void disconnect(const char *) { disconnects++; }
 bool muse_hatch_configured() { return true; }
 static void resampler_init(resampler_t *, int, int) {}
-''' + reset + message_to + send_chat + handlers + r'''
+''' + reset + message_to + send_chat + handlers + background + r'''
 static void begin(bool typed = false) {
     assert(turn_start(s_turn.gen + 1, typed));
     s_turn.phase = P_WAIT_REPLY;
@@ -258,6 +289,125 @@ static void inline_mode() {
     assert(muse_settings_chat_told("") == MUSE_GADGET_NIGHT);
     assert(has_mode(send("Ok"), "Ok", "ON-THE-GO"));
 }
+/* ---- Background requests ---- */
+#define BG_SID "6d757365-7570-4e78-8000-a1b2c3d4e5f6"
+static void bg_event(const char *kind, const char *id, const char *parent = "", const char *text = "",
+                     const char *display = nullptr) {
+    cJSON *root = cJSON_CreateObject(), *payload = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "event");
+    cJSON_AddStringToObject(root, "event", kind);
+    cJSON_AddItemToObject(root, "payload", payload);
+    cJSON_AddStringToObject(payload, "message_id", id);
+    if (parent[0]) cJSON_AddStringToObject(payload, "reply_to_message_id", parent);
+    cJSON_AddStringToObject(payload, "text", text);
+    if (display) cJSON_AddStringToObject(payload, "display_text", display);
+    on_bg_event(root);
+    cJSON_Delete(root);
+}
+static stream_t *bg_stream(kind_t kind) {
+    for (auto &s : streams) if (s.kind == kind) return &s;
+    return nullptr;
+}
+static void bg_ack(bool ok, const char *line = "{\"message_id\":\"asked\"}") {
+    stream_t *s = bg_stream(K_BG_CHAT);
+    assert(s);
+    static char buf[128];
+    strlcpy(buf, line, sizeof(buf));
+    s->line = buf;
+    s->len = strlen(buf);
+    s->cap = sizeof(buf);
+    bg_chat_end(s, ok);
+}
+/* Asks, and gets as far as the message posted on a subscription that was taken. */
+static void bg_ask_posted() {
+    bg_want(BG_SID "\nWhat's next?");
+    assert(s_bg.phase == BG_WANTED && s_bg_state == MUSE_CHAT_BG_NONE);
+    bg_poll();
+    assert(s_bg.phase == BG_SUBSCRIBING && !strcmp(bg_sub_body, "{\"session_id\":\"" BG_SID "\"}"));
+    bg_poll();
+    assert(s_bg.phase == BG_SUBSCRIBING);   /* not taken yet */
+    bg_stream(K_BG_SUB)->status = 200;
+    bg_poll();
+    assert(s_bg.phase == BG_WAITING);
+    cJSON *body = cJSON_Parse(bg_chat_body);
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(body, "message")), "What's next?"));
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(body, "output_modality")), "text"));
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(body, "session_id")), BG_SID));
+    cJSON_Delete(body);
+}
+static void quiet() {
+    assert(!captions && !console_events && !sent_events && !disconnects);
+    assert(s_turn.nmsgs == 0 && s_turn.phase == P_IDLE && !s_turn.last_event_us);
+}
+static void background() {
+    begin();
+    s_turn.phase = P_IDLE;
+    sent_events = 0;
+    /* A turn under way: it waits. */
+    s_turn.phase = P_WAIT_REPLY;
+    bg_want(BG_SID "\nWhat's next?");
+    bg_poll();
+    assert(s_bg.phase == BG_WANTED && !bg_subs);
+    s_turn.phase = P_IDLE;
+    bg_end(false, "test");   /* start over below */
+    s_bg_state = MUSE_CHAT_BG_NONE;
+
+    bg_ask_posted();
+    bg_event("delta.message_start", "early");   /* before the ack: no parent to check yet */
+    assert(!strcmp(s_bg.reply_id, "early"));
+    bg_end(false, "test");
+    s_bg_state = MUSE_CHAT_BG_NONE;
+    bg_ask_posted();
+    bg_ack(true);
+    assert(!strcmp(s_bg.user_id, "asked") && !bg_stream(K_BG_CHAT));
+    resets = 0;
+    bg_event("delta.text_append", "asked", "", "my own words");       /* our message, echoed */
+    bg_event("delta.text_append", "other", "elsewhere", "Not ours");  /* answers something else */
+    bg_event("delta.message_start", "reply", "asked");
+    bg_event("delta.text_append", "reply", "", "Standup ");
+    bg_event("delta.text_append", "second", "asked", "A second message");   /* only the first counts */
+    bg_event("delta.text_append", "reply", "", "at 10");
+    assert(!strcmp(s_bg.text, "Standup at 10") && s_bg_state == MUSE_CHAT_BG_NONE);
+    bg_event("delta.message_done", "reply");
+    assert(s_bg.phase == BG_IDLE && s_bg_state == MUSE_CHAT_BG_DONE && !strcmp(s_bg.text, "Standup at 10"));
+    assert(!bg_stream(K_BG_SUB) && resets == 1);   /* its subscription closed; the turns' streams untouched */
+    quiet();
+    s_bg_state = MUSE_CHAT_BG_NONE;
+
+    /* A chat the Muse hasn't seen: 404, so the message goes first, and the subscription after its ack. */
+    bg_subs = bg_posts = 0;
+    bg_want(BG_SID "\nWhat's next?");
+    bg_poll();
+    bg_sub_missing(bg_stream(K_BG_SUB));
+    assert(bg_posts == 1 && s_bg.phase == BG_WAITING && s_bg.sub_missing && !bg_stream(K_BG_SUB));
+    bg_ack(true);
+    assert(bg_subs == 2 && bg_stream(K_BG_SUB) && !s_bg.sub_missing);
+    bg_event("message.assistant", "reply2", "asked", "", "Gym at 6, pack shoes");
+    assert(s_bg_state == MUSE_CHAT_BG_DONE && !strcmp(s_bg.text, "Gym at 6, pack shoes"));
+    quiet();
+    s_bg_state = MUSE_CHAT_BG_NONE;
+
+    /* Refused by the Muse, or the connection going: it just fails. */
+    bg_ask_posted();
+    bg_ack(false);
+    assert(s_bg.phase == BG_IDLE && s_bg_state == MUSE_CHAT_BG_FAILED && !bg_stream(K_BG_SUB));
+    s_bg_state = MUSE_CHAT_BG_NONE;
+    bg_ask_posted();
+    for (auto &s : streams) s.kind = K_NONE;   /* as disconnect() leaves them */
+    bg_dropped();
+    assert(s_bg.phase == BG_IDLE && s_bg_state == MUSE_CHAT_BG_FAILED);
+    s_bg_state = MUSE_CHAT_BG_NONE;
+    /* An empty reply is no answer. */
+    bg_ask_posted();
+    bg_ack(true);
+    bg_event("delta.message_done", "reply3", "asked");
+    assert(s_bg_state == MUSE_CHAT_BG_FAILED);
+    /* Malformed requests are refused. */
+    s_bg_state = MUSE_CHAT_BG_NONE;
+    bg_want("not-a-uuid\nhi");
+    assert(s_bg.phase == BG_IDLE && s_bg_state == MUSE_CHAT_BG_FAILED);
+    quiet();
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -265,6 +415,7 @@ int main(int argc, char **argv) {
     case 1: valid_parents(); break;
     case 2: bounded_rejections(); break;
     case 3: inline_mode(); break;
+    case 4: background(); break;
     default: return 2;
     }
 }
@@ -302,3 +453,6 @@ int main(int argc, char **argv) {
 
     def test_mode_follows_the_words_until_the_chat_has_it(self):
         self.run_case(3)
+
+    def test_background_request_keeps_its_reply_and_never_emits(self):
+        self.run_case(4)

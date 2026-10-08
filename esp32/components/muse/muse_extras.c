@@ -34,6 +34,7 @@
 #include "muse_imu.h"
 #include "muse_rtc.h"
 #include "muse_sd.h"
+#include "muse_up_next.h"
 
 static const char *TAG = "extras";
 
@@ -110,6 +111,9 @@ static void extras_task(void *arg)
             }
 #endif
             muse_sd_caption_write();
+#if CONFIG_MUSE_GADGET_UP_NEXT
+            muse_up_next_tick();
+#endif
         }
         vTaskDelay(pdMS_TO_TICKS(wait_ms));
     }

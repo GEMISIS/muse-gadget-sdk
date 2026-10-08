@@ -45,6 +45,10 @@
  * (muse_settings_chat_sid) as their session_id. A message to a chat that last
  * heard another gadget mode carries the mode's contract after its words
  * (muse_gadget_mode_context), and the chat counts as told once the Muse takes it.
+ *
+ * A background request (muse_chat_bg_ask, for the face's "up next" line) is a
+ * typed message to a chat of the asker's, on streams of its own beside the
+ * turns; its reply goes back to the asker and nowhere else (bg_t).
  */
 
 #include <atomic>
@@ -151,12 +155,13 @@ static const char *TAG = "muse_chat_session";
 
 /* ---- Voice task <-> session task ---- */
 
-enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE };
+enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE,
+                           CMD_BG };
 
 struct cmd_t {
     cmd_type_t type;
     uint32_t gen;
-    char *text;              /* CMD_TEXT: malloc'd, freed by the session task */
+    char *text;              /* CMD_TEXT, CMD_BG: malloc'd, freed by the session task */
 };
 
 struct ev_t {
@@ -210,7 +215,7 @@ static bool s_sub_missing;
 
 /* ---- Streams on the connection ---- */
 
-enum kind_t : uint8_t { K_NONE, K_SUB, K_DICT, K_CHAT, K_TTS };
+enum kind_t : uint8_t { K_NONE, K_SUB, K_DICT, K_CHAT, K_TTS, K_BG_SUB, K_BG_CHAT };   /* K_BG_*: bg_t */
 
 struct stream_t {
     int64_t id;
@@ -225,6 +230,8 @@ struct stream_t {
 
 #define MAX_STREAMS 6
 static stream_t s_streams[MAX_STREAMS];
+
+static void bg_dropped(void);   /* background requests (bg_t), below */
 
 /* ---- The current turn ---- */
 
@@ -792,6 +799,7 @@ static void disconnect(const char *why)
         s.kind = K_NONE;
     }
     s_connected = false;
+    bg_dropped();
 }
 
 static void forget_vm(void)
@@ -2103,6 +2111,252 @@ static void check_turn(void)
     turn_done(true);
 }
 
+/* ---- Background requests ----
+ *
+ * A typed message to a chat of its own (muse_chat_bg_ask), whose reply is
+ * kept for whoever asked (muse_chat_bg_result) and never reaches the voice
+ * task, the captions, the speaker or the console. It runs beside the turns,
+ * on streams of its own on the same connection: a subscription naming that
+ * chat, opened first, then the POST /chat/stream once it's taken. A chat the
+ * Muse hasn't seen yet refuses the subscription (404) until its first
+ * message, so then the message goes first and the subscription follows its
+ * ack. Only the first assistant message replying to it counts. It never
+ * starts while a turn runs, and a failure (or the connection going) only
+ * ends it: the turn, the picked chat's subscription and the connection are
+ * left alone.
+ */
+#define BG_TEXT_MAX 256                    /* the reply kept: the first of it */
+#define BG_TIMEOUT_US (120 * 1000000LL)    /* asked -> reply done */
+
+enum bg_phase_t : uint8_t { BG_IDLE, BG_WANTED, BG_SUBSCRIBING, BG_WAITING };
+
+struct bg_t {
+    bg_phase_t phase;
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    char *prompt;            /* until it's posted */
+    int64_t sub_id, chat_id;
+    bool posted, acked, sub_missing;
+    char user_id[80];        /* the message posted, from the ack */
+    char reply_id[80];       /* the reply being kept */
+    char *text;              /* BG_TEXT_MAX: the reply so far, then the answer */
+    int64_t start_us;
+};
+
+EXT_RAM_BSS_ATTR static bg_t s_bg;
+static std::atomic<int> s_bg_state{MUSE_CHAT_BG_NONE};   /* muse_chat_bg_state_t, for the asker */
+
+/* A stream of the request's, if it's still open: reset it. */
+static void bg_reset(int64_t id)
+{
+    if (id > 0 && find_stream(id)) {
+        send_reset(id);
+    }
+}
+
+static void bg_end(bool ok, const char *why)
+{
+    if (s_bg.phase == BG_IDLE) {
+        return;
+    }
+    int64_t sub = s_bg.sub_id, chat = s_bg.chat_id;
+    s_bg.phase = BG_IDLE;
+    s_bg.sub_id = s_bg.chat_id = 0;
+    heap_caps_free(s_bg.prompt);
+    s_bg.prompt = nullptr;
+    bg_reset(sub);
+    bg_reset(chat);
+    if (ok) {
+        ESP_LOGI(TAG, "background reply in %.1fs: \"%s\"", (now_us() - s_bg.start_us) / 1e6, s_bg.text);
+    } else {
+        ESP_LOGW(TAG, "background request failed: %s", why);
+    }
+    s_bg_state = ok ? MUSE_CHAT_BG_DONE : MUSE_CHAT_BG_FAILED;
+}
+
+/* CMD_BG: "<sid>\n<message>". One at a time. */
+static void bg_want(const char *cmd)
+{
+    const char *nl = strchr(cmd, '\n');
+    if (s_bg.phase != BG_IDLE || !nl || nl - cmd != MUSE_CHAT_SID_MAX || !nl[1]) {
+        ESP_LOGW(TAG, "background request refused (%s)", s_bg.phase != BG_IDLE ? "one is running" : "malformed");
+        if (s_bg.phase == BG_IDLE) {
+            s_bg_state = MUSE_CHAT_BG_FAILED;
+        }
+        return;
+    }
+    if (!s_bg.text) {
+        s_bg.text = static_cast<char *>(psram_alloc(BG_TEXT_MAX));
+    }
+    size_t n = strlen(nl + 1) + 1;
+    s_bg.prompt = static_cast<char *>(psram_alloc(n));
+    if (!s_bg.text || !s_bg.prompt) {
+        heap_caps_free(s_bg.prompt);
+        s_bg.prompt = nullptr;
+        s_bg_state = MUSE_CHAT_BG_FAILED;
+        return;
+    }
+    memcpy(s_bg.prompt, nl + 1, n);
+    memcpy(s_bg.sid, cmd, MUSE_CHAT_SID_MAX);
+    s_bg.sid[MUSE_CHAT_SID_MAX] = '\0';
+    s_bg.phase = BG_WANTED;
+    s_bg.start_us = now_us();
+}
+
+static bool bg_subscribe(void)
+{
+    char body[MUSE_CHAT_SUB_BODY_MAX];
+    s_bg.sub_id = muse_chat_sub_body(s_bg.sid, body, sizeof(body))
+                      ? open_stream(K_BG_SUB, "POST", "/chat/subscribe", "application/json", "application/x-ndjson",
+                                    body, true)
+                      : 0;
+    return s_bg.sub_id != 0;
+}
+
+static void bg_start(void)
+{
+    s_bg.posted = s_bg.acked = s_bg.sub_missing = false;
+    s_bg.user_id[0] = s_bg.reply_id[0] = s_bg.text[0] = '\0';
+    ESP_LOGI(TAG, "background request to chat %s", s_bg.sid);
+    s_bg.phase = BG_SUBSCRIBING;
+    if (!bg_subscribe()) {
+        bg_end(false, "couldn't subscribe");
+    }
+}
+
+static void bg_post(void)
+{
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "message", s_bg.prompt);
+    cJSON_AddStringToObject(body, "output_modality", "text");
+    cJSON_AddStringToObject(body, "session_id", s_bg.sid);
+    char *json = cJSON_PrintUnformatted(body);
+    cJSON_Delete(body);
+    s_bg.chat_id = json ? open_stream(K_BG_CHAT, "POST", "/chat/stream", "application/json", nullptr, json, true) : 0;
+    cJSON_free(json);
+    heap_caps_free(s_bg.prompt);
+    s_bg.prompt = nullptr;
+    s_bg.posted = true;
+    s_bg.phase = BG_WAITING;
+    if (!s_bg.chat_id) {
+        bg_end(false, "couldn't post");
+    }
+}
+
+/* The subscription came back 404: a chat the Muse starts with its first message. */
+static void bg_sub_missing(stream_t *s)
+{
+    close_stream(s);
+    s_bg.sub_id = 0;
+    s_bg.sub_missing = true;
+    ESP_LOGI(TAG, "background chat isn't on the Muse yet: subscribing after its first message");
+    if (!s_bg.posted) {
+        bg_post();
+    }
+}
+
+/* POST /chat/stream answered: its ack names the message, which the reply answers. */
+static void bg_chat_end(stream_t *s, bool ok)
+{
+    if (ok) {
+        s->line[s->len] = '\0';
+        cJSON *root = cJSON_Parse(s->line);
+        cJSON *result = cJSON_GetObjectItem(root, "result");
+        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_IsObject(result) ? result : root, "message_id"));
+        strlcpy(s_bg.user_id, id ? id : "", sizeof(s_bg.user_id));
+        cJSON_Delete(root);
+        s_bg.acked = true;
+    }
+    close_stream(s);
+    s_bg.chat_id = 0;
+    if (!ok) {
+        bg_end(false, "Muse didn't take it");
+    } else if (s_bg.sub_missing) {
+        s_bg.sub_missing = false;
+        if (!bg_subscribe()) {
+            bg_end(false, "couldn't subscribe");
+        }
+    }
+}
+
+/* A line on the request's subscription: the reply to keep, and nothing else. */
+static void on_bg_event(cJSON *line)
+{
+    if (s_bg.phase != BG_WAITING
+        || strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(line, "type")) ?: "", "event") != 0) {
+        return;   /* the subscription's ack, or anything from before the message went */
+    }
+    const char *event = cJSON_GetStringValue(cJSON_GetObjectItem(line, "event")) ?: "";
+    cJSON *payload = cJSON_GetObjectItem(line, "payload");
+    bool append = !strcmp(event, "delta.text_append");
+    bool done = !strcmp(event, "delta.message_done");
+    bool full = !strcmp(event, "message.assistant");
+    if (!append && !done && !full && strcmp(event, "delta.message_start") != 0) {
+        return;
+    }
+    const char *id = msg_id(payload, line);
+    if (!id || (s_bg.user_id[0] && !strcmp(id, s_bg.user_id))) {
+        return;
+    }
+    const char *parent = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "reply_to_message_id"));
+    if (!parent) {
+        parent = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "parent_message_id"));
+    }
+    if (parent && parent[0] && s_bg.user_id[0] && strcmp(parent, s_bg.user_id) != 0) {
+        return;   /* answering something else */
+    }
+    if (!s_bg.reply_id[0]) {
+        strlcpy(s_bg.reply_id, id, sizeof(s_bg.reply_id));
+    } else if (strcmp(id, s_bg.reply_id) != 0) {
+        return;   /* a later message: only the first counts */
+    }
+    if (append) {
+        strlcat(s_bg.text, cJSON_GetStringValue(cJSON_GetObjectItem(payload, "text")) ?: "", BG_TEXT_MAX);
+        return;
+    }
+    if (!done && !full) {
+        return;
+    }
+    if (full && cJSON_IsFalse(cJSON_GetObjectItem(payload, "display_text_ready"))) {
+        return;
+    }
+    const char *final_text = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "display_text"));
+    if (!final_text || !final_text[0]) {
+        final_text = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "content"));
+    }
+    if (final_text && final_text[0]) {
+        strlcpy(s_bg.text, final_text, BG_TEXT_MAX);   /* the whole of it, if a piece went missing */
+    }
+    bg_end(s_bg.text[0] != '\0', "empty reply");
+}
+
+/* Each pass of the session task, connected: starts a request once no turn
+ * runs, posts it once its subscription is taken, and gives up on a slow one. */
+static void bg_poll(void)
+{
+    if (s_bg.phase == BG_IDLE) {
+        return;
+    }
+    if (now_us() - s_bg.start_us > BG_TIMEOUT_US) {
+        bg_end(false, "no reply in time");
+    } else if (s_bg.phase == BG_WANTED && s_turn.phase == P_IDLE) {
+        bg_start();
+    } else if (s_bg.phase == BG_SUBSCRIBING) {
+        stream_t *s = find_stream(s_bg.sub_id);
+        if (s && s->status > 0 && s->status < 400) {
+            bg_post();
+        }
+    }
+}
+
+/* The connection went: a request under way has failed; one waiting to start waits on. */
+static void bg_dropped(void)
+{
+    if (s_bg.phase == BG_SUBSCRIBING || s_bg.phase == BG_WAITING) {
+        s_bg.sub_id = s_bg.chat_id = 0;   /* their streams went with it */
+        bg_end(false, "the connection closed");
+    }
+}
+
 /* ---- Inbound dispatch ---- */
 
 /* Splits NDJSON; calls fn for each complete line. */
@@ -2156,7 +2410,11 @@ static void stream_data(stream_t *s, ConstByteSpan data)
     case K_DICT:
         feed_lines(s, data.data(), data.size(), on_dictation_line);
         break;
-    case K_CHAT: {
+    case K_BG_SUB:
+        feed_lines(s, data.data(), data.size(), on_bg_event);
+        break;
+    case K_CHAT:
+    case K_BG_CHAT: {
         size_t take = data.size() < s->cap - 1 - s->len ? data.size() : s->cap - 1 - s->len;
         memcpy(s->line + s->len, data.data(), take);
         s->len += take;
@@ -2200,6 +2458,14 @@ static bool stream_end(stream_t *s, bool ok)
     case K_TTS:
         tts_end(s, ok);
         break;
+    case K_BG_SUB:
+        close_stream(s);
+        s_bg.sub_id = 0;
+        bg_end(false, "its subscription ended");   /* done already if the reply came */
+        break;
+    case K_BG_CHAT:
+        bg_chat_end(s, ok);
+        break;
     default:
         break;
     }
@@ -2220,6 +2486,10 @@ static bool on_http_error(stream_t *s, const ApplicationResponseView &resp)
         close_stream(s);
         s_conn.sub_id = 0;
         s_sub_missing = true;
+        return true;
+    }
+    if (s->kind == K_BG_SUB && resp.status == 404) {
+        bg_sub_missing(s);
         return true;
     }
     /* No falling back to a subscription with {} on a refusal: a side chat's
@@ -2362,6 +2632,10 @@ static void handle(const cmd_t &cmd)
         break;
     case CMD_WAKE:   /* only ends hatch_task's resting wait */
         break;
+    case CMD_BG:
+        bg_want(cmd.text);
+        free(cmd.text);
+        break;
     }
 }
 
@@ -2382,6 +2656,19 @@ static void hatch_task(void *arg)
             }
         }
         if (!s_connected) {
+            if (s_bg.phase == BG_WANTED) {
+                /* A background request connects for itself (after an idle close,
+                 * say), once and only awake; failing that, it waits out its time. */
+                if (now_us() - s_bg.start_us > BG_TIMEOUT_US) {
+                    bg_end(false, "couldn't connect");
+                } else if (!s_resting && s_turn.phase == P_IDLE && muse_wifi_connected() && muse_hatch_configured()
+                           && !ensure_connected()) {
+                    bg_end(false, "can't reach Muse");
+                }
+                if (s_connected) {
+                    continue;
+                }
+            }
             if (!muse_wifi_connected()) {
                 s_auto_next_us = 0;
                 s_auto_backoff_us = AUTO_RETRY_MIN_US;
@@ -2433,6 +2720,10 @@ static void hatch_task(void *arg)
             continue;
         }
         check_turn();
+        bg_poll();
+        if (!s_connected) {
+            continue;   /* a send failed */
+        }
 
         int64_t t = now_us();
         if (t - s_conn.last_rx_us > DEAD_US) {
@@ -2536,6 +2827,39 @@ extern "C" void muse_chat_set_subscribe_session(bool on)
 extern "C" bool muse_chat_subscribe_session(void)
 {
     return s_sub_with_sid;
+}
+
+extern "C" bool muse_chat_bg_ask(const char *sid, const char *message)
+{
+    if (!s_cmds || !sid || !message || !message[0] || s_bg_state == MUSE_CHAT_BG_BUSY) {
+        return false;
+    }
+    size_t n = strlen(sid) + 1 + strlen(message) + 1;
+    char *text = static_cast<char *>(psram_alloc(n));
+    if (!text) {
+        return false;
+    }
+    snprintf(text, n, "%s\n%s", sid, message);
+    s_bg_state = MUSE_CHAT_BG_BUSY;
+    cmd_t cmd{ CMD_BG, 0, text };
+    if (xQueueSend(s_cmds, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
+        free(text);
+        s_bg_state = MUSE_CHAT_BG_NONE;
+        return false;
+    }
+    return true;
+}
+
+extern "C" muse_chat_bg_state_t muse_chat_bg_result(char *out, size_t cap)
+{
+    auto st = static_cast<muse_chat_bg_state_t>(s_bg_state.load());
+    if (st == MUSE_CHAT_BG_DONE && out && cap) {
+        strlcpy(out, s_bg.text, cap);
+    }
+    if (st == MUSE_CHAT_BG_DONE || st == MUSE_CHAT_BG_FAILED) {
+        s_bg_state = MUSE_CHAT_BG_NONE;
+    }
+    return st;
 }
 
 extern "C" bool muse_hatch_turn_busy(void)

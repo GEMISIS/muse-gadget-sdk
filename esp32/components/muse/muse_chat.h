@@ -149,6 +149,28 @@ size_t muse_hatch_turn_audio_wait(const int16_t *pcm, size_t frames, int wait_ms
 void muse_hatch_text_turn(char *text);
 void muse_hatch_text_cancel(void);
 
+/* ---- Background requests (CONFIG_MUSE_HATCH only) ---- */
+
+typedef enum {
+    MUSE_CHAT_BG_NONE,     /* none asked, or its result was taken */
+    MUSE_CHAT_BG_BUSY,     /* asked, no reply yet */
+    MUSE_CHAT_BG_DONE,     /* replied: muse_chat_bg_result() copies the reply */
+    MUSE_CHAT_BG_FAILED,   /* gave up (the log says why) */
+} muse_chat_bg_state_t;
+
+/*
+ * Sends a typed message to chat `sid` (a UUID; not the picked chat's
+ * business) in the background: its reply never shows, speaks or reaches the
+ * console, and the turns and the picked chat's subscription carry on as if
+ * it weren't there. It waits for any turn to end before it goes, connects if
+ * it has to (not while resting), and gives up after two minutes. One at a
+ * time: false if one is under way or it can't be queued. Any task.
+ */
+bool muse_chat_bg_ask(const char *sid, const char *message);
+/* The request's state; once DONE or FAILED, taking it (with the reply's
+ * first 255 bytes in out for DONE) puts it back to NONE. Any task. */
+muse_chat_bg_state_t muse_chat_bg_result(char *out, size_t cap);
+
 /*
  * Prints one "@chat" line per call (more if `text` is long): the type, then the
  * printf-style `fields` (JSON members, or NULL), then `text` escaped (or none).
