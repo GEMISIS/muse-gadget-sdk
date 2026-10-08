@@ -50,6 +50,7 @@
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
 #include "muse_state.h"
+#include "muse_style.h"
 #include "muse_text.h"
 #if CONFIG_MUSE_TTS_PICO
 #include "muse_tts.h"
@@ -89,13 +90,14 @@ static const char *TAG = "muse_ui";
 #define COLOR_PHOTO 0xf8f5ee
 #define COLOR_PHOTO_SHADOW 0x5b3fd9
 
-#define COLOR_DIM 0x8b84a8
+/* The shared palette (muse_style.h), and the face's own colours. */
+#define COLOR_DIM MUSE_COLOR_DIM
+#define COLOR_ACCENT MUSE_COLOR_ACCENT
+#define COLOR_LIT MUSE_COLOR_TEXT
+#define COLOR_DOT_OFF MUSE_COLOR_OFF
 #define COLOR_CAPTION 0xd8d2ff
 #define COLOR_RING_BG 0x140f22
 #define COLOR_METER_OFF 0x1d1733
-#define COLOR_ACCENT 0xa77dff
-#define COLOR_DOT_OFF 0x3a3358
-#define COLOR_LIT 0xf2efff
 #define SETTINGS_TICK_S 0.25f
 
 /*
@@ -1744,11 +1746,11 @@ static void build_overlays(void)
     lv_obj_set_style_pad_ver(s_pair, s_small ? 10 : 18, 0);
     lv_obj_set_style_pad_hor(s_pair, s_small ? 6 : 16, 0);
     lv_obj_set_style_pad_row(s_pair, s_small ? 4 : 10, 0);
-    lv_obj_set_style_radius(s_pair, s_small ? 10 : 24, 0);
+    lv_obj_set_style_radius(s_pair, s_small ? 10 : MUSE_CARD_RADIUS, 0);
     lv_obj_set_style_bg_opa(s_pair, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(s_pair, lv_color_hex(0x1a1530), 0);
+    lv_obj_set_style_bg_color(s_pair, lv_color_hex(MUSE_COLOR_CARD), 0);
     lv_obj_set_style_border_color(s_pair, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_set_style_border_width(s_pair, 2, 0);
+    lv_obj_set_style_border_width(s_pair, MUSE_CARD_BORDER, 0);
     lv_obj_remove_flag(s_pair, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_pair, LV_OBJ_FLAG_HIDDEN);
     s_pair_title = make_label(s_pair, font_pick(&lv_font_montserrat_20, FONT_COMPACT), COLOR_LIT);
