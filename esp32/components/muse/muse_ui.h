@@ -46,6 +46,22 @@ void muse_ui_plugged(void);
  * Only the face: the settings, power saving and Muse see the real one. */
 void muse_ui_fake_battery(int pct, bool charging);
 
+/* From any task (bench, ">face=phone" and the like, muse_input.c): what Muse
+ * is up to on the face, for screenshots, in place of what the turn or the
+ * clock would pick (muse_pose_t). The acts show while thinking, the rest
+ * while idle; NONE goes back to the real thing. */
+typedef enum {
+    MUSE_UI_BENCH_NONE,
+    MUSE_UI_BENCH_PHONE,            /* talking into his phone */
+    MUSE_UI_BENCH_LISTEN_PHONE,     /* the phone to his ear */
+    MUSE_UI_BENCH_PACKAGES,         /* hauling boxes, the count going round */
+    MUSE_UI_BENCH_TEA,
+    MUSE_UI_BENCH_PAJAMAS,
+    MUSE_UI_BENCH_BRACE,
+} muse_ui_bench_t;
+
+void muse_ui_bench_pose(muse_ui_bench_t what);
+
 /* The functions below run in the LVGL task (or with the display lock held). */
 
 /* Slide back to the face (e.g. when a talk starts). */
