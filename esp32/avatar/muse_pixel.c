@@ -347,6 +347,13 @@ static float eyes_update(const muse_pose_t *p, float dt)
     default:
         break;
     }
+    if (p->reach > 0.3f) {
+        tgx = 0.6f;    /* a glance down at the pocket */
+        tgy = 1.0f;
+    } else if (p->holding && p->mode != MUSE_MODE_THINKING) {
+        tgx *= 0.3f;   /* up a little, at what's held up */
+        tgy = -0.3f;
+    }
     float k = 1.0f - expf(-dt * 14.0f);
     e->gx += (tgx - e->gx) * k;
     e->gy += (tgy - e->gy) * k;
@@ -534,7 +541,8 @@ static inline bool in_limb(const limb_q_t *l, int32_t x, int32_t y, int32_t *lx,
 
 enum { M_NONE, M_BODY, M_ARM, M_FOOT, M_FACE };
 
-static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t feet[2])
+/* arms_on false leaves the arms out (pose->holding: the UI draws them). */
+static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t feet[2], bool arms_on)
 {
     memset(s_mask, 0, sizeof(s_mask));
     limb_q_t arm_q[2], foot_q[2];
@@ -562,7 +570,7 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
 
             /* Arms sit in front of the body. */
             bool arm = false;
-            for (int a = 0; a < 2 && !arm; a++) {
+            for (int a = 0; arms_on && a < 2 && !arm; a++) {
                 if (in_limb(&arm_q[a], fx, fy, &lx, &ly)) {
                     s_mask[y * W + x] = M_ARM;
                     int32_t nx = ((lx * QF(0.85f)) >> Q) + (a ? QF(0.25f) : -QF(0.25f));
@@ -856,6 +864,19 @@ static void draw_alert(int x, int y)
     stamp(BANG, 6, x - 2, y, C_ACC, C_ACC);
 }
 
+/*
+ * The pocket on the lower right of the body (pose->reach, pose->holding),
+ * centred on x, its mouth at row y: drawn over the arm, which reaches into it.
+ */
+static void draw_pocket(int x, int y)
+{
+    static const char *const POCKET[] = { "########", "#oooooo#", "#oooooo#", "#oooooo#", ".######." };
+    stamp(POCKET, 5, x - 4, y, C_OUT, C_BD);
+    for (int i = -3; i <= 2; i++) {
+        px(x + i, y + 1, C_OUT2);   /* the shadow inside its mouth */
+    }
+}
+
 /* Dizzy (pose->dizzy): stars circling the head. */
 static void draw_stars(float cx, float top, float t, float amount)
 {
@@ -1142,6 +1163,7 @@ void muse_pixel_render(const muse_pose_t *p)
     j.fb = 7.4f * squash;
     j.fx = j.cx + lean * 0.3f;
     j.fy = j.cy - j.b * 0.30f + bob * 0.3f;
+    j.fy += clampf(p->reach, 0, 1) * 1.2f;   /* face down, at the pocket */
 
     /* ---- background layers ---- */
     float aura_r = 29.0f + level * 4.0f + sinf(t * 1.5f) * 1.0f;
@@ -1215,7 +1237,18 @@ void muse_pixel_render(const muse_pose_t *p)
         break;
     }
     }
-    draw_avatar(&j, arms, feet);
+    /* Reaching into the pocket (pose->reach): the right arm goes down to it. */
+    float reach = clampf(p->reach, 0, 1);
+    if (reach > 0) {
+        limb_t in = { j.cx + 11.0f, j.cy + 9.0f, -0.3f };
+        arms[1].x += (in.x - arms[1].x) * reach;
+        arms[1].y += (in.y - arms[1].y) * reach;
+        arms[1].angle += (in.angle - arms[1].angle) * reach;
+    }
+    draw_avatar(&j, arms, feet, !p->holding);
+    if (reach > 0 || p->holding) {
+        draw_pocket(iround(j.cx + 10.0f), iround(j.cy + 12.0f));
+    }
 
     /* ---- face ---- */
     float eye_y = j.fy - 0.5f;
@@ -1280,7 +1313,7 @@ void muse_pixel_render(const muse_pose_t *p)
         px(br - 1, by - 1, C_BROW); px(br, by - 1, C_BROW);
     }
 
-    float blush = 0.55f + happy * 0.45f + (mode == MUSE_MODE_SPEAKING ? 0.15f : 0.0f);
+    float blush = 0.55f + happy * 0.45f + (mode == MUSE_MODE_SPEAKING ? 0.15f : 0.0f) + (p->holding ? 0.2f : 0.0f);
     draw_blush(iround(j.fx - j.fa * 0.72f), iround(eye_y + 2), blush);
     draw_blush(iround(j.fx + j.fa * 0.72f), iround(eye_y + 2), blush);
 

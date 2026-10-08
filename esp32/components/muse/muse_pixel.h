@@ -47,6 +47,14 @@ typedef struct {
      * out after. Swirly eyes, a wobbly mouth, stars round the head. A
      * renderer may leave it alone. */
     float dizzy;
+    /* Showing an image from a reply (muse_ui.c): 0..1 reaching down into a
+     * pocket on the right-hand side of the body (the viewer's right) with
+     * that arm, glancing down at it. Then `holding` it up: the UI draws the
+     * arms (from the shoulders, grid (32 -/+ 14, 34)) and the photo, so the
+     * renderer leaves its own arms out and looks pleased. The pocket shows
+     * while either is on. A renderer may leave both alone. */
+    float reach;
+    bool holding;
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */
