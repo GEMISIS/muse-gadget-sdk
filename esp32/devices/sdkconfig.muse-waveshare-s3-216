@@ -90,3 +90,5 @@ CONFIG_PM_PROFILING=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_muse_tts.csv"
 # The Night face's big clock (CONFIG_MUSE_GADGET_NIGHT_FACE).
 CONFIG_LV_FONT_MONTSERRAT_48=y
+# Settings and Chats rows in bigger type (muse_settings_ui.c, muse_chats_ui.c).
+CONFIG_LV_FONT_MONTSERRAT_24=y
