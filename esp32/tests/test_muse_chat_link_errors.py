@@ -74,7 +74,7 @@ static bool muse_link_hatch_linked(void) { return true; }
 static bool muse_wifi_connected(void) { return true; }
 static bool muse_link_req_ready(void) { return true; }
 #define CONFIG_MUSE_CHAT_SUBSCRIBE_SESSION 1
-#define MUSE_CHAT_SID_MAX 64
+#define MUSE_CHAT_SID_MAX 36
 static char chat_sid[MUSE_CHAT_SID_MAX + 1];   /* "" = the main chat */
 static void muse_settings_chat_sid(char *out) { strcpy(out, chat_sid); }
 static char note_head[512];
@@ -342,7 +342,7 @@ static void text_modality(void) {
 }
 /* A side chat: the note and the subscription both name it. */
 static void side_chat(void) {
-    strcpy(chat_sid,"gadget-0a1b2c3d4e5f");
+    strcpy(chat_sid,"6d757365-6761-4467-8000-0a1b2c3d4e5f");
     begin(); release();
     char body[600]; snprintf(body,sizeof(body),"%s%s",note_head,MUSE_HATCH_NOTE_TAIL);
     cJSON *note=cJSON_Parse(body); assert(note);
@@ -358,8 +358,8 @@ static void side_chat(void) {
     note=cJSON_Parse(body); assert(note && !cJSON_GetObjectItem(note,"session_id")); cJSON_Delete(note);
     assert(!strcmp(note_head,MUSE_HATCH_NOTE_HEAD));
     /* A head that doesn't fit isn't sent half-built. */
-    char small[40]; assert(!muse_chat_note_head("gadget-0a1b2c3d4e5f",small,sizeof(small)));
-    assert(!muse_chat_sub_body("gadget-0a1b2c3d4e5f",small,10));
+    char small[40]; assert(!muse_chat_note_head("6d757365-6761-4467-8000-0a1b2c3d4e5f",small,sizeof(small)));
+    assert(!muse_chat_sub_body("6d757365-6761-4467-8000-0a1b2c3d4e5f",small,10));
 }
 int main(int argc,char **argv) {
     assert(argc==2); muse_hatch_start();

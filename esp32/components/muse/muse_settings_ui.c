@@ -94,7 +94,6 @@ static char s_join_ssid[MUSE_SSID_MAX + 1];
 static lv_obj_t *s_hatch_status, *s_hatch_host, *s_hatch_vm, *s_hatch_token;
 static lv_obj_t *s_link_status, *s_link_reset_lbl;
 static int64_t s_link_reset_armed_us;
-static lv_obj_t *s_chat_main, *s_chat_gadget, *s_chat_other, *s_chat_note;
 
 /* Bluetooth page. */
 static lv_obj_t *s_ble_sw, *s_ble_status;
@@ -884,42 +883,6 @@ static void on_link_reset(lv_event_t *e)
     set_text(s_link_reset_lbl, "Tap again to reset");
 }
 
-static void on_chat_main(lv_event_t *e)
-{
-    (void)e;
-    muse_settings_set_chat_sid("");
-    set_text(s_chat_note, "Messages go to your main chat.");
-}
-
-static void on_chat_gadget(lv_event_t *e)
-{
-    (void)e;
-    char sid[MUSE_CHAT_SID_MAX + 1];
-    muse_settings_gadget_chat_sid(sid);
-    muse_settings_set_chat_sid(sid);
-    set_text(s_chat_note, "Messages go to this gadget's own chat; the Muse starts it with the first one.");
-}
-
-static void on_chat_other_done(const char *text)
-{
-    if (!muse_settings_set_chat_sid(text)) {
-        set_text(s_chat_note, "A chat ID is up to 64 letters, digits and dashes. Nothing changed.");
-        return;
-    }
-    set_text(s_chat_note, text[0] ? "Messages go to that chat; a new ID starts a new one."
-                                  : "Messages go to your main chat.");
-}
-
-static void on_chat_other(lv_event_t *e)
-{
-    (void)e;
-    char sid[MUSE_CHAT_SID_MAX + 1], gadget[MUSE_CHAT_SID_MAX + 1];
-    muse_settings_chat_sid(sid);
-    muse_settings_gadget_chat_sid(gadget);
-    open_text("Chat ID", strcmp(sid, gadget) ? sid : "", false, MUSE_CHAT_SID_MAX, "Empty for the main chat",
-              on_chat_other_done, s_hatch);
-}
-
 static void build_hatch_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -928,15 +891,6 @@ static void build_hatch_page(lv_obj_t *tile)
     s_link_status = note(list, "");
     button(list, "Reset pairing", COLOR_DANGER, on_link_reset, &s_link_reset_lbl);
     s_hatch_status = note(list, "");
-    note(list, "Chat");
-    row(list, NULL, "Main chat", &s_chat_main, on_chat_main, NULL);
-    row(list, NULL, "Gadget chat", &s_chat_gadget, on_chat_gadget, NULL);
-    row(list, NULL, "Other chat...", &s_chat_other, on_chat_other, NULL);
-    lv_obj_t *checks[] = { s_chat_main, s_chat_gadget, s_chat_other };
-    for (size_t i = 0; i < sizeof(checks) / sizeof(checks[0]); i++) {
-        lv_obj_set_style_text_color(checks[i], lv_color_hex(COLOR_ACCENT), 0);
-    }
-    s_chat_note = note(list, "Which Muse chat your messages and voice notes go to. Muse can switch it too.");
     row(list, NULL, "Server", &s_hatch_host, on_hatch_host, NULL);
     row(list, NULL, "VM ID", &s_hatch_vm, on_hatch_vm, NULL);
     row(list, NULL, "Device token", &s_hatch_token, on_hatch_token, NULL);
@@ -973,14 +927,6 @@ static void tick_hatch(void)
     size_t n = muse_settings_hatch_token_len();
     snprintf(buf, sizeof(buf), n ? "Set (%u chars)" : "Not set", (unsigned)n);
     set_text(s_hatch_token, buf);
-
-    char sid[MUSE_CHAT_SID_MAX + 1], gadget[MUSE_CHAT_SID_MAX + 1];
-    muse_settings_chat_sid(sid);
-    muse_settings_gadget_chat_sid(gadget);
-    bool is_gadget = sid[0] && !strcmp(sid, gadget);
-    set_text(s_chat_main, sid[0] ? "" : LV_SYMBOL_OK);
-    set_text(s_chat_gadget, is_gadget ? LV_SYMBOL_OK : "");
-    set_text(s_chat_other, sid[0] && !is_gadget ? sid : "");
 }
 
 /* ---------- Bluetooth ---------- */

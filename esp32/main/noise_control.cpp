@@ -1376,11 +1376,21 @@ static char *build_register_json(void) {
     cJSON_AddItemToObject(chat_optional, "session_id",
                           string_param("main (or empty) for the main chat, "
                                        "gadget for this gadget's own chat, or "
-                                       "a chat's id: letters, digits, dashes."));
+                                       "a chat's UUID."));
+    cJSON_AddItemToObject(chat_optional, "name",
+                          string_param("A named chat kept on the gadget, up to "
+                                       "32 bytes; made if none has the name. "
+                                       "Not with session_id."));
     add_command(commands, "set_chat",
                 "Pick which chat the gadget's messages and voice notes go "
-                "to. Returns chat and session_id.",
+                "to. A new chat shows up in the Muse app once it gets a "
+                "message. Returns chat (main, gadget, named or custom), "
+                "session_id, and name and created for a named chat.",
                 nullptr, chat_optional);
+    add_command(commands, "list_chats",
+                "List the named chats kept on the gadget (name, session_id) "
+                "and the current chat, as set_chat returns it.",
+                nullptr, nullptr);
 #endif
 
 #if CONFIG_HOMEHUB_VOICE

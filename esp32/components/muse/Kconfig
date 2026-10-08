@@ -184,11 +184,11 @@ menu "Muse"
         depends on MUSE_ENABLED
         default y
         help
-            With a chat other than the main one picked (Settings > Muse, or
+            With a chat other than the main one picked (the Chats screen, or
             the set_chat command), turns carry its session_id. This also
             names it in the reply subscription, {"session_id":"..."} instead
-            of {}, in case the subscription only carries one chat's replies.
-            Turn it off if replies from a side chat stop arriving. On boards
+            of {}: a subscription with {} doesn't carry a side chat's
+            replies. Leave it on unless Muse changes that. On boards
             with Muse's own voice session, ">chat_sub=0" or "=1" on the
             serial console switches it until the next restart.
 
