@@ -91,6 +91,49 @@ static size_t seq_len(const unsigned char *p)
     return n;
 }
 
+/* Where a Markdown image, `![alt](target)` on one line, ends (past its ')'); NULL if p isn't one. */
+static const char *image_end(const char *p)
+{
+    if (p[0] != '!' || p[1] != '[') {
+        return NULL;
+    }
+    const char *q = p + 2;
+    while (*q && *q != ']' && *q != '\n') {
+        q++;
+    }
+    if (q[0] != ']' || q[1] != '(') {
+        return NULL;
+    }
+    for (q += 2; *q && *q != '\n'; q++) {
+        if (*q == ')') {
+            return q + 1;
+        }
+    }
+    return NULL;
+}
+
+/*
+ * A file in Muse's workspace, named on its own: sandbox://..., or a word
+ * like workspace/dir/file.jpg (a "/" or "." past "workspace/", so prose
+ * such as "workspace/desk" is still said).
+ */
+static bool workspace_path(const char *in, const char *p)
+{
+    if (starts(p, "sandbox://")) {
+        return true;
+    }
+    if (p > in && !strchr(" \t\n(`\"'", p[-1])) {
+        return false;
+    }
+    const char *q = starts(p, "workspace/") ? p + 10 : starts(p, "/workspace/") ? p + 11 : NULL;
+    for (; q && *q && *q != ' ' && *q != '\n' && *q != '`' && *q != ')'; q++) {
+        if ((*q == '/' || *q == '.') && q[1] && q[1] != ' ' && q[1] != '\n') {
+            return true;
+        }
+    }
+    return false;
+}
+
 size_t muse_tts_clean(const char *in, char *out, size_t cap)
 {
     if (!cap) {
@@ -100,6 +143,20 @@ size_t muse_tts_clean(const char *in, char *out, size_t cap)
     const char *p = line_start(in);
     while (*p && !s.full) {
         unsigned char c = (unsigned char)*p;
+        const char *image = image_end(p);
+        if (image) {
+            /* An image Muse shows: nothing to say. */
+            p = image;
+            space(&s);
+            continue;
+        }
+        if (workspace_path(in, p)) {
+            while (*p && *p != ' ' && *p != '\n' && *p != ')' && *p != '`') {
+                p++;
+            }
+            space(&s);
+            continue;
+        }
         if (starts(p, "http://") || starts(p, "https://") || starts(p, "www.")) {
             while (*p && *p != ' ' && *p != '\n' && *p != ')') {
                 p++;

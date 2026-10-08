@@ -115,6 +115,13 @@ class CaptionWrapTest(unittest.TestCase):
     def test_mixed_text_breaks_at_spaces_or_between_cjk(self) -> None:
         self.assertEqual(self.wrap("Muse 说 hello world", 8), ["Muse 说", "hello", "world"])
 
+    def test_an_image_still_arriving_isnt_shown(self) -> None:
+        # The chat session takes whole Markdown images out (muse_chat_md.h); a half-arrived one waits.
+        self.assertEqual(self.wrap("Here you go! ![red pa", 40), ["Here you go!"])
+        self.assertEqual(self.wrap("Here you go! ![red panda](sandbox://workspace/a", 40), ["Here you go!"])
+        self.assertEqual(self.wrap("Look at this\n![red pa", 40), ["Look at this"])
+        self.assertEqual(self.wrap("Wow![sic] ok", 40), ["Wow![sic] ok"])
+
     def shown(self, text: str) -> str:
         proc = subprocess.run(
             [str(self.binary), "ascii"], input=text.encode(), capture_output=True, check=True

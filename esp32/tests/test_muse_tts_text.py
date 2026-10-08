@@ -68,6 +68,22 @@ class MuseTtsTextTest(unittest.TestCase):
         self.assertEqual(self.clean("See [the docs](https://example.com/a) or https://x.io/b now"),
                          "See the docs or link now")
 
+    def test_images_and_workspace_files_are_not_said(self):
+        panda = "![red panda](sandbox://workspace/muse-gadget-216/images/red-panda-480.jpg)"
+        self.assertEqual(self.clean(f"Here you go! {panda} Cute, right?"),
+                         "Here you go! Cute, right?")
+        self.assertEqual(self.clean(f"Here:\n\n{panda}\n\nCute."), "Here: Cute.")
+        self.assertEqual(self.clean(panda), "")
+        self.assertEqual(self.clean("![](https://x.io/a.png)Done"), "Done")
+        self.assertEqual(self.clean("Saved to sandbox://workspace/a/b.jpg for you"),
+                         "Saved to for you")
+        self.assertEqual(self.clean("It's in `workspace/muse-gadget-216/images/x.jpg` now"),
+                         "It's in now")
+        self.assertEqual(self.clean("See [the panda](sandbox://workspace/x.jpg)."), "See the panda.")
+        # Not an image: said as before.
+        self.assertEqual(self.clean("Wow![sic] ok"), "Wow!sic ok")
+        self.assertEqual(self.clean("my workspace/desk"), "my workspace/desk")
+
     def test_typography_and_emoji(self):
         self.assertEqual(self.clean("It’s “fine” — really… \U0001F600 café"),
                          "It's \"fine\", really... café")
