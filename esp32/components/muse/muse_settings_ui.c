@@ -46,9 +46,26 @@
 
 /* Keep content in a column that stays inside a round panel (and fits a 368 px one). */
 #define LIST_W 330
+#define MAX_APS 12
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_216
+/* The 2.16's 480 px screen has room for taller rows, easier to hit, in bigger
+ * type; General's four rows and back_row() still fit without scrolling. */
+#define LIST_TOP 72
+#define ROW_H 70
+#define ROW_GAP 6
+#define LIST_PAD_BOTTOM 24   /* just clear of the page dots */
+#define INFO_H 52
+#define FONT_ROW (&lv_font_montserrat_24)     /* a row's text and icon */
+#define FONT_VALUE (&lv_font_montserrat_20)   /* the value on its right */
+#else
 #define LIST_TOP 84
 #define ROW_H 58
-#define MAX_APS 12
+#define ROW_GAP 10
+#define LIST_PAD_BOTTOM 40
+#define INFO_H 44
+#define FONT_ROW (&lv_font_montserrat_20)
+#define FONT_VALUE (&lv_font_montserrat_16)
+#endif
 
 #define COLOR_TEXT 0xf2efff
 #define COLOR_DIM 0x8b84a8
@@ -256,11 +273,11 @@ static lv_obj_t *page(lv_obj_t *tile, const char *title, lv_obj_t **list_out)
     lv_obj_align(list, LV_ALIGN_TOP_MID, 0, list_top);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_row(list, 10, 0);
+    lv_obj_set_style_pad_row(list, compact ? 10 : ROW_GAP, 0);
     lv_obj_set_style_pad_hor(list, gutter, 0);
     /* Clear the page dots (8 px, 14 px up) on flat panels, or the bottom
      * curve on round ones; no more, or a page that fits would scroll. */
-    lv_obj_set_style_pad_bottom(list, muse_board->round ? 110 : compact ? 32 : 40, 0);
+    lv_obj_set_style_pad_bottom(list, muse_board->round ? 110 : compact ? 32 : LIST_PAD_BOTTOM, 0);
     scroll_column(list, compact);
     *list_out = list;
     return p;
@@ -289,13 +306,13 @@ static lv_obj_t *row(lv_obj_t *list, const char *icon, const char *text, lv_obj_
 {
     lv_obj_t *c = card(list, true);
     if (icon) {
-        label(c, &lv_font_montserrat_20, COLOR_ACCENT, icon);
+        label(c, FONT_ROW, COLOR_ACCENT, icon);
     }
-    lv_obj_t *t = label(c, &lv_font_montserrat_20, COLOR_TEXT, text);
+    lv_obj_t *t = label(c, FONT_ROW, COLOR_TEXT, text);
     lv_obj_set_flex_grow(t, 1);
     lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_DOTS);
     if (value_out) {
-        lv_obj_t *v = label(c, &lv_font_montserrat_16, COLOR_DIM, "");
+        lv_obj_t *v = label(c, FONT_VALUE, COLOR_DIM, "");
         lv_obj_set_style_max_width(v, 130, 0);
         lv_label_set_long_mode(v, LV_LABEL_LONG_MODE_DOTS);
         *value_out = v;
@@ -307,7 +324,7 @@ static lv_obj_t *row(lv_obj_t *list, const char *icon, const char *text, lv_obj_
 static lv_obj_t *switch_row(lv_obj_t *list, const char *text, bool on, lv_event_cb_t cb)
 {
     lv_obj_t *c = card(list, false);
-    lv_obj_t *t = label(c, &lv_font_montserrat_20, COLOR_TEXT, text);
+    lv_obj_t *t = label(c, FONT_ROW, COLOR_TEXT, text);
     lv_obj_set_flex_grow(t, 1);
     lv_obj_t *sw = lv_switch_create(c);
     lv_obj_set_size(sw, 60, 32);
@@ -324,7 +341,7 @@ static lv_obj_t *button(lv_obj_t *list, const char *text, uint32_t color, lv_eve
 {
     lv_obj_t *b = card(list, true);
     lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_t *l = label(b, &lv_font_montserrat_20, color, text);
+    lv_obj_t *l = label(b, FONT_ROW, color, text);
     lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, NULL);
     if (label_out) {
         *label_out = l;
@@ -337,7 +354,7 @@ static lv_obj_t *button(lv_obj_t *list, const char *text, uint32_t color, lv_eve
 static lv_obj_t *back_row(lv_obj_t *list, const char *text)
 {
     lv_obj_t *b = button(list, "", COLOR_TEXT, on_back, NULL);
-    lv_obj_set_height(b, 64);
+    lv_obj_set_height(b, ROW_H + 6);
     lv_obj_set_style_border_width(b, 2, 0);
     lv_obj_set_style_border_color(b, lv_color_hex(COLOR_ACCENT), 0);
     lv_obj_set_style_border_opa(b, LV_OPA_60, 0);
@@ -391,7 +408,7 @@ static lv_obj_t *column(lv_obj_t *list)
     lv_obj_remove_style_all(l);
     lv_obj_set_size(l, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(l, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(l, 10, 0);
+    lv_obj_set_style_pad_row(l, ROW_GAP, 0);
     lv_obj_remove_flag(l, LV_OBJ_FLAG_SCROLLABLE);
     return l;
 }
@@ -400,10 +417,10 @@ static lv_obj_t *column(lv_obj_t *list)
 static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 {
     lv_obj_t *c = card(list, false);
-    lv_obj_set_height(c, 44);
-    lv_obj_t *t = label(c, &lv_font_montserrat_16, COLOR_TEXT, text);
+    lv_obj_set_height(c, INFO_H);
+    lv_obj_t *t = label(c, FONT_VALUE, COLOR_TEXT, text);
     lv_obj_set_flex_grow(t, 1);
-    return label(c, &lv_font_montserrat_16, COLOR_ACCENT, "");
+    return label(c, FONT_VALUE, COLOR_ACCENT, "");
 }
 
 /* ---------- navigation ---------- */
