@@ -37,8 +37,6 @@ static const char *TAG = "muse_mode";
 
 #define TICK_MS 2000            /* Wi-Fi, and saving what chats were told */
 #define SCHEDULE_TICKS 30       /* the schedule: every minute */
-#define NIGHT_FROM_H 21
-#define NIGHT_TO_H 5
 #define CLOCK_VALID_YEAR 2025   /* before this, the clock was never set */
 #define NIGHT_BRIGHTNESS 20     /* at most */
 #define TOAST_S 10.0f
@@ -101,6 +99,7 @@ void muse_gadget_mode_told(const char *sid, int mode)
 
 static SemaphoreHandle_t s_lock;
 static volatile uint32_t s_suggest_seq;     /* bumped to offer On-the-go */
+static volatile bool s_resched;             /* the Night window changed (muse_gadget_mode_set_night) */
 
 /* LVGL task only. */
 static lv_obj_t *s_chip;
@@ -160,9 +159,18 @@ static bool clock_valid(time_t *now, struct tm *tm)
     return tm->tm_year + 1900 >= CLOCK_VALID_YEAR;
 }
 
+/* Whether minute-of-day m falls in the Night window from..to (to excluded),
+ * which may cross midnight; an empty one (from == to) never does. */
+static bool in_night(int m, int from, int to)
+{
+    return from < to ? m >= from && m < to : from > to && (m >= from || m < to);
+}
+
 static muse_gadget_mode_t scheduled(const struct tm *tm)
 {
-    return tm->tm_hour >= NIGHT_FROM_H || tm->tm_hour < NIGHT_TO_H ? MUSE_GADGET_NIGHT : MUSE_GADGET_DESK;
+    int from, to;
+    muse_settings_night(&from, &to);
+    return in_night(tm->tm_hour * 60 + tm->tm_min, from, to) ? MUSE_GADGET_NIGHT : MUSE_GADGET_DESK;
 }
 
 /* On the On-the-go network (muse_gadget_mode_set_away()) now. */
@@ -175,23 +183,35 @@ static bool on_away_network(void)
     return away[0] && w.state == MUSE_WIFI_CONNECTED && !strcmp(w.ssid, away);
 }
 
-/* The schedule's next switch after `now`: the coming 05:00 or 21:00. */
+/* The schedule's next switch after `now`: the coming start or end of Night,
+ * to the minute (a day ahead with an empty window). */
 static uint32_t next_boundary(time_t now)
 {
     struct tm tm;
     localtime_r(&now, &tm);
-    tm.tm_min = 0;
+    int from, to;
+    muse_settings_night(&from, &to);
+    int m = tm.tm_hour * 60 + tm.tm_min, ahead = 24 * 60;
+    for (int i = 0; i < 2; i++) {
+        int d = ((i ? to : from) - m + 24 * 60) % (24 * 60);
+        d = d ? d : 24 * 60;   /* this minute's boundary has passed */
+        ahead = d < ahead ? d : ahead;
+    }
+    tm.tm_min += ahead;   /* mktime carries it into the hours, days and months */
     tm.tm_sec = 0;
     tm.tm_isdst = -1;
-    if (tm.tm_hour < NIGHT_TO_H) {
-        tm.tm_hour = NIGHT_TO_H;
-    } else if (tm.tm_hour < NIGHT_FROM_H) {
-        tm.tm_hour = NIGHT_FROM_H;
-    } else {
-        tm.tm_hour = NIGHT_TO_H;
-        tm.tm_mday++;   /* mktime carries it into the next month */
-    }
     return (uint32_t)mktime(&tm);
+}
+
+void muse_gadget_mode_night(int *from_min, int *to_min)
+{
+    muse_settings_night(from_min, to_min);
+}
+
+void muse_gadget_mode_set_night(int from_min, int to_min)
+{
+    muse_settings_set_night(from_min, to_min);
+    s_resched = true;   /* the mode task moves a picked mode's hold, and checks the schedule */
 }
 
 /* With s_lock held. */
@@ -278,6 +298,23 @@ static void check_schedule(void)
         apply(away ? MUSE_GADGET_ON_THE_GO : scheduled(&tm), away ? "on-the-go network" : "schedule");
     }
     xSemaphoreGive(s_lock);
+}
+
+/* The Night window changed: a mode picked by hand now holds until the new
+ * schedule's next switch, and the schedule is checked straight away. */
+static void reschedule(void)
+{
+    time_t now;
+    struct tm tm;
+    if (clock_valid(&now, &tm)) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        uint32_t until;
+        if (muse_settings_mode_override(&until) && until) {
+            muse_settings_set_mode_override(true, next_boundary(now));
+        }
+        xSemaphoreGive(s_lock);
+    }
+    check_schedule();
 }
 
 /*
@@ -400,7 +437,10 @@ static void mode_task(void *arg)
 {
     (void)arg;
     for (int tick = 0;; tick++) {
-        if (tick % SCHEDULE_TICKS == 0) {
+        if (s_resched) {
+            s_resched = false;
+            reschedule();
+        } else if (tick % SCHEDULE_TICKS == 0) {
             check_schedule();
         }
         check_network();

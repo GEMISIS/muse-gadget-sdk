@@ -73,9 +73,11 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
         depends on MUSE_GADGET_EXTRAS
         default y
         help
-            At the time below (local), wakes the screen and chirps. The
-            "alarm_min" key (minutes after midnight, -1 for off) in the
-            "gadget" NVS namespace overrides it once set.
+            At the time below (local), wakes the screen and chirps. Its
+            time and an on/off switch are under Settings > General > Mode
+            on the device, saved as the "alarm_min" (minutes after
+            midnight) and "alarm_on" keys in the "gadget" NVS namespace,
+            which override these once set.
 
     config MUSE_GADGET_ALARM_HOUR
         int "Alarm hour (0-23)"
