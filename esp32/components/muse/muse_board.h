@@ -90,6 +90,9 @@ typedef struct {
      * so the chip can light-sleep. Buttons still wake it. NULL: LVGL keeps
      * running. */
     void (*display_pause)(bool pause);
+    /* Turns the picture and touch 180 degrees (true) or back, from the LVGL
+     * task; muse_ui.c redraws the screen after. NULL: it can't. */
+    void (*set_flip)(bool flipped);
 
     /* Codec handles for one duplex, 2-slot I2S bus, not yet opened. */
     esp_err_t (*audio_init)(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t *mic);

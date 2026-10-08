@@ -126,6 +126,11 @@ static int64_t s_saved_at;
 /* Motion state, in g. */
 static float s_rest[3];             /* where it last rested */
 static bool s_rest_valid;
+/* Gravity while it last rested, for other tasks (muse_imu_gravity): unlike
+ * s_rest, never moved by a wake. */
+static portMUX_TYPE s_gravity_lock = portMUX_INITIALIZER_UNLOCKED;
+static float s_gravity[3];
+static bool s_gravity_valid;
 static float s_prev[3];
 static int64_t s_still_since;
 static int64_t s_slept_at;
@@ -375,6 +380,12 @@ static void motion(const float a[3], bool asleep, int64_t now)
                 s_rest[i] = a[i];
             }
             s_rest_valid = true;
+            taskENTER_CRITICAL(&s_gravity_lock);
+            for (int i = 0; i < 3; i++) {
+                s_gravity[i] = a[i];
+            }
+            s_gravity_valid = true;
+            taskEXIT_CRITICAL(&s_gravity_lock);
         }
     } else {
         s_still_since = 0;
@@ -468,4 +479,15 @@ void muse_imu_tick(void)
 int muse_imu_steps(void)
 {
     return atomic_load(&s_steps);
+}
+
+bool muse_imu_gravity(float out[3])
+{
+    taskENTER_CRITICAL(&s_gravity_lock);
+    bool valid = s_gravity_valid;
+    for (int i = 0; i < 3; i++) {
+        out[i] = s_gravity[i];
+    }
+    taskEXIT_CRITICAL(&s_gravity_lock);
+    return valid;
 }

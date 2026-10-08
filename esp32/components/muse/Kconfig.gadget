@@ -101,6 +101,15 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
         help
             A double tap always wakes it.
 
+    config MUSE_GADGET_AUTO_FLIP
+        bool "Turn the screen upside down to match the board in Night and On-the-go"
+        depends on MUSE_GADGET_IMU
+        default y
+        help
+            Charging stood on its keys at night, or carried upside down,
+            the picture and touch turn 180 degrees so they read right way
+            up (muse_orient.c). Desk mode always keeps it upright.
+
     config MUSE_GADGET_STEP_GOAL
         int "Daily step goal"
         depends on MUSE_GADGET_IMU
@@ -111,5 +120,15 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
         bool "Clock, battery and steps in the face's top corners"
         depends on MUSE_GADGET_EXTRAS
         default y
+
+    config MUSE_GADGET_NIGHT_FACE
+        bool "Night face: a big clock, and Muse asleep in bed"
+        depends on MUSE_GADGET_HOME_EXTRAS
+        default y
+        help
+            In Night mode the clock grows to fill the top of the face and
+            Muse, smaller and lower, sleeps tucked up in bed. It sits up to
+            listen and answer, and goes back to sleep after. Needs
+            LV_FONT_MONTSERRAT_48 for the clock.
 
 endmenu

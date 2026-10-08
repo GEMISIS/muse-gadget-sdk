@@ -44,6 +44,13 @@ enum {
     C_SHADOW,
     C_HEART,
     C_WHITE,
+    C_PILLOW,    /* the bed (pose->bed) */
+    C_PILLOWD,
+    C_QUILT,
+    C_QUILTL,
+    C_QUILTD,
+    C_WOOD,
+    C_WOODD,
     C_COUNT,
 };
 
@@ -89,6 +96,13 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_SHADOW] = 0x16101f,
     [C_HEART] = 0xff4f8b,
     [C_WHITE] = 0xffffff,
+    [C_PILLOW] = 0xe6e2f5,
+    [C_PILLOWD] = 0xb4aed3,
+    [C_QUILT] = 0x5b6fd6,
+    [C_QUILTL] = 0x8396ee,
+    [C_QUILTD] = 0x3a4699,
+    [C_WOOD] = 0x6b4a35,
+    [C_WOODD] = 0x45301f,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -828,6 +842,132 @@ static void draw_alert(int x, int y)
 }
 
 /* ---------------------------------------------------------------------------
+ * The bed (pose->bed): a headboard and pillow behind Muse, a quilt over it
+ * ------------------------------------------------------------------------- */
+
+#define BED_X0 4
+#define BED_X1 59
+#define QUILT_TOP 39.0f         /* where the quilt's fold lies, away from Muse */
+#define RAIL_Y 58               /* the bed's front rail, rows RAIL_Y..RAIL_Y + 2 */
+
+/* Fills [x0, x1] x [y0, y1] with corners cut `r` cells round; outlined. */
+static void round_rect(int x0, int y0, int x1, int y1, int r, uint8_t fill, uint8_t shade)
+{
+    for (int y = y0; y <= y1; y++) {
+        for (int x = x0; x <= x1; x++) {
+            int dx = x < x0 + r ? x0 + r - x : x > x1 - r ? x - (x1 - r) : 0;
+            int dy = y < y0 + r ? y0 + r - y : y > y1 - r ? y - (y1 - r) : 0;
+            int d2 = dx * dx + dy * dy;
+            if (d2 > r * r) {
+                continue;
+            }
+            bool edge = x == x0 || x == x1 || y == y0 || y == y1 || d2 > (r - 1) * (r - 1);
+            /* Shade toward the bottom, dithered. */
+            float down = (float)(y - y0) / (float)(y1 - y0 + 1);
+            px(x, y, edge ? C_OUT : bayer(x, y) < down * 0.8f - 0.2f ? shade : fill);
+        }
+    }
+}
+
+/* An arched headboard of upright planks, between two posts. */
+static void draw_headboard(void)
+{
+    for (int x = BED_X0 + 3; x <= BED_X1 - 3; x++) {
+        float u = (x + 0.5f - 32.0f) / 26.0f;
+        int top = iround(8.0f + 4.0f * u * u);
+        for (int y = top; y < RAIL_Y; y++) {
+            bool seam = (x - BED_X0) % 7 == 0;
+            px(x, y, y == top ? C_OUT : seam ? C_OUT : y == top + 1 ? C_WOOD : C_WOODD);
+        }
+    }
+    for (int side = 0; side < 2; side++) {
+        int x0 = side ? BED_X1 - 3 : BED_X0;
+        for (int y = 6; y < RAIL_Y; y++) {
+            for (int x = x0; x <= x0 + 3; x++) {
+                bool edge = x == x0 || x == x0 + 3 || y == 6;
+                px(x, y, edge ? C_OUT : x == x0 + 1 ? C_WOOD : C_WOODD);
+            }
+        }
+        /* A knob on top. */
+        px(x0 + 1, 4, C_OUT); px(x0 + 2, 4, C_OUT);
+        px(x0, 5, C_OUT); px(x0 + 1, 5, C_WOOD); px(x0 + 2, 5, C_WOODD); px(x0 + 3, 5, C_OUT);
+    }
+}
+
+static void draw_pillow(float cx, float y)
+{
+    int x0 = iround(cx - 24), x1 = iround(cx + 23), y0 = iround(y), y1 = iround(y + 11);
+    round_rect(x0, y0, x1, y1, 4, C_PILLOW, C_PILLOWD);
+    /* A dent where the head lies. */
+    for (int x = iround(cx - 9); x <= iround(cx + 8); x++) {
+        px(x, y0 + 1, C_PILLOWD);
+    }
+}
+
+/*
+ * The quilt, from its folded-down sheet to the rail, humped over Muse's
+ * middle (half width `half`, centred on cx) and rising and falling with each
+ * breath; then the rail in front.
+ */
+static void draw_quilt(float cx, float half, float top)
+{
+    for (int x = BED_X0; x <= BED_X1; x++) {
+        float u = (x + 0.5f - cx) / (half + 5.0f);
+        float hump = u * u < 1 ? 2.5f * (1 - u * u) : 0;
+        /* The corners drape down round the mattress. */
+        float drape = x < BED_X0 + 3 ? (float)(BED_X0 + 3 - x) : x > BED_X1 - 3 ? (float)(x - (BED_X1 - 3)) : 0;
+        int y0 = iround(top - hump + drape * 0.8f);
+        for (int y = y0; y < RAIL_Y; y++) {
+            uint8_t c;
+            if (y == y0 || x == BED_X0 || x == BED_X1) {
+                c = C_OUT;
+            } else if (y <= y0 + 3) {
+                c = y == y0 + 3 ? C_PILLOWD : C_PILLOW;   /* the sheet turned over the top */
+            } else if (((x + y) & 7) == 0 || ((x - y) & 7) == 0) {
+                c = C_QUILTD;   /* quilted diamonds */
+            } else {
+                float shade = fabsf(x + 0.5f - cx) / 30.0f + (float)(y - y0) / 40.0f;
+                c = bayer(x, y) < shade - 0.35f ? C_QUILTD : bayer(x, y) > 0.55f + shade ? C_QUILTL : C_QUILT;
+            }
+            px(x, y, c);
+        }
+    }
+    for (int x = BED_X0 - 1; x <= BED_X1 + 1; x++) {
+        px(x, RAIL_Y, C_OUT);
+        px(x, RAIL_Y + 1, C_WOOD);
+        px(x, RAIL_Y + 2, C_WOODD);
+    }
+    px(BED_X0 - 1, RAIL_Y + 1, C_OUT);
+    px(BED_X0 - 1, RAIL_Y + 2, C_OUT);
+    px(BED_X1 + 1, RAIL_Y + 1, C_OUT);
+    px(BED_X1 + 1, RAIL_Y + 2, C_OUT);
+}
+
+/* z's drifting up from the head, each growing as it goes, then gone. */
+static void draw_zs(float x, float y, float t)
+{
+    static const char *const Z3[] = { "###", ".#.", "###" };
+    static const char *const Z4[] = { "####", "..#.", ".#..", "####" };
+    static const char *const Z5[] = { "#####", "...#.", "..#..", ".#...", "#####" };
+    for (int i = 0; i < 2; i++) {
+        float ph = fracf(t * 0.3f + i * 0.5f);
+        if (ph > 0.9f) {
+            continue;
+        }
+        int zx = iround(x + ph * 9.0f + sinf(ph * TAU) * 1.5f);
+        int zy = iround(y - ph * 11.0f);
+        uint8_t c = ph < 0.6f ? C_WHITE : C_SPK;   /* fades as it rises */
+        if (ph < 0.3f) {
+            stamp(Z3, 3, zx, zy, c, c);
+        } else if (ph < 0.6f) {
+            stamp(Z4, 4, zx, zy - 1, c, c);
+        } else {
+            stamp(Z5, 5, zx, zy - 2, c, c);
+        }
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * Frame
  * ------------------------------------------------------------------------- */
 
@@ -899,6 +1039,12 @@ void muse_pixel_render(const muse_pose_t *p)
     update_palette(&SCHEMES[mode], dt);
     float blink = eyes_update(p, dt);
 
+    /* In bed: lying back asleep (0) or sat up (1), eased between. */
+    static float s_rise;
+    bool bed = p->bed, asleep = bed && p->sleepy;
+    s_rise += ((asleep ? 0.0f : 1.0f) - s_rise) * (1.0f - expf(-dt * 5.0f));
+    float lie = bed ? 1.0f - s_rise : 0.0f;
+
     memset(s_fb, C_BG, sizeof(s_fb));
 
     /* ---- body motion ---- */
@@ -922,6 +1068,11 @@ void muse_pixel_render(const muse_pose_t *p)
         bob = sinf(t * 1.8f) * 1.0f;
         break;
     }
+    if (asleep) {
+        bob = sinf(t * 0.9f) * 0.8f;   /* slow, deep breaths */
+        breathe_rate = 0.9f;
+        lean = -1.5f * lie;            /* head over on the pillow */
+    }
     if (happy > 0) {
         hop = fabsf(sinf(t * 9.0f)) * 3.0f * happy;
     }
@@ -937,6 +1088,9 @@ void muse_pixel_render(const muse_pose_t *p)
     j.b = 23.0f * (1 - breathe) * squash;
     j.cx = 32.0f + lean;
     j.cy = 56.5f - j.b + bob * 0.5f - hop;   /* feet stay near the ground */
+    if (bed) {
+        j.cy += 3.0f * lie - 5.0f * s_rise;   /* down in the bed, or sat up out of it */
+    }
     j.fa = j.a * 0.66f;
     j.fb = 7.4f * squash;
     j.fx = j.cx + lean * 0.3f;
@@ -944,18 +1098,27 @@ void muse_pixel_render(const muse_pose_t *p)
 
     /* ---- background layers ---- */
     float aura_r = 29.0f + level * 4.0f + sinf(t * 1.5f) * 1.0f;
-    float aura_s = (0.75f * boot + level * 0.4f) * fade;
+    float aura_s = (0.75f * boot + level * 0.4f) * fade * (bed ? 1.0f - 0.65f * lie : 1.0f);
     draw_aura(j.cx, j.cy - 3, aura_r, aura_s);
+    if (bed) {
+        draw_headboard();
+        draw_pillow(32.0f, 12.0f);
+    }
     if (mode == MUSE_MODE_LISTENING) {
         draw_rings(j.cx, j.fy + 2, t, level, 0.9f);
     } else if (mode == MUSE_MODE_SPEAKING) {
         draw_rings(j.cx, j.fy + 2, t, level, 0.6f);
     }
-    draw_shadow(j.cx, 58.5f, 13.0f - hop * 0.8f);
+    if (!bed) {
+        draw_shadow(j.cx, 58.5f, 13.0f - hop * 0.8f);
+    }
 
     float spk_speed = mode == MUSE_MODE_THINKING ? 2.8f : mode == MUSE_MODE_LISTENING ? 1.2f
                     : mode == MUSE_MODE_SPEAKING ? 1.5f : 0.6f;
     int spk_count = mode == MUSE_MODE_BOOT ? (int)(boot * 6) : (int)(6 * fade);
+    if (bed) {
+        spk_count = (int)(spk_count * s_rise * 0.5f);   /* none asleep, a few sat up */
+    }
     draw_sparkles(p, j.cx, j.cy, false, spk_speed, spk_count);
 
     /* ---- limbs ---- */
@@ -1046,6 +1209,11 @@ void muse_pixel_render(const muse_pose_t *p)
         style = EYES_HAPPY;
         mouth = MOUTH_GRIN;
     }
+    if (asleep && s_rise < 0.5f) {
+        style = EYES_NORMAL;
+        open = 0;
+        mouth = MOUTH_FLAT;
+    }
 
     draw_eye(j.fx - eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
     draw_eye(j.fx + eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
@@ -1066,6 +1234,11 @@ void muse_pixel_render(const muse_pose_t *p)
 
     draw_mouth(iround(j.fx), iround(eye_y + 3), mouth, mouth_open);
 
+    if (bed) {
+        float breath = asleep ? sinf(t * breathe_rate + 1.0f) * 0.6f : 0.0f;
+        draw_quilt(j.cx, j.a, QUILT_TOP + breath);
+    }
+
     /* ---- foreground ---- */
     draw_sparkles(p, j.cx, j.cy, true, spk_speed, spk_count);
 
@@ -1081,6 +1254,9 @@ void muse_pixel_render(const muse_pose_t *p)
     }
     if (mode == MUSE_MODE_ERROR) {
         draw_alert(iround(j.cx + 18), iround(top - 1));
+    }
+    if (asleep && s_rise < 0.5f) {
+        draw_zs(j.cx + 10, top + 1, t);
     }
 
 }

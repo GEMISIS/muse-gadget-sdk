@@ -69,6 +69,7 @@ static volatile uint32_t s_volume_seq;
 static lv_obj_t *s_backdrop;
 static lv_obj_t *s_items[ITEM_COUNT];
 static lv_obj_t *s_volume, *s_volume_lbl, *s_volume_bar;
+static lv_obj_t *s_hint;
 static int s_sel;
 static bool s_shown;
 static float s_idle_until;
@@ -209,13 +210,13 @@ static void build_menu(lv_obj_t *layer, int w)
         s_items[i] = b;
     }
 
-    lv_obj_t *hint = lv_label_create(card);
-    lv_obj_set_width(hint, lv_pct(100));
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(hint, lv_color_hex(COLOR_DIM), 0);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(hint, LV_LABEL_LONG_MODE_WRAP);
-    lv_label_set_text(hint, "Left key up, middle key down,\nright key selects");
+    s_hint = lv_label_create(card);
+    lv_obj_set_width(s_hint, lv_pct(100));
+    lv_obj_set_style_text_font(s_hint, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_hint, lv_color_hex(COLOR_DIM), 0);
+    lv_obj_set_style_text_align(s_hint, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_hint, LV_LABEL_LONG_MODE_WRAP);
+    muse_power_menu_set_flipped(false);
 }
 
 static void build_volume(lv_obj_t *layer, int w, int h)
@@ -246,6 +247,13 @@ static void build_volume(lv_obj_t *layer, int w, int h)
     lv_bar_set_range(s_volume_bar, 0, 100);
     lv_obj_set_style_bg_color(s_volume_bar, lv_color_hex(0x2a2345), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_volume_bar, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
+}
+
+void muse_power_menu_set_flipped(bool flipped)
+{
+    /* Turned over, the keys are along the bottom, in the other order. */
+    lv_label_set_text(s_hint, flipped ? "Right key up, middle key down,\nleft key selects"
+                                      : "Left key up, middle key down,\nright key selects");
 }
 
 void muse_power_menu_build(lv_obj_t *layer, int w, int h)
