@@ -12,7 +12,11 @@ with the reminder to push an image. While a voice reply's image is on its way
 (named, or Muse at work on one), its speech (production start_tts/decode) and
 captions wait, "GETTING THE IMAGE... N%" up, until the image is held up or a
 cap; a reply ready to speak gives an image event a moment first. The image
-is asked for straight away, its background request going beside the turn."""
+is asked for straight away, its background request going beside the turn.
+With on-device speech (CONFIG_MUSE_TTS_PICO, a second build against a fake
+muse_tts.h), Pico starts on the reply while it waits, and only its playing
+and captions are held. A turn starting sends a background request that's
+still subscribing back to waiting, so it never goes to Muse beside the turn."""
 import os
 from pathlib import Path
 import shlex
@@ -109,7 +113,7 @@ static char s_reply_shown[EV_TEXT];
 static int64_t s_last_seq, s_marks[4];
 static int captions, console_events, sent_events, image_events;
 static char image_caption[EV_TEXT];
-enum mark_t { M_TEXT, M_DONE, M_ACK, M_TTS, M_MP3, M_AUDIO };
+enum mark_t { M_TEXT, M_DONE, M_ACK, M_TTS, M_GO, M_MP3, M_AUDIO };
 static void mark(mark_t) {}
 static void muse_gadget_mode_retitle(const char *) {}
 static char s_voice_new_sid[MUSE_CHAT_SID_MAX + 1];
@@ -198,6 +202,40 @@ static int fake_progress = -1;
 static uint32_t img_seq() { return fake_seq; }
 static void img_wait(bool on) { waiting_on = on; }
 static int img_progress() { return fake_progress; }
+#if CONFIG_MUSE_TTS_PICO
+#include "muse_tts.h"
+/* Pico, faked: what it was asked to say, and speech made ready by the test. */
+static bool tts_wanted, tts_fails, tts_final, tts_finished;
+static int tts_starts, tts_tries, tts_remembers, tts_stops;
+static size_t tts_ready;
+static char tts_text[TEXT_MAX];
+bool muse_tts_wanted(void) { return tts_wanted; }
+bool muse_tts_start(const char *text, bool final) {
+    tts_tries++;
+    if (tts_fails) return false;
+    tts_starts++;
+    tts_finished = false;
+    strlcpy(tts_text, text, sizeof(tts_text));
+    tts_final = final;
+    return true;
+}
+bool muse_tts_say(const char *text) { return muse_tts_start(text, true); }
+void muse_tts_more(const char *text, bool final) {
+    strlcpy(tts_text, text, sizeof(tts_text));
+    tts_final |= final;
+}
+void muse_tts_remember(const char *, bool) { tts_remembers++; }
+void muse_tts_stop(void) { tts_stops++; }
+size_t muse_tts_buffered(void) { return tts_ready; }
+size_t muse_tts_read(int16_t *, size_t frames) {
+    size_t n = frames < tts_ready ? frames : tts_ready;
+    tts_ready -= n;
+    return n;
+}
+muse_tts_status_t muse_tts_status(void) {
+    return tts_finished && !tts_ready ? MUSE_TTS_DONE : MUSE_TTS_SPEAKING;
+}
+#endif
 #pragma GCC diagnostic ignored "-Wunused-function"
 ''' + reset + message_to + send_chat + handlers + speech + caption + background + r'''
 /* Asking Muse to push a reply's image (muse_present_ask). */
@@ -434,6 +472,30 @@ static void background() {
     s_turn.phase = P_IDLE;
     bg_end(false, "test");   /* start over below */
     s_bg_state = MUSE_CHAT_BG_NONE;
+
+    /* Subscribing when a turn starts: back to waiting, its subscription
+     * dropped, and nothing posted until the turn's over. */
+    bg_subs = bg_posts = resets = 0;
+    bg_want(BG_SID "\nWhat's next?");
+    bg_poll();
+    assert(s_bg.phase == BG_SUBSCRIBING && bg_subs == 1 && bg_stream(K_BG_SUB));
+    begin();
+    assert(s_bg.phase == BG_WANTED && !bg_stream(K_BG_SUB) && resets == 1);
+    bg_poll();
+    assert(s_bg.phase == BG_WANTED && bg_subs == 1 && !bg_posts);
+    s_turn.phase = P_IDLE;
+    bg_poll();
+    assert(s_bg.phase == BG_SUBSCRIBING && bg_subs == 2);
+    bg_stream(K_BG_SUB)->status = 200;
+    bg_poll();
+    assert(s_bg.phase == BG_WAITING && bg_posts == 1);
+    /* Posted already: it can't be called back, and goes on beside the turn. */
+    begin();
+    assert(s_bg.phase == BG_WAITING && bg_stream(K_BG_SUB) && resets == 1);
+    s_turn.phase = P_IDLE;
+    bg_end(false, "test");
+    s_bg_state = MUSE_CHAT_BG_NONE;
+    sent_events = 0;
 
     bg_ask_posted();
     bg_event("delta.message_start", "early");   /* before the ack: no parent to check yet */
@@ -773,6 +835,86 @@ static void progress() {
     assert(muse_present_estimate(1000000, 12000, 12000) == 99);   /* all here, not shown yet */
     assert(muse_present_estimate(1000000, 500, 0) == 90);         /* bytes, size unsaid */
 }
+#if CONFIG_MUSE_TTS_PICO
+static void pico_begin() {
+    hold_begin();
+    s_gen = s_turn.gen;   /* the voice task's turn: its speech is passed on */
+    tts_wanted = true;
+    tts_fails = tts_final = tts_finished = false;
+    tts_starts = tts_tries = tts_remembers = 0;
+    tts_ready = 0;
+    tts_text[0] = '\0';
+}
+/*
+ * Pico starts on the first sentence while the image grace runs, and its
+ * speech plays the moment the grace is over, captions with it: the grace no
+ * longer adds Pico's start-up to the wait.
+ */
+static void pico_ahead_of_the_grace() {
+    pico_begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "", "Here's a fox. ");
+    assert(tts_starts == 1 && !tts_final && !strcmp(tts_text, "Here's a fox."));
+    assert(s_turn.msgs[0].tts == TTS_ACTIVE && s_turn.msgs[0].streaming && s_turn.grace_us);
+    tts_ready = MIC_RATE;   /* Pico, a second ahead */
+    tick(100);
+    assert(!pcm_sent && !captions && !s_turn.speech_go);
+    event("delta.text_append", "reply", "", "It's red. ");
+    assert(!strcmp(tts_text, "Here's a fox. It's red.") && !captions);
+    event("delta.message_done", "reply");
+    assert(tts_final && tts_starts == 1);
+    tick(IMG_GRACE_US / 1000 - 200);
+    assert(!pcm_sent && !captions);
+    tick(200);
+    assert(pcm_sent && captions == 1 && s_turn.speech_go && !s_turn.img_hold);
+    tts_finished = true;
+    tts_ready = 0;
+    for (int i = 0; i < 10 && s_turn.phase != P_IDLE; i++) tick();
+    assert(turns_done == 1 && s_turn.msgs[0].tts == TTS_FINISHED && tts_starts == 1);
+}
+/* An image event inside the grace, after Pico started: still held until the image is up. */
+static void pico_ahead_of_an_image() {
+    pico_begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "", "Here's a fox. ");
+    assert(tts_starts == 1);
+    tts_ready = MIC_RATE;
+    tick(300);
+    present(GADGET_SID, "fox-9");
+    assert(s_turn.img_hold && image_events == 1);   /* none played yet: held */
+    for (int i = 0; i < 5; i++) tick();
+    assert(!pcm_sent && !captions && caption_is(IMG_CAPTION));
+    fake_seq++;
+    tick(10);
+    tick(IMG_RISE_US / 1000);
+    assert(!s_turn.img_hold && pcm_sent && captions == 1 && tts_starts == 1);
+    /* The whole message, done before the grace was out: started at once, played after it. */
+    pico_begin();
+    event("message.assistant", "reply", "note", "Hi.");
+    tick(10);
+    assert(tts_starts == 1 && tts_final && !pcm_sent && !captions);
+    tts_ready = MIC_RATE;
+    tick(IMG_GRACE_US / 1000);
+    assert(pcm_sent && captions == 1 && tts_remembers == 1);
+}
+/* Speaker off, or Pico can't say it: shown at reading pace after the grace, Pico tried once. */
+static void pico_not_spoken() {
+    pico_begin();
+    tts_wanted = false;
+    event("message.assistant", "reply", "note", "Quiet now.");
+    tick(100);
+    assert(!tts_tries && !pcm_sent && !captions);
+    tick(IMG_GRACE_US / 1000);
+    assert(pcm_sent && captions == 1 && !s_turn.pico && !tts_tries && tts_remembers == 1);   /* paced silently */
+    pico_begin();
+    tts_fails = true;
+    event("message.assistant", "reply", "note", "Can't say this.");
+    for (int i = 0; i < 5; i++) tick(100);
+    assert(tts_tries == 1 && !pcm_sent && !captions && !tts_remembers);
+    tick(IMG_GRACE_US / 1000);
+    assert(pcm_sent && captions == 1 && !s_turn.pico && tts_tries == 1 && tts_remembers == 1);
+}
+#endif
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -788,6 +930,11 @@ int main(int argc, char **argv) {
     case 9: not_held(); break;
     case 10: progress(); break;
     case 11: held_turn_takes_the_request(); break;
+#if CONFIG_MUSE_TTS_PICO
+    case 12: pico_ahead_of_the_grace(); break;
+    case 13: pico_ahead_of_an_image(); break;
+    case 14: pico_not_spoken(); break;
+#endif
     default: return 2;
     }
 }
@@ -803,16 +950,22 @@ int main(int argc, char **argv) {
              '-c', str(out / 'mode.c'), '-o', str(out / 'mode.o')],
             [*shlex.split(os.environ.get('CXX', 'c++')), '-std=gnu++17', *flags,
              str(out / 'session.cpp'), str(out / 'cjson.o'), str(out / 'mode.o'), '-o', str(out / 'session')],
+            # On-device speech: speak_early and pump_speech, against a fake Pico.
+            [*shlex.split(os.environ.get('CXX', 'c++')), '-std=gnu++17', *flags, '-DCONFIG_MUSE_TTS_PICO=1',
+             str(out / 'session.cpp'), str(out / 'cjson.o'), str(out / 'mode.o'), '-o', str(out / 'session_pico')],
         ]
         for command in commands:
             result = subprocess.run(command, capture_output=True, text=True)
             if result.returncode:
                 raise AssertionError(result.stdout + result.stderr)
         cls.binary = out / 'session'
+        cls.pico_binary = out / 'session_pico'
 
-    def run_case(self, case):
-        result = subprocess.run([str(self.binary), str(case)], capture_output=True, text=True)
+    def run_case(self, case, binary=None):
+        result = subprocess.run([str(binary or self.binary), str(case)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        if binary is None:
+            self.run_case(case, self.pico_binary)   # the same with on-device speech built in
 
     def test_rejected_deltas_do_not_emit_or_complete_voice_or_typed_replies(self):
         self.run_case(0)
@@ -849,3 +1002,12 @@ int main(int argc, char **argv) {
 
     def test_held_turn_with_its_reply_in_starts_the_image_request(self):
         self.run_case(11)
+
+    def test_pico_starts_during_the_image_grace_and_plays_after_it(self):
+        self.run_case(12, self.pico_binary)
+
+    def test_pico_ahead_of_an_image_still_waits_for_it(self):
+        self.run_case(13, self.pico_binary)
+
+    def test_unspoken_reply_waits_the_grace_and_tries_pico_once(self):
+        self.run_case(14, self.pico_binary)
