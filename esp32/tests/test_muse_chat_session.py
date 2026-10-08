@@ -195,11 +195,12 @@ static int turns_done;
 static void turn_done(bool) { turns_done++; s_turn.phase = P_IDLE; }
 static void on_dictation_end(bool) {}
 static void log_marks() {}
-/* What muse_present.h says: images handled, and the turn over. */
-static uint32_t fake_seq;
+/* What muse_present.h says: images handled, held up, and the turn over. */
+static uint32_t fake_seq, fake_up;
 static bool waiting_on;
 static int fake_progress = -1;
 static uint32_t img_seq() { return fake_seq; }
+static uint32_t img_up() { return fake_up; }
 static void img_wait(bool on) { waiting_on = on; }
 static int img_progress() { return fake_progress; }
 #if CONFIG_MUSE_TTS_PICO
@@ -708,11 +709,14 @@ static void hold_until_shown() {
     tick();
     assert(!pcm_sent && s_turn.phase == P_WAIT_REPLY && caption_is(IMG_CAPTION " 40%"));
     s_turn.start_us += TURN_CAP_US - 50 * 1000000LL;
-    /* Shown: Muse takes it out of his pocket and holds it up first. */
+    /* Handed to the face: Muse unboxes it, takes it out of his pocket and holds it up first. */
     fake_seq++;
     tick(10);
     assert(!pcm_sent && s_turn.img_hold && s_turn.img_shown_us);
-    tick(IMG_RISE_US / 1000);
+    tick(5000);
+    assert(!pcm_sent && s_turn.img_hold);
+    fake_up++;
+    tick(10);
     assert(!s_turn.img_hold && !waiting_on && pcm_sent && captions == 1 && s_turn.msgs[0].tts != TTS_QUEUED);
     assert(caption_is("Here's a dog. Good boy!"));
     for (int i = 0; i < 10 && s_turn.phase != P_IDLE; i++) tick();
@@ -783,10 +787,12 @@ static void held_turn_takes_the_request() {
     tick();
     bg_poll();
     assert(s_bg.phase == BG_SUBSCRIBING && bg_subs == 1);
-    /* Muse's push shows: the speech goes on, holding it. */
+    /* Muse's push shows: the speech goes on once he's holding it. */
     fake_seq++;
     tick(10);
-    tick(IMG_RISE_US / 1000);
+    assert(s_turn.img_hold && !pcm_sent);
+    fake_up++;
+    tick(10);
     assert(!s_turn.img_hold && pcm_sent);
     bg_end(false, "test");
     s_bg_state = MUSE_CHAT_BG_NONE;
@@ -884,9 +890,12 @@ static void pico_ahead_of_an_image() {
     assert(s_turn.img_hold && image_events == 1);   /* none played yet: held */
     for (int i = 0; i < 5; i++) tick();
     assert(!pcm_sent && !captions && caption_is(IMG_CAPTION));
+    /* Handed to the face, and never held up (the face's own business): not waited for past the cap. */
     fake_seq++;
     tick(10);
-    tick(IMG_RISE_US / 1000);
+    tick(IMG_UP_CAP_US / 1000 - 100);
+    assert(s_turn.img_hold && !pcm_sent);
+    tick(100);
     assert(!s_turn.img_hold && pcm_sent && captions == 1 && tts_starts == 1);
     /* The whole message, done before the grace was out: started at once, played after it. */
     pico_begin();

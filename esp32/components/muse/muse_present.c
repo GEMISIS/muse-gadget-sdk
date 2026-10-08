@@ -73,6 +73,7 @@ static const char *TAG = "muse_present";
 #define ASK_ANSWER_US (150 * 1000000LL)         /* waiting for the request's end: past the session's own two minutes */
 #define ASKED_AGAIN_US (10 * 60 * 1000000LL)    /* a path asked for isn't asked for again this soon */
 #define ASKED_KEPT 4
+#define FETCH_STALE_US (20 * 1000000LL)  /* a push's chunks stopped this long: given up on, as far as the face goes */
 
 typedef struct {
     uint8_t *data;
@@ -320,11 +321,15 @@ typedef struct {
     int64_t connected_us, first_us;   /* for the log: the handshake, then the bytes */
 } fetch_t;
 
+static void fetching(bool on, size_t received, size_t size);
+static void decoding(int n);
+
 static esp_err_t fetch_event(esp_http_client_event_t *ev)
 {
     fetch_t *f = ev->user_data;
     if (ev->event_id == HTTP_EVENT_ON_CONNECTED && !f->connected_us) {
         f->connected_us = esp_timer_get_time();
+        fetching(true, 0, 0);   /* connected: the boxes start coming */
     }
     if (ev->event_id != HTTP_EVENT_ON_DATA || f->too_big) {
         return ESP_OK;
@@ -354,6 +359,8 @@ static esp_err_t fetch_event(esp_http_client_event_t *ev)
     }
     memcpy(f->buf + f->len, ev->data, ev->data_len);
     f->len += ev->data_len;
+    int64_t size = esp_http_client_get_content_length(ev->client);   /* 0 or less: chunked, not said */
+    fetching(true, f->len, size > 0 ? (size_t)size : 0);
     return ESP_OK;
 }
 
@@ -402,13 +409,17 @@ static bool show_from_web(const char *url, const char *label)
                  f.too_big ? ", too big" : "", f.len && !showable ? ", a format not shown here" : "",
                  (int)ms_since(t0), connect_ms, kbps);
         heap_caps_free(f.buf);
+        fetching(false, 0, 0);
         return false;
     }
+    decoding(1);
+    fetching(false, 0, 0);
     ESP_LOGI(TAG, "\"%s\": fetched here: %u bytes in %d ms (connected in %d ms, then %d ms at %d kbit/s)", label,
              (unsigned)f.len, (int)ms_since(t0), connect_ms, body_ms, kbps);
     job_t job = { .data = f.buf, .len = f.len };
     strlcpy(job.label, label, sizeof(job.label));
     bool shown = run(&job);
+    decoding(-1);
     heap_caps_free(f.buf);
     return shown;
 }
@@ -456,8 +467,8 @@ static void new_sid(char out[MUSE_CHAT_SID_MAX + 1])
  * answer the request, and only the first of the two is shown.
  */
 EXT_RAM_BSS_ATTR static bool s_guard, s_guard_shown;
-EXT_RAM_BSS_ATTR static size_t s_guard_len;
-EXT_RAM_BSS_ATTR static bool s_web_tried;   /* the wanted web image was fetched here already (or tried) */   /* the size of the one shown this turn */
+EXT_RAM_BSS_ATTR static size_t s_guard_len;   /* the size of the one shown this turn */
+EXT_RAM_BSS_ATTR static bool s_web_tried;   /* the wanted web image was fetched here already (or tried) */
 
 /* Waiting for an image (muse_present_wait), and its bytes so far (with s_ask_lock). */
 EXT_RAM_BSS_ATTR static struct {
@@ -465,6 +476,37 @@ EXT_RAM_BSS_ATTR static struct {
     uint32_t seq;       /* s_seq then: a move means it's shown */
     size_t received, size;
 } s_wait;
+
+/*
+ * Where the image's really got (with s_ask_lock), for muse_present_phase: its
+ * bytes coming, and the images taken but not handed to the face yet. Plain,
+ * not atomics: those don't work in PSRAM.
+ */
+EXT_RAM_BSS_ATTR static struct {
+    bool on;
+    int64_t last_us;
+    size_t received, size;
+} s_dl;
+EXT_RAM_BSS_ATTR static int s_decoding;
+EXT_RAM_BSS_ATTR static bool s_sharper_got;   /* the request's sharper copy came, and was handed on */
+EXT_RAM_BSS_ATTR static uint32_t s_up_seq;    /* muse_present_up_seq */
+
+static void fetching(bool on, size_t received, size_t size)
+{
+    portENTER_CRITICAL(&s_ask_lock);
+    s_dl.on = on;
+    s_dl.last_us = esp_timer_get_time();
+    s_dl.received = received;
+    s_dl.size = size;
+    portEXIT_CRITICAL(&s_ask_lock);
+}
+
+static void decoding(int n)
+{
+    portENTER_CRITICAL(&s_ask_lock);
+    s_decoding += n;
+    portEXIT_CRITICAL(&s_ask_lock);
+}
 
 /* The task's own: the request under way. */
 EXT_RAM_BSS_ATTR static bool s_asking;
@@ -574,7 +616,7 @@ static void ask_tick(void)
             }
             s_guard_shown = s_guard;
             portEXIT_CRITICAL(&s_ask_lock);
-            atomic_fetch_add(&s_seq, 1);   /* shown: the held speech goes on */
+            atomic_fetch_add(&s_seq, 1);   /* the face has it */
             return;
         }
     }
@@ -617,6 +659,7 @@ static void ask_tick(void)
     s_asked_next = (s_asked_next + 1) % ASKED_KEPT;
     s_guard = true;
     s_guard_shown = false;
+    s_sharper_got = false;
     if (s_want.since_us == since) {
         s_want.want = false;   /* unless a newer one came meanwhile */
     }
@@ -665,8 +708,15 @@ static void present_task(void *arg)
         if (xQueueReceive(s_jobs, &job, wait) == pdTRUE && job) {
             int64_t t0 = esp_timer_get_time();
             if (run(job)) {
-                atomic_fetch_add(&s_seq, 1);   /* the face has it: held speech goes on */
+                atomic_fetch_add(&s_seq, 1);   /* the face has it */
             }
+            portENTER_CRITICAL(&s_ask_lock);
+            if (job->sharper) {
+                s_sharper_got = true;   /* handed on, or not to be had */
+            } else {
+                s_decoding--;
+            }
+            portEXIT_CRITICAL(&s_ask_lock);
             job_free(job);
             ESP_LOGI(TAG, "shown in %d ms; stack %u free", (int)ms_since(t0),
                      (unsigned)uxTaskGetStackHighWaterMark(NULL));
@@ -709,6 +759,7 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
         /* Muse trying the command out: not the picture, and not to be taken for it. */
         ESP_LOGI(TAG, "\"%s\" (%u bytes): a test push, not the picture: ignored", job->label, (unsigned)len);
         job_free(job);
+        fetching(false, 0, 0);
         return true;
     }
     /* Muse pushed one by itself (the mode's contract asks it to): one still
@@ -727,6 +778,10 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
         s_guard_shown = true;
         s_guard_len = job->len;
     }
+    s_dl.on = false;   /* all here */
+    if (!twice && !job->sharper) {
+        s_decoding++;
+    }
     portEXIT_CRITICAL(&s_ask_lock);
     if (called_off[0]) {
         ESP_LOGI(TAG, "\"%s\": pushed by Muse itself; not asking for \"%s\"", job->label, called_off);
@@ -739,6 +794,13 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
     }
     if (!start() || xQueueSend(s_jobs, &job, 0) != pdTRUE) {
         ESP_LOGW(TAG, "\"%s\": busy with others, dropped", job->label);
+        portENTER_CRITICAL(&s_ask_lock);
+        if (job->sharper) {
+            s_sharper_got = true;
+        } else {
+            s_decoding--;
+        }
+        portEXIT_CRITICAL(&s_ask_lock);
         job_free(job);
         return false;
     }
@@ -798,6 +860,13 @@ void muse_present_chunk(size_t received, size_t size)
     portENTER_CRITICAL(&s_ask_lock);
     s_wait.received = received;
     s_wait.size = size;
+    /* Not the sharper copy after the one shown, nor a test push in one chunk. */
+    if (!(s_guard && s_guard_shown) && !(size == received && received < TEST_BYTES)) {
+        s_dl.on = true;
+        s_dl.last_us = esp_timer_get_time();
+        s_dl.received = received;
+        s_dl.size = size;
+    }
     portEXIT_CRITICAL(&s_ask_lock);
 }
 
@@ -814,4 +883,52 @@ int muse_present_progress(void)
         return -1;
     }
     return shown ? 100 : muse_present_estimate(now - since, received, size);
+}
+
+muse_present_phase_t muse_present_phase(float *progress)
+{
+    int64_t now = esp_timer_get_time();
+    uint32_t seq = atomic_load(&s_seq);
+    portENTER_CRITICAL(&s_ask_lock);
+    bool waiting = s_wait.since_us && seq == s_wait.seq;
+    bool fetch = s_dl.on && now - s_dl.last_us < FETCH_STALE_US;
+    size_t received = s_dl.received, size = s_dl.size;
+    int decode = s_decoding;
+    portEXIT_CRITICAL(&s_ask_lock);
+    *progress = -1.0f;
+    if (decode > 0) {
+        *progress = 1.0f;
+        return MUSE_PRESENT_DECODING;
+    }
+    if (fetch) {
+        if (size) {
+            float p = (float)received / (float)size;
+            *progress = p < 0 ? 0 : p > 1 ? 1 : p;
+        }
+        return MUSE_PRESENT_FETCHING;
+    }
+    return waiting ? MUSE_PRESENT_WAITING : MUSE_PRESENT_NONE;
+}
+
+bool muse_present_sharper_pending(void)
+{
+    portENTER_CRITICAL(&s_ask_lock);
+    bool pending = s_guard && s_guard_shown && !s_sharper_got;
+    portEXIT_CRITICAL(&s_ask_lock);
+    return pending;
+}
+
+void muse_present_up(void)
+{
+    portENTER_CRITICAL(&s_ask_lock);
+    s_up_seq++;
+    portEXIT_CRITICAL(&s_ask_lock);
+}
+
+uint32_t muse_present_up_seq(void)
+{
+    portENTER_CRITICAL(&s_ask_lock);
+    uint32_t up = s_up_seq;
+    portEXIT_CRITICAL(&s_ask_lock);
+    return up;
 }

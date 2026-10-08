@@ -55,6 +55,9 @@ typedef enum {
     MUSE_UI_BENCH_PHONE,            /* talking into his phone */
     MUSE_UI_BENCH_LISTEN_PHONE,     /* the phone to his ear */
     MUSE_UI_BENCH_PACKAGES,         /* hauling boxes, the count going round */
+    MUSE_UI_BENCH_DOWNLOAD,         /* an image's whole way in, made up: phone, boxes, unboxing, the picture */
+    MUSE_UI_BENCH_UNBOX,            /* opening the boxes, held part way */
+    MUSE_UI_BENCH_ASSEMBLE,         /* the picture put together, held */
     MUSE_UI_BENCH_TEA,
     MUSE_UI_BENCH_PAJAMAS,
     MUSE_UI_BENCH_BRACE,
@@ -80,18 +83,19 @@ bool muse_ui_image_size(int *w, int *h);
 bool muse_ui_image_draw(int x, int y, int w, int h, const uint16_t *pixels);
 void muse_ui_image_hide(void);
 /*
- * An image from a chat reply (muse_present.h), from any task: Muse takes it
- * out of his pocket and holds it up over his head, a tap shows it full size,
- * and he puts it back at the next talk, the power menu, or a minute after
- * the reply. sizes() gives the screen and the side of the square the held
+ * An image from a chat reply (muse_present.h), from any task: Muse unboxes
+ * it (muse_pose_t's acts), takes it out of his pocket and holds it up over
+ * his head (muse_present_up then), and puts it back at a tap, the next talk,
+ * the power menu, or a while after the reply; a pat soon after takes it out
+ * again. sizes() gives the screen and the side of the square the held
  * copy must fit (0 on compact layouts, which only show it full size); false
  * without PSRAM or before the UI is up. present() takes both RGB565 buffers
  * (heap_caps_malloc'd) when it returns true: `full` fits the screen.
  */
 bool muse_ui_present_sizes(int *screen_w, int *screen_h, int *photo_px);
 /* `sharper`: a bigger copy of the photo just shown (its preview first): it
- * takes the preview's place in Muse's hands, or is dropped if that's been
- * put away already, rather than coming out of the pocket again. */
+ * takes the preview's place in Muse's hands, or, put away already, its place
+ * in his pocket for the next time it comes out, rather than coming out now. */
 bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int hh, bool sharper);
 /* Watcher camera mode: shows an on-screen shutter hint over the live image. */
 void muse_ui_camera_hint(bool visible);

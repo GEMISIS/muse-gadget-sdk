@@ -37,6 +37,8 @@ typedef enum {
     MUSE_ACT_PHONE_TALK,
     MUSE_ACT_PHONE_LISTEN,
     MUSE_ACT_PACKAGES,
+    MUSE_ACT_UNBOX,
+    MUSE_ACT_ASSEMBLE,
 } muse_act_t;
 
 typedef struct {
@@ -87,8 +89,14 @@ typedef struct {
     /* What he's busy with in a turn, instead of words on the screen (muse_ui.c
      * picks it; act_t is seconds in it). PHONE_TALK: the note's going up, so
      * he's talking into a phone. PHONE_LISTEN: waiting on the answer, phone
-     * to his ear. PACKAGES: an image is downloading, and he's hauling boxes,
-     * act_progress (0..1, or -1 when unknown) as how many have arrived. A
+     * to his ear (for an image too, till its bytes start coming). PACKAGES:
+     * an image is downloading, and he's hauling boxes, act_progress (0..1,
+     * or -1 when unknown) as how many have arrived. Then, all here, UNBOX:
+     * he opens the boxes and the pieces of the picture fly out, act_progress
+     * 0..1 through it. ASSEMBLE: the pieces fit together into a little framed
+     * picture in his hands, act_progress 0..1 through it, held at 1 till the
+     * photo's ready, then 1..2 tucking it into his pocket, which the photo
+     * comes out of (reach). Each plays in full, however quick the image. A
      * renderer may leave them alone. */
     muse_act_t act;
     float act_t;
