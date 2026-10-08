@@ -85,6 +85,9 @@ if(CONFIG_MUSE_ENABLED)
         endif()
         if(CONFIG_MUSE_GADGET_CHATS)
             list(APPEND srcs "muse_chats_ui.c")   # the Chats screen, left of Muse
+            if(CONFIG_MUSE_HATCH)
+                list(APPEND srcs "muse_chat_delete.c")   # its "Forget and delete from Muse"
+            endif()
         endif()
     elseif(CONFIG_MUSE_BOARD_AIPI)
         list(APPEND srcs "boards/board_aipi.c")

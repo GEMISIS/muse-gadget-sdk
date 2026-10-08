@@ -172,6 +172,24 @@ bool muse_chat_bg_ask(const char *sid, const char *message);
 muse_chat_bg_state_t muse_chat_bg_result(char *out, size_t cap);
 
 /*
+ * Who a background request is for. Each asker goes through the two below
+ * rather than the two above, so none asks over another's request, or takes
+ * another's reply, while it waits to be taken.
+ */
+typedef enum {
+    MUSE_CHAT_BG_FOR_NONE,
+    MUSE_CHAT_BG_FOR_UP_NEXT,   /* the face's "up next" line (muse_up_next.c) */
+    MUSE_CHAT_BG_FOR_DELETE,    /* deleting a chat from Muse (muse_chat_delete.c) */
+} muse_chat_bg_for_t;
+
+/* muse_chat_bg_ask for `who`: false, too, while another's request is under
+ * way or its result hasn't been taken. Any task. */
+bool muse_chat_bg_ask_for(muse_chat_bg_for_t who, const char *sid, const char *message);
+/* muse_chat_bg_result for `who`: NONE unless the request is its own. Taking
+ * DONE or FAILED frees it for the next asker. Any task. */
+muse_chat_bg_state_t muse_chat_bg_result_for(muse_chat_bg_for_t who, char *out, size_t cap);
+
+/*
  * Prints one "@chat" line per call (more if `text` is long): the type, then the
  * printf-style `fields` (JSON members, or NULL), then `text` escaped (or none).
  */

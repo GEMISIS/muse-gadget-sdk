@@ -31,8 +31,8 @@ extern "C" {
 void muse_chats_ui_build(lv_obj_t *tile);
 /* Every settings tick; visible while the screen is at least partly showing. */
 void muse_chats_ui_tick(bool visible);
-/* Something's open over the list (the help card): the page dots hide and
- * swiping away is held off. */
+/* Something's open over the list (the help card, or the one asking to
+ * forget a chat): the page dots hide and swiping away is held off. */
 bool muse_chats_ui_typing(void);
 
 #ifdef __cplusplus
