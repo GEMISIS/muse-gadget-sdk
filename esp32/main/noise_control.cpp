@@ -99,7 +99,15 @@ static char s_noise_host[256] = NOISE_DEFAULT_HOST;
 // batches, so scratch must fit a full batch plus ServiceFrame/envelope overhead.
 // Chat subscriptions deliver 16 KB body chunks plus framing, even on boards
 // without PSRAM. Reserve enough inbound space for those frames.
+// With Muse's own session (CONFIG_MUSE_HATCH, so PSRAM), display.show_image's
+// chunks come this way: 16 KiB of JPEG is about 22 KB of JSON, and a frame
+// that doesn't fit ends the session. So these take the largest frame the
+// transport sends (64 KB), in PSRAM, as Muse's own session does.
+#if CONFIG_MUSE_HATCH
+#define SVC_FRAME_SCRATCH (64 * 1024)
+#else
 #define SVC_FRAME_SCRATCH (SMALL_CONTROL_SESSION ? 17 * 1024 : 12288)
+#endif
 
 // The ADV cannot allocate the session with the larger inbound buffers and the
 // usual outbound buffers together. Keep this reduction local to that board.
@@ -1207,6 +1215,15 @@ static cJSON *string_param(const char *description) {
     return param;
 }
 
+#if CONFIG_MUSE_HATCH
+static cJSON *typed_param(const char *type, const char *description) {
+    cJSON *param = cJSON_CreateObject();
+    cJSON_AddStringToObject(param, "type", type);
+    cJSON_AddStringToObject(param, "description", description);
+    return param;
+}
+#endif
+
 static void add_command(cJSON *commands, const char *name,
                         const char *description,
                         cJSON *required, cJSON *optional) {
@@ -1394,6 +1411,32 @@ static char *build_register_json(void) {
                 "told_mode: the mode it last heard) and the current chat, as "
                 "set_chat returns it.",
                 nullptr, nullptr);
+#endif
+
+#if CONFIG_MUSE_HATCH
+    // gadget_show_image_command; SVC_FRAME_SCRATCH takes a 16 KiB chunk.
+    cJSON *image_required = cJSON_CreateObject();
+    cJSON_AddItemToObject(image_required, "data_b64",
+                          string_param("This chunk's bytes, base64."));
+    cJSON *image_optional = cJSON_CreateObject();
+    cJSON_AddItemToObject(image_optional, "offset",
+                          typed_param("integer", "Byte offset of this chunk; default 0."));
+    cJSON_AddItemToObject(image_optional, "final",
+                          typed_param("boolean", "True on the last chunk."));
+    cJSON_AddItemToObject(image_optional, "label",
+                          string_param("Short caption, e.g. red panda."));
+    cJSON_AddItemToObject(image_optional, "mime",
+                          string_param("image/jpeg (default); PNG isn't supported."));
+    cJSON_AddItemToObject(image_optional, "size",
+                          typed_param("integer", "Whole image's bytes, if known."));
+    add_command(commands, "display.show_image",
+                "Show the user an image on this gadget's screen, privately: "
+                "send the JPEG's bytes base64-encoded in "
+                "chunks of up to 16 KiB, in order from offset 0, final=true "
+                "on the last. A baseline JPEG of 480x480 or smaller is best. "
+                "Never make public links or use display.draw_url for the "
+                "user's pictures. Returns received, complete and shown.",
+                image_required, image_optional);
 #endif
 
 #if CONFIG_HOMEHUB_VOICE

@@ -17,11 +17,20 @@
 #include "gadget_commands.h"
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
+#include "sdkconfig.h"
 #include "muse_gadget_mode.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#if CONFIG_MUSE_HATCH
+#include "esp_attr.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include "muse_present.h"
+#endif
 
 // ---- Commands (host-tested) -------------------------------------------------
 
@@ -215,3 +224,231 @@ cJSON *gadget_list_chats_command(const cJSON *params) {
     }
     return gadget_ok(payload);
 }
+
+#if CONFIG_MUSE_HATCH
+// ---- display.show_image ------------------------------------------------------
+
+#define SHOW_IMAGE_LABEL_MAX 47
+// The same image again this soon isn't shown again: Muse asked to push one
+// (muse_present_ask) may push it twice, or after showing it some other way.
+#define SHOW_IMAGE_REPEAT_US (120 * 1000000LL)
+
+// The image being pushed. Only the Noise session's task runs commands, so it
+// needs no lock. It and its bytes are in PSRAM: internal RAM is short.
+EXT_RAM_BSS_ATTR static struct {
+    uint8_t *buf;
+    size_t len, cap;
+    char label[SHOW_IMAGE_LABEL_MAX + 1];
+    bool shown;              // the last image shown, and when
+    uint32_t shown_hash;
+    int64_t shown_us;
+} s_push;
+
+static void push_reset(void) {
+    heap_caps_free(s_push.buf);
+    s_push.buf = NULL;
+    s_push.len = s_push.cap = 0;
+}
+
+// A base64 character's value: 0-63, -2 for padding, -3 for whitespace, -1
+// for anything else. The URL-safe alphabet's - and _ count too.
+static int b64_value(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+' || c == '-') return 62;
+    if (c == '/' || c == '_') return 63;
+    if (c == '=') return -2;
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') return -3;
+    return -1;
+}
+
+// How many bytes `in` decodes to, or -1 if it isn't base64: padding only at
+// the end, and no lone last character.
+static long b64_decoded_len(const char *in) {
+    size_t digits = 0, pad = 0;
+    for (const unsigned char *c = (const unsigned char *)in; *c; c++) {
+        int v = b64_value(*c);
+        if (v == -1 || (v >= 0 && pad)) {
+            return -1;
+        }
+        pad += v == -2;
+        digits += v >= 0;
+    }
+    if (pad > 2 || digits % 4 == 1) {
+        return -1;
+    }
+    return (long)(digits / 4 * 3 + (digits % 4 ? digits % 4 - 1 : 0));
+}
+
+// Decodes `in`, which b64_decoded_len has passed, into out.
+static void b64_decode(const char *in, uint8_t *out) {
+    uint32_t acc = 0;
+    int bits = 0;
+    for (const unsigned char *c = (const unsigned char *)in; *c; c++) {
+        int v = b64_value(*c);
+        if (v < 0) {
+            continue;
+        }
+        acc = acc << 6 | (uint32_t)v;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            *out++ = (uint8_t)(acc >> bits);
+        }
+    }
+}
+
+// Whether a JPEG's frame is progressive (or another kind the ROM decoder
+// can't take), from its markers up to the scan.
+static bool jpeg_progressive(const uint8_t *d, size_t len) {
+    size_t i = 2;
+    while (i + 4 <= len && d[i] == 0xFF) {
+        uint8_t m = d[i + 1];
+        if (m == 0xFF) {
+            i++;   // fill
+        } else if (m == 0xDA || m == 0xD9) {
+            return false;   // the scan, after a baseline frame
+        } else if (m == 0xC2 || m == 0xC6 || m == 0xCA || m == 0xCE) {
+            return true;
+        } else {
+            i += 2 + ((size_t)d[i + 2] << 8 | d[i + 3]);
+        }
+    }
+    return false;
+}
+
+static uint32_t fnv1a(const uint8_t *d, size_t len) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < len; i++) {
+        h = (h ^ d[i]) * 16777619u;
+    }
+    return h;
+}
+
+static cJSON *push_progress(bool complete, bool shown) {
+    cJSON *payload = cJSON_CreateObject();
+    cJSON_AddNumberToObject(payload, "received", (double)s_push.len);
+    cJSON_AddBoolToObject(payload, "complete", complete);
+    if (complete) {
+        cJSON_AddBoolToObject(payload, "shown", shown);
+    }
+    return gadget_ok(payload);
+}
+
+// A failure that drops what has come so far: the image starts again at 0.
+static cJSON *push_error(const char *code, const char *message) {
+    push_reset();
+    return gadget_error(code, message);
+}
+
+cJSON *gadget_show_image_command(const cJSON *params) {
+    const cJSON *data = cJSON_GetObjectItemCaseSensitive(params, "data_b64");
+    const cJSON *offset_j = cJSON_GetObjectItemCaseSensitive(params, "offset");
+    const cJSON *final_j = cJSON_GetObjectItemCaseSensitive(params, "final");
+    const cJSON *label = cJSON_GetObjectItemCaseSensitive(params, "label");
+    const cJSON *mime = cJSON_GetObjectItemCaseSensitive(params, "mime");
+    const cJSON *size = cJSON_GetObjectItemCaseSensitive(params, "size");
+    if (!cJSON_IsString(data) || !data->valuestring) {
+        return gadget_error("missing_param", "data_b64 is required");
+    }
+    size_t offset = 0;
+    if (offset_j && !cJSON_IsNull(offset_j)) {
+        double v = cJSON_IsNumber(offset_j) ? offset_j->valuedouble : -1;
+        if (v < 0 || v > MUSE_PRESENT_MAX || v != (double)(size_t)v) {
+            return gadget_error("invalid_param", "offset must be a whole number of bytes");
+        }
+        offset = (size_t)v;
+    }
+    if (final_j && !cJSON_IsNull(final_j) && !cJSON_IsBool(final_j)) {
+        return gadget_error("invalid_param", "final must be true or false");
+    }
+    bool final = cJSON_IsTrue(final_j);
+    if (label && !cJSON_IsNull(label) && !cJSON_IsString(label)) {
+        return gadget_error("invalid_param", "label must be a string");
+    }
+    if (mime && !cJSON_IsNull(mime)) {
+        const char *m = cJSON_GetStringValue(mime);
+        if (m && !strcmp(m, "image/png")) {
+            return push_error("unsupported", "PNG isn't supported: send a baseline JPEG");
+        }
+        if (!m || (strcmp(m, "image/jpeg") && strcmp(m, "image/jpg"))) {
+            return gadget_error("invalid_param", "mime must be image/jpeg");
+        }
+    }
+    size_t size_hint = 0;
+    if (size && !cJSON_IsNull(size)) {
+        if (!cJSON_IsNumber(size) || size->valuedouble < 1) {
+            return gadget_error("invalid_param", "size must be the image's length in bytes");
+        }
+        if (size->valuedouble > MUSE_PRESENT_MAX) {
+            return push_error("too_large", "images over 512 KB aren't shown: send a smaller JPEG");
+        }
+        size_hint = (size_t)size->valuedouble;
+    }
+    long n = b64_decoded_len(data->valuestring);
+    if (n < 0) {
+        return gadget_error("invalid_param", "data_b64 isn't valid base64");
+    }
+    if (offset == 0) {
+        push_reset();   // a new image, or this one from the start again
+    } else if (offset != s_push.len) {
+        char message[48];
+        snprintf(message, sizeof(message), "expected offset %u", (unsigned)s_push.len);
+        return gadget_error("invalid_param", message);
+    }
+    if (n == 0 && !final) {
+        return gadget_error("invalid_param", "data_b64 is empty");
+    }
+    size_t want = offset + (size_t)n;
+    if (want > MUSE_PRESENT_MAX) {
+        return push_error("too_large", "images over 512 KB aren't shown: send a smaller JPEG");
+    }
+    if (want > s_push.cap) {
+        size_t cap = s_push.cap * 2 > want ? s_push.cap * 2 : want;
+        cap = size_hint > cap ? size_hint : cap;
+        cap = cap < MUSE_PRESENT_MAX ? cap : MUSE_PRESENT_MAX;
+        uint8_t *grown = heap_caps_realloc(s_push.buf, cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!grown) {
+            return push_error("out_of_memory", "no room for the image");
+        }
+        s_push.buf = grown;
+        s_push.cap = cap;
+    }
+    b64_decode(data->valuestring, s_push.buf + s_push.len);
+    if (s_push.len < 2 && want >= 2 && (s_push.buf[0] != 0xFF || s_push.buf[1] != 0xD8)) {
+        bool png = want >= 4 && !memcmp(s_push.buf, "\x89PNG", 4);
+        return push_error(png ? "unsupported" : "invalid_param",
+                          png ? "PNG isn't supported: send a baseline JPEG" : "not a JPEG");
+    }
+    s_push.len = want;
+    const char *l = cJSON_GetStringValue(label);
+    if (offset == 0 || (l && l[0])) {
+        strlcpy(s_push.label, l && l[0] ? l : "image", sizeof(s_push.label));
+    }
+    if (!final) {
+        return push_progress(false, false);
+    }
+    if (s_push.len < 2) {
+        return push_error("invalid_param", "not a JPEG");
+    }
+    if (jpeg_progressive(s_push.buf, s_push.len)) {
+        return push_error("unsupported", "progressive JPEG isn't supported: send a baseline one");
+    }
+    uint32_t hash = fnv1a(s_push.buf, s_push.len);
+    int64_t now = esp_timer_get_time();
+    if (s_push.shown && hash == s_push.shown_hash && now - s_push.shown_us < SHOW_IMAGE_REPEAT_US) {
+        cJSON *result = push_progress(true, false);   // it's on the screen already
+        push_reset();
+        return result;
+    }
+    s_push.shown = true;
+    s_push.shown_hash = hash;
+    s_push.shown_us = now;
+    cJSON *result = push_progress(true, true);
+    muse_present_bytes(s_push.buf, s_push.len, s_push.label);   // it takes the buffer
+    s_push.buf = NULL;
+    s_push.len = s_push.cap = 0;
+    return result;
+}
+#endif

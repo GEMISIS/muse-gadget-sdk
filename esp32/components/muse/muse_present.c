@@ -15,13 +15,13 @@
  */
 
 /*
- * A chat reply's image (muse_present.h): fetched over HTTPS if the chat
- * session couldn't get it on its own connection, then decoded with the ROM's
- * JPEG decoder (as display.draw_url's are, main/image_fetch.c) into two
- * RGB565 copies in PSRAM: one fitting the screen, for a tap to show full
- * size, and one at the size Muse holds it up (muse_ui_present). It all runs
- * on one task with its stack in PSRAM, which never touches flash or NVS: the
- * microSD copy is saved by the extras task (muse_sd_queue_image).
+ * An image Muse shows the user (muse_present.h): decoded with the ROM's JPEG
+ * decoder (as display.draw_url's are, main/image_fetch.c) into two RGB565
+ * copies in PSRAM: one fitting the screen, for a tap to show full size, and
+ * one at the size Muse holds it up (muse_ui_present). The same task asks Muse
+ * to push a reply's image (muse_present_ask). It has its stack in PSRAM, so
+ * it never touches flash or NVS: the microSD copy is saved by the extras
+ * task (muse_sd_queue_image).
  */
 #include "muse_present.h"
 
@@ -30,9 +30,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_crt_bundle.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
-#include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -41,33 +40,33 @@
 #include "freertos/task.h"
 #include "rom/tjpgd.h"
 
+#include "muse_chat.h"
 #include "muse_mem.h"
 #include "muse_sd.h"
+#include "muse_settings.h"
 #include "muse_ui.h"
 
 static const char *TAG = "muse_present";
 
-#define TASK_STACK (20 * 1024)          /* in PSRAM: TLS for the HTTPS fetch, then the decoder */
+#define TASK_STACK (12 * 1024)          /* in PSRAM: the decoder, and asking */
 #define TASK_PRIORITY 3                 /* under the UI (5), the chat session (5) and draw_url's (4) */
-#define JOBS 2                          /* the one being shown, and the next */
-#define HTTP_TIMEOUT_MS 10000           /* per socket operation */
-#define HTTP_DEADLINE_US (30 * 1000000LL)
-#define HTTP_MAX_REDIRECTS 3
-#define FIRST_CAP (64 * 1024)           /* the buffer's start without a length to go on */
+#define JOBS 3                          /* the one being shown, the next, and a nudge to ask */
 #define JPEG_POOL_BYTES 3100            /* the ROM decoder's work pool, as its documentation asks */
 #define DECODED_MAX (3 * 1024 * 1024)   /* RGB565 out of the decoder, before resizing */
 #define LABEL_MAX 48
+#define PATH_MAX_LEN 256                /* a workspace file's path, to ask for */
+#define ASK_POLL_MS 1000                /* how often a request waiting to go, or for its reply, is looked at */
+#define ASK_GIVE_UP_US (120 * 1000000LL)        /* waiting to ask */
+#define ASKED_AGAIN_US (10 * 60 * 1000000LL)    /* a path asked for isn't asked for again this soon */
+#define ASKED_KEPT 4
 
 typedef struct {
-    uint8_t *data;          /* the image, or NULL to fetch it from url */
+    uint8_t *data;
     size_t len;
-    char *url;
-    char *token;
-    size_t byte_len;
     char label[LABEL_MAX];
 } job_t;
 
-static QueueHandle_t s_jobs;   /* job_t * */
+static QueueHandle_t s_jobs;   /* job_t *, or NULL to look at the asking */
 static atomic_int s_started;   /* 0 not yet, 1 starting, 2 running */
 
 static void job_free(job_t *job)
@@ -76,126 +75,12 @@ static void job_free(job_t *job)
         return;
     }
     heap_caps_free(job->data);
-    heap_caps_free(job->url);
-    if (job->token) {
-        memset(job->token, 0, strlen(job->token));
-    }
-    heap_caps_free(job->token);
     heap_caps_free(job);
-}
-
-/* In PSRAM: internal RAM is short, and these only wait on the queue. */
-static char *big_strdup(const char *s)
-{
-    size_t n = strlen(s) + 1;
-    char *copy = heap_caps_malloc(n, MUSE_BIG_CAPS);
-    if (copy) {
-        memcpy(copy, s, n);
-    }
-    return copy;
 }
 
 static int64_t ms_since(int64_t t0)
 {
     return (esp_timer_get_time() - t0) / 1000;
-}
-
-/* ---- HTTPS -------------------------------------------------------------- */
-
-static bool redirected(int status)
-{
-    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
-}
-
-/* GETs url whole into PSRAM. NULL on failure, with *status the HTTP status (0 if none). */
-static uint8_t *https_get(const job_t *job, size_t *out_len, int *status)
-{
-    *status = 0;
-    size_t token_len = job->token ? strlen(job->token) : 0;
-    esp_http_client_config_t cfg = {
-        .url = job->url,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        .timeout_ms = HTTP_TIMEOUT_MS,
-        .buffer_size = 4096,
-        .buffer_size_tx = 1024 + (int)token_len,   /* the bearer header goes in it whole */
-        .disable_auto_redirect = true,
-    };
-    esp_http_client_handle_t http = esp_http_client_init(&cfg);
-    if (!http) {
-        return NULL;
-    }
-    char *bearer = NULL;
-    if (token_len) {
-        bearer = heap_caps_malloc(token_len + 8, MUSE_BIG_CAPS);
-        if (bearer) {
-            snprintf(bearer, token_len + 8, "Bearer %s", job->token);
-            esp_http_client_set_header(http, "Authorization", bearer);
-        }
-    }
-    esp_http_client_set_header(http, "Accept", "image/jpeg,image/*");
-    int64_t deadline = esp_timer_get_time() + HTTP_DEADLINE_US;
-    uint8_t *buf = NULL;
-    size_t len = 0, cap = 0;
-    bool ok = false;
-    int64_t content_len = 0;
-    for (int i = 0;; i++) {
-        if (esp_http_client_open(http, 0) != ESP_OK) {
-            break;
-        }
-        content_len = esp_http_client_fetch_headers(http);
-        *status = esp_http_client_get_status_code(http);
-        if (!redirected(*status) || i == HTTP_MAX_REDIRECTS) {
-            break;
-        }
-        /* Wherever it leads, the VM's token stays with the VM. */
-        esp_http_client_delete_header(http, "Authorization");
-        bool moved = esp_http_client_set_redirection(http) == ESP_OK;
-        esp_http_client_close(http);
-        if (!moved) {
-            *status = 0;
-            break;
-        }
-    }
-    if (*status == 200) {
-        cap = content_len > 0 ? (size_t)content_len : job->byte_len ? job->byte_len : FIRST_CAP;
-        cap = cap < MUSE_PRESENT_MAX ? cap : MUSE_PRESENT_MAX;
-        buf = heap_caps_malloc(cap, MUSE_BIG_CAPS);
-        while (buf && esp_timer_get_time() < deadline) {
-            if (len == cap) {
-                if (cap == MUSE_PRESENT_MAX) {
-                    ESP_LOGW(TAG, "image over %u KB: dropped", MUSE_PRESENT_MAX / 1024);
-                    break;
-                }
-                size_t grown_cap = cap * 2 < MUSE_PRESENT_MAX ? cap * 2 : MUSE_PRESENT_MAX;
-                uint8_t *grown = heap_caps_realloc(buf, grown_cap, MUSE_BIG_CAPS);
-                if (!grown) {
-                    break;
-                }
-                buf = grown;
-                cap = grown_cap;
-            }
-            int n = esp_http_client_read(http, (char *)buf + len, (int)(cap - len));
-            if (n < 0) {
-                break;
-            }
-            if (n == 0) {
-                ok = esp_http_client_is_complete_data_received(http) && len > 0;
-                break;
-            }
-            len += (size_t)n;
-        }
-    }
-    esp_http_client_cleanup(http);
-    if (bearer) {
-        memset(bearer, 0, token_len + 8);
-        heap_caps_free(bearer);
-    }
-    if (!ok) {
-        heap_caps_free(buf);
-        return NULL;
-    }
-    *out_len = len;
-    return buf;
 }
 
 /* ---- JPEG --------------------------------------------------------------- */
@@ -353,22 +238,145 @@ static void show_jpeg(const job_t *job)
     }
 }
 
+/* ---- Asking for a reply's image ----------------------------------------- */
+
+/* The image to ask for next (with s_ask_lock); a newer one replaces it. */
+static portMUX_TYPE s_ask_lock = portMUX_INITIALIZER_UNLOCKED;
+EXT_RAM_BSS_ATTR static struct {
+    bool want;
+    int64_t since_us;
+    char path[PATH_MAX_LEN];
+    char label[LABEL_MAX];
+} s_want;
+
+/* The paths asked for lately (with s_ask_lock). In PSRAM, as everything
+ * here but the lock: internal RAM is short. */
+EXT_RAM_BSS_ATTR static struct {
+    uint32_t hash;
+    int64_t us;
+} s_asked[ASKED_KEPT];
+EXT_RAM_BSS_ATTR static int s_asked_next;
+
+/* The task's own: the request under way. */
+EXT_RAM_BSS_ATTR static bool s_asking;
+EXT_RAM_BSS_ATTR static uint32_t s_asking_hash;
+EXT_RAM_BSS_ATTR static char s_asking_label[LABEL_MAX];
+
+static uint32_t path_hash(const char *s)
+{
+    uint32_t h = 2166136261u;
+    for (; *s; s++) {
+        h = (h ^ (uint8_t)*s) * 16777619u;
+    }
+    return h;
+}
+
+/* With s_ask_lock held. */
+static bool asked_lately(uint32_t hash, int64_t now)
+{
+    for (int i = 0; i < ASKED_KEPT; i++) {
+        if (s_asked[i].us && s_asked[i].hash == hash && now - s_asked[i].us < ASKED_AGAIN_US) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool ask_pending(void)
+{
+    portENTER_CRITICAL(&s_ask_lock);
+    bool want = s_want.want;
+    portEXIT_CRITICAL(&s_ask_lock);
+    return want || s_asking;
+}
+
+/* Quotes would end the path or the caption early in the message. */
+static void unquote(char *s)
+{
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\n' || *s == '\r') {
+            *s = '\'';
+        }
+    }
+}
+
+/* Takes the reply to the request under way, then asks for the next image once it can. */
+static void ask_tick(void)
+{
+    if (s_asking) {
+        char reply[64];
+        muse_chat_bg_state_t st = muse_chat_bg_result_for(MUSE_CHAT_BG_FOR_IMAGE, reply, sizeof(reply));
+        if (st == MUSE_CHAT_BG_BUSY) {
+            return;   /* the request gives up by itself after two minutes */
+        }
+        s_asking = false;
+        if (st == MUSE_CHAT_BG_DONE) {
+            ESP_LOGI(TAG, "\"%s\": Muse answered \"%s\"", s_asking_label, reply);
+        } else {
+            ESP_LOGW(TAG, "\"%s\": Muse didn't answer the request to push it", s_asking_label);
+            portENTER_CRITICAL(&s_ask_lock);
+            for (int i = 0; i < ASKED_KEPT; i++) {
+                if (s_asked[i].hash == s_asking_hash) {
+                    s_asked[i].us = 0;   /* it can be asked for again */
+                }
+            }
+            portEXIT_CRITICAL(&s_ask_lock);
+        }
+    }
+    char path[PATH_MAX_LEN], label[LABEL_MAX];
+    int64_t now = esp_timer_get_time(), since;
+    portENTER_CRITICAL(&s_ask_lock);
+    bool want = s_want.want;
+    since = s_want.since_us;
+    if (want) {
+        memcpy(path, s_want.path, sizeof(path));
+        memcpy(label, s_want.label, sizeof(label));
+    }
+    if (want && now - since > ASK_GIVE_UP_US) {
+        s_want.want = false;
+    }
+    portEXIT_CRITICAL(&s_ask_lock);
+    if (!want) {
+        return;
+    }
+    if (now - since > ASK_GIVE_UP_US) {
+        ESP_LOGW(TAG, "\"%s\": couldn't ask Muse for it in time; given up", label);
+        return;
+    }
+    if (!muse_hatch_ready()) {
+        return;   /* out of reach for now */
+    }
+    char gadget[MUSE_CHAT_SID_MAX + 1], msg[PATH_MAX_LEN + LABEL_MAX + 320];
+    muse_settings_gadget_chat_sid(gadget);
+    uint32_t hash = path_hash(path);
+    unquote(path);
+    unquote(label);
+    snprintf(msg, sizeof(msg),
+             "Send the image at \"%s\" (\"%s\") to this gadget with display.show_image, as a baseline JPEG "
+             "of 480x480 or smaller (convert it if need be): base64 chunks of up to 16 KiB in order from "
+             "offset 0, final=true on the last. Don't create links. Reply with just: sent.",
+             path, label);
+    if (!muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_IMAGE, gadget, msg)) {
+        return;   /* someone else's request is under way, or a turn: next time */
+    }
+    s_asking = true;
+    s_asking_hash = hash;
+    strlcpy(s_asking_label, label, sizeof(s_asking_label));
+    portENTER_CRITICAL(&s_ask_lock);
+    s_asked[s_asked_next].hash = s_asking_hash;
+    s_asked[s_asked_next].us = now;
+    s_asked_next = (s_asked_next + 1) % ASKED_KEPT;
+    if (s_want.since_us == since) {
+        s_want.want = false;   /* unless a newer one came meanwhile */
+    }
+    portEXIT_CRITICAL(&s_ask_lock);
+    ESP_LOGI(TAG, "\"%s\": asking Muse to push %s", label, path);
+}
+
 /* ---- Task --------------------------------------------------------------- */
 
 static void run(job_t *job)
 {
-    if (!job->data) {
-        int64_t t0 = esp_timer_get_time();
-        int status;
-        job->data = https_get(job, &job->len, &status);
-        if (!job->data) {
-            ESP_LOGW(TAG, "\"%s\": HTTPS fetch failed (HTTP %d) after %d ms", job->label, status,
-                     (int)ms_since(t0));
-            return;
-        }
-        ESP_LOGI(TAG, "\"%s\": fetched over HTTPS (the fallback): %u bytes in %d ms", job->label,
-                 (unsigned)job->len, (int)ms_since(t0));
-    }
     const uint8_t *d = job->data;
     bool jpeg = job->len > 3 && d[0] == 0xFF && d[1] == 0xD8;
     bool png = job->len > 8 && !memcmp(d, "\x89PNG", 4);
@@ -386,12 +394,16 @@ static void present_task(void *arg)
 {
     (void)arg;
     for (;;) {
-        job_t *job;
-        if (xQueueReceive(s_jobs, &job, portMAX_DELAY) == pdTRUE) {
+        job_t *job = NULL;
+        TickType_t wait = ask_pending() ? pdMS_TO_TICKS(ASK_POLL_MS) : portMAX_DELAY;
+        if (xQueueReceive(s_jobs, &job, wait) == pdTRUE && job) {
+            int64_t t0 = esp_timer_get_time();
             run(job);
             job_free(job);
-            ESP_LOGI(TAG, "stack %u free", (unsigned)uxTaskGetStackHighWaterMark(NULL));
+            ESP_LOGI(TAG, "shown in %d ms; stack %u free", (int)ms_since(t0),
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
+        ask_tick();
     }
 }
 
@@ -402,7 +414,7 @@ static bool start(void)
         s_jobs = xQueueCreateWithCaps(JOBS, sizeof(job_t *), MALLOC_CAP_SPIRAM);
         if (!s_jobs || xTaskCreatePinnedToCoreWithCaps(present_task, "muse_present", TASK_STACK, NULL,
                                                        TASK_PRIORITY, NULL, 1, MUSE_BIG_CAPS) != pdPASS) {
-            ESP_LOGE(TAG, "start failed: images in replies won't show");
+            ESP_LOGE(TAG, "start failed: Muse's images won't show");
             if (s_jobs) {
                 vQueueDeleteWithCaps(s_jobs);
                 s_jobs = NULL;
@@ -415,39 +427,47 @@ static bool start(void)
     return atomic_load(&s_started) == 2;
 }
 
-static void submit(job_t *job, const char *label)
-{
-    strlcpy(job->label, label && label[0] ? label : "image", sizeof(job->label));
-    if (!start() || xQueueSend(s_jobs, &job, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "\"%s\": busy with others, dropped", job->label);
-        job_free(job);
-    }
-}
-
-void muse_present_bytes(uint8_t *data, size_t len, const char *label)
+bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
 {
     job_t *job = heap_caps_calloc(1, sizeof(*job), MUSE_BIG_CAPS);
     if (!job) {
         heap_caps_free(data);
-        return;
+        return false;
     }
     job->data = data;
     job->len = len;
-    submit(job, label);
+    strlcpy(job->label, label && label[0] ? label : "image", sizeof(job->label));
+    if (!start() || xQueueSend(s_jobs, &job, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "\"%s\": busy with others, dropped", job->label);
+        job_free(job);
+        return false;
+    }
+    return true;
 }
 
-void muse_present_fetch(const char *url, const char *token, const char *label, size_t byte_len)
+void muse_present_ask(const char *path, const char *label)
 {
-    job_t *job = heap_caps_calloc(1, sizeof(*job), MUSE_BIG_CAPS);
-    if (!job) {
+    if (!path || !path[0] || strlen(path) >= PATH_MAX_LEN) {
+        ESP_LOGW(TAG, "no path to ask Muse for the image by");
         return;
     }
-    job->url = big_strdup(url);
-    job->token = token && token[0] ? big_strdup(token) : NULL;
-    job->byte_len = byte_len < MUSE_PRESENT_MAX ? byte_len : MUSE_PRESENT_MAX;
-    if (!job->url || (token && token[0] && !job->token)) {
-        job_free(job);
+    int64_t now = esp_timer_get_time();
+    uint32_t hash = path_hash(path);
+    portENTER_CRITICAL(&s_ask_lock);
+    bool asked = asked_lately(hash, now);
+    if (!asked) {
+        s_want.want = true;
+        s_want.since_us = now;
+        strlcpy(s_want.path, path, sizeof(s_want.path));
+        strlcpy(s_want.label, label && label[0] ? label : "image", sizeof(s_want.label));
+    }
+    portEXIT_CRITICAL(&s_ask_lock);
+    if (asked) {
+        ESP_LOGI(TAG, "%s: asked for already", path);
         return;
     }
-    submit(job, label);
+    job_t *wake = NULL;
+    if (start()) {
+        xQueueSend(s_jobs, &wake, 0);   /* if the queue's full, the task is busy and looks after it */
+    }
 }
