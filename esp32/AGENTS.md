@@ -61,6 +61,7 @@ before adding a feature to one.
 | Espressif ESP32-S3-BOX-3 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-espressif-box-3` | `tools/muse/board.sh build box3` |
 | AIPI Lite | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-aipi` | manual |
 | Waveshare ESP32-C6-Touch-AMOLED-1.8 | `esp32c6` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-c6-18` | manual |
+| Waveshare ESP32-C6-Touch-AMOLED-2.06 | `esp32c6` | `devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-c6-206` | `tools/muse/board.sh build c6-206` |
 | Seeed SenseCAP Watcher | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-sensecap-watcher` | manual |
 | M5Stack Cardputer ADV (experimental) | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-cardputer-adv` | `tools/muse/board.sh build cardputer-adv` |
 | M5Stack StickS3 | `esp32s3` | `devices/sdkconfig.muse;devices/sdkconfig.muse-m5stack-sticks3` | manual |
@@ -127,7 +128,7 @@ voice note that Muse answers in the app, and the dial sets the speaker volume
 
 ### Boards with the full UI, by hand
 
-`tools/muse/board.sh build|flash <s3|s3n|aipi|box3|c6|watcher|sticks3|plus2|cardputer-adv|stopwatch|cores3|core2|jc3248w535|lcd7|s3-216> [SERIAL|PORT]`
+`tools/muse/board.sh build|flash <s3|s3n|s3-216|aipi|box3|c6|c6-206|watcher|sticks3|plus2|cardputer-adv|stopwatch|cores3|core2|jc3248w535|lcd7> [SERIAL|PORT]`
 builds one board in `build-muse-<profile>/`, logs to
 `/tmp/muse_build_<board>.log`, and clears `managed_components/` before and
 after so it doesn't clash with other boards. When flashing, it finds the
@@ -161,9 +162,7 @@ which fails on its USB bridge (see "Flash it"). Build the Watcher with
 `idf.py`, flash it with `tools/muse/board.sh flash watcher`, then
 `idf.py … -p PORT monitor` as usual; reading from the bridge works. Muse builds use `partitions_muse.csv` and need 16 MB of flash or
 more, except the StickS3, StickC Plus2 and Cardputer ADV, which have 8 MB and use
-`partitions_muse_8mb.csv`. The ESP32-S3-Touch-AMOLED-2.16 speaks replies on
-the device (`CONFIG_MUSE_TTS_PICO`) and uses `partitions_muse_tts.csv`, which
-adds partitions for the voice that flashing writes alongside the app.
+`partitions_muse_8mb.csv`.
 
 All boards share `managed_components/` and `dependencies.lock` in this
 directory. If the component manager fails after you switch between a board
@@ -236,7 +235,7 @@ flash size and status backend.
    | `power` | M5Stack CoreS3 |
    | `front` | M5Stack StickS3, or StickC Plus2 — tell them apart by the port: the StickS3 is native USB, the Plus2 is a CH9102 `usbserial` |
    | `top` | Waveshare ESP32-S3-Touch-AMOLED-1.75C |
-   | `top right` | Waveshare ESP32-S3-Touch-AMOLED-2.16 |
+   | `key` | Waveshare ESP32-S3-Touch-AMOLED-2.16 |
    | `bottom right` | AIPI Lite |
    | `wheel` | Seeed SenseCAP Watcher |
    | `boot` | Waveshare ESP32-C6-Touch-AMOLED-1.8, the ESP32-S3-Touch-AMOLED-1.75 or the Guition JC3248W535 — tell the C6 by its target (`esp32c6`), and the two S3 boards by the `muse: board:` line a reset logs |
@@ -349,7 +348,7 @@ message on. The exit status says what kind of failure it was:
 
 - **2**: no board, or it can't do this. If it says the board doesn't answer,
   rerun with `--board s3` or `--board aipi` (from the board's name, or ask) to
-  flash firmware that can. On the C6 or Watcher, follow the manual steps in
+  flash firmware that can. On the C6 boards or Watcher, follow the manual steps in
   `tools/muse/AVATAR_RECIPE.md`.
 - **3**: the board isn't on Wi-Fi, or it isn't paired in the Muse app and has
   no device token, so their Muse isn't connected. Tell them, and point them to
@@ -365,11 +364,10 @@ The default avatar is in `avatar/`: its renderer (`muse_pixel.c`) and
 its animation (`jollybot.gif`, and `happy_anim.c/.h` made from it by
 `tools/gen_happy_anim.py`).
 
-Third-party code keeps its upstream license and header: `minimp3.h` (CC0),
-`main/pixel_font.c` (BSD-2-Clause, Adafruit) and SVOX Pico in
-`components/picotts/` (Apache-2.0, SVOX and DiUS). Don't restyle them or
-replace their headers with the Apache one; `components/minimp3/README.md` and
-`components/picotts/README.md` say how to update them.
+Third-party code keeps its upstream license and header: `minimp3.h` (CC0) and
+`main/pixel_font.c` (BSD-2-Clause, Adafruit). Don't restyle them or replace
+their headers with the Apache one; `components/minimp3/README.md` says how to
+update minimp3.
 
 The Apache License doesn't cover the Jollybot avatar in `avatar/`. Its files
 carry only a Meta copyright line; don't add the Apache header to them.
@@ -476,6 +474,15 @@ handled in `noise_control.cpp` itself; everything else goes through
 6. **Add a host test** in `tests/`. `test_link_sensecap_sensors.py` checks
    that `sensors.read` is advertised and dispatched under the same option, and
    runs its parser against a harness.
+
+Report environmental sensors (temperature, humidity, CO2, tVOC, light and so
+on) through `sensors.read`, on every board that has them, so Muse has one
+command to call wherever it runs. Don't add them to `device.health`, which is
+for the link itself (battery, power, network), or give them a board-specific
+command. Return each reading as `{value, unit, age_s}`, as
+`sensecap_sensors.c` does, and report a sensor with no recent reading as null.
+Read slow or I2C sensors in a background task and have `sensors.read` return
+the latest value.
 
 Muse sees the command once the board reconnects with the new firmware. Keep
 the management commands that `on_ws_command()` also handles (`device.list_vms`,

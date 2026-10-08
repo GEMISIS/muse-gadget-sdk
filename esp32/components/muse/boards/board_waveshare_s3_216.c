@@ -15,30 +15,22 @@
  */
 
 /*
- * Waveshare ESP32-S3-Touch-AMOLED-2.16: square 480x480 CO5300 AMOLED over
- * QSPI with CST9220 touch, ES8311 speaker + ES7210 dual mic, AXP2101 PMU.
+ * Waveshare ESP32-S3-Touch-AMOLED-2.16: 480x480 CO5300 AMOLED with CST9220
+ * touch, ES8311 speaker + ES7210 dual mic, AXP2101 PMU, PCF85063 RTC.
+ * Schematic-checked: the PMU IRQ line is not wired to the ESP32 (I2C polling
+ * still works), DCDC1=VCC3V3, ALDO1=A3V3 (codecs).
  *
- * Sources:
- * - Pins (QSPI CS 12, SCLK 38, D0-D3 4-7, panel reset 39; touch reset 40,
- *   INT 11; I2C SDA 15, SCL 14; I2S MCLK 42, BCLK 9, WS 45, DOUT 8, DIN 10;
- *   amp enable 46), the CO5300 init sequence and the CST9217-family touch
- *   driver: the waveshare/esp32_s3_touch_amoled_2_16 BSP
- *   (include/bsp/esp32_s3_touch_amoled_2_16.h), which matches
- *   examples/arduino/libraries/Mylibrary/pin_config.h in
- *   waveshareteam/ESP32-S3-Touch-AMOLED-2.16 and the wiki's GPIO table.
- * - Buttons: the product page and wiki list BOOT (GPIO0), PWR and a
- *   programmable key on GPIO18 (pulled up, active low). The schematic takes
- *   PWR only to the AXP2101's PWRON pin, so it is read from the PMU's key
- *   latch.
- * - AXP2101 at 0x34: examples/esp-idf/01_AXP2101 in the vendor repo. The
- *   schematic feeds VCC3V3 from DCDC1 and A3V3 (the codecs) from ALDO1.
- *
- * GPIO18 talks. BOOT and PWR set the volume in place of an aux button:
- * BOOT turns it down (repeating while held), a PWR click turns it up, and
- * holding PWR 1.5 s opens the power menu (muse_power_menu.h), where BOOT,
- * PWR and GPIO18 are up, down and select. Sleep is in that menu.
+ * Keys along the top edge, left to right: BOOT (GPIO0), PWR, KEY3 (GPIO18,
+ * active low, board pull-up). KEY3 talks. BOOT and PWR set the volume in
+ * place of an aux button: BOOT turns it down (repeating while held), a PWR
+ * click turns it up, and holding PWR 1.5 s opens the power menu
+ * (muse_power_menu.h), where BOOT, PWR and KEY3 are up, down and select.
+ * Sleep is in that menu. PWR reaches only the PMU, so its click and long
+ * press are latched there and read over I2C.
  */
-#include "esp_err.h"         /* the BSP's display.h uses esp_err_t without it */
+
+#include "esp_err.h" /* this BSP's display.h uses esp_err_t without including it */
+
 #include "bsp/display.h"
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
@@ -49,7 +41,6 @@
 #include "esp_lv_adapter.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-
 #include "muse_board.h"
 #include "muse_lcd_bands.h"
 #include "muse_mem.h"
@@ -57,31 +48,36 @@
 
 static const char *TAG = "board";
 
-#define DRAW_BUF_LINES 120      /* four bands to the screen (muse_lcd_bands.h) */
+#define DRAW_BUF_LINES 118 /* four bands to the screen (muse_lcd_bands.h) */
 #define LCD_CHUNK_BYTES (BSP_LCD_H_RES * 8 * 2)
-#define TALK_GPIO GPIO_NUM_18
-#define PMU_KEY_EVERY 2         /* poll the PMU over I2C every 20 ms */
-#define PWR_LONG_MS 1500        /* the power menu; the hardware cuts power at 10 s */
+
+#define KEY_GPIO GPIO_NUM_18 /* KEY3, active low with the board's pull-up */
+#define PMU_KEY_EVERY 2      /* poll the PMU over I2C every 20 ms */
+#define PWR_LONG_MS 1500     /* the power menu; the hardware cuts power at 10 s */
 
 static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_touch_handle_t s_tp;
-static muse_gpio_button_t s_talk, s_boot;
+static muse_gpio_button_t s_key, s_boot;
 
 static esp_err_t init(void)
 {
     ESP_RETURN_ON_ERROR(bsp_i2c_init(), TAG, "i2c init");
-    ESP_RETURN_ON_ERROR(muse_gpio_button_init(&s_talk, TALK_GPIO), TAG, "talk button");
+    ESP_RETURN_ON_ERROR(muse_gpio_button_init(&s_key, KEY_GPIO), TAG, "key button");
     ESP_RETURN_ON_ERROR(muse_gpio_button_init(&s_boot, GPIO_NUM_0), TAG, "boot button");
-    /* Only the PMU sees PWR: latch its edges for poll_buttons(). */
+
+    /* PWR reaches only the PMU: latch its key IRQs and poll them over I2C.
+     * Drain the latch; the press that turned the board on may still be held. */
     esp_err_t err = muse_pmu_init(bsp_i2c_get_handle(), true);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "PMU unavailable (%s): battery status disabled", esp_err_to_name(err));
         return ESP_OK;
     }
-    /* DCDC1 (VCC3V3) and ALDO1 (A3V3, for the codecs) are the rails the 1.75
-     * boards keep; the 2.16's schematic draws the same two for the ESP32 and
-     * the codecs. */
+    (void)muse_pmu_poll_key();
+
+    /* Only DCDC1 (VCC3V3) and ALDO1 (A3V3, for the codecs) feed anything; the
+     * schematic leaves the rest unconnected. Waveshare's AXP2101 example and
+     * xiaozhi's board turn them off too. */
     err = muse_pmu_keep_rails(BIT(0), BIT(0));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "unused rails left on (%s)", esp_err_to_name(err));
@@ -104,9 +100,10 @@ static void round_area(lv_event_t *e)
 }
 
 /*
- * bsp_display_start(), less its draw buffers, as on the 1.75C: the bands go
- * out through two fixed internal buffers instead of PSRAM ones that each need
- * an internal DMA bounce buffer (board_waveshare_s3_175c.c).
+ * bsp_display_start(), less its draw buffers: the BSP's are PSRAM, and every
+ * flush from them needs a fresh 46 KB internal DMA bounce buffer, which can't
+ * be had once Wi-Fi and BLE are up. The bands go out through two fixed 7 KB
+ * internal buffers instead; 9 KB ones left 1 KB free while Wi-Fi joined.
  */
 static lv_display_t *display_start(lv_indev_t **touch)
 {
@@ -123,6 +120,7 @@ static lv_display_t *display_start(lv_indev_t **touch)
     if (bsp_display_new(&panel_cfg, &s_panel, &s_io) != ESP_OK) {
         return NULL;
     }
+
     const esp_lv_adapter_display_config_t disp_cfg = {
         .panel = s_panel,
         .panel_io = s_io,
@@ -140,13 +138,14 @@ static lv_display_t *display_start(lv_indev_t **touch)
     }
     lv_display_add_event_cb(disp, round_area, LV_EVENT_INVALIDATE_AREA, NULL);
 
-    /* The BSP's own bsp_display_start() orientation. */
+    /* As the BSP's own bsp_display_start() maps touch at ROTATE_0. */
     const bsp_display_cfg_t touch_cfg = {
         .touch_flags = { .swap_xy = 1, .mirror_y = 1 },
     };
     if (bsp_touch_new(&touch_cfg, &s_tp) != ESP_OK) {
         return NULL;
     }
+
     const esp_lv_adapter_touch_config_t tp_cfg = ESP_LV_ADAPTER_TOUCH_DEFAULT_CONFIG(disp, s_tp);
     *touch = esp_lv_adapter_register_touch(&tp_cfg);
     if (!*touch || esp_lv_adapter_start() != ESP_OK) {
@@ -198,18 +197,19 @@ static void set_flip(bool flipped)
     esp_lcd_touch_set_mirror_y(s_tp, !flipped);
 }
 
-/* Plain SLPIN/SLPOUT over the QSPI command path, as on the 1.75C, rather than
- * the driver's deep standby, whose wake needs a reset. */
+/* Plain SLPIN/SLPOUT over the QSPI command path. The driver's own sleep also
+ * enters deep standby, whose wake pulses the reset line; panel (GPIO39) and
+ * touch (GPIO40) resets are separate lines here. */
 static void panel_sleep(bool sleep)
 {
     muse_lcd_bands_run(send_sleep, &sleep);
-    vTaskDelay(pdMS_TO_TICKS(120));   /* settle before the next command */
+    vTaskDelay(pdMS_TO_TICKS(120)); /* settle before the next command */
 }
 
 /*
- * Screen off: LVGL stops, and the CST9220 goes from scanning to deep sleep
- * (command 0xD105, as the CST9217), where it only answers its reset line,
- * GPIO 40; the panel's is GPIO 39.
+ * Screen off: LVGL stops, and the touch controller is put to sleep with the
+ * CST9217's deep-sleep command (0xD1 0x05, as on the 1.75C), where it only
+ * answers its reset line (GPIO40).
  */
 static void display_pause(bool pause)
 {
@@ -220,7 +220,7 @@ static void display_pause(bool pause)
         gpio_set_level(BSP_LCD_TOUCH_RST, 0);
         vTaskDelay(pdMS_TO_TICKS(10));
         gpio_set_level(BSP_LCD_TOUCH_RST, 1);
-        vTaskDelay(pdMS_TO_TICKS(50));   /* as the driver waits after its reset */
+        vTaskDelay(pdMS_TO_TICKS(50)); /* as the driver waits after its reset */
         esp_lv_adapter_resume();
     }
 }
@@ -241,47 +241,54 @@ static void set_mic_gain(esp_codec_dev_handle_t mic, int db)
 }
 
 /*
- * BOOT's edges are volume down's (muse_gpio_button_poll reports them as the
- * talk bits). PWR is the PMU's own click and long press: a long press once
- * it's held past PWR_LONG_MS, a click on the release of a shorter one. Should
- * both come in for one press, the long press wins.
+ * KEY3 talks. BOOT's edges are volume down's (muse_gpio_button_poll reports
+ * them as the talk bits; muse_input repeats while it's held). PWR is the
+ * PMU's own click and long press: a long press once it's held past
+ * PWR_LONG_MS, a click on the release of a shorter one. Should both come in
+ * for one press, the long press wins. A click is a whole press by itself, so
+ * one that went by unpolled while wait_buttons slept still counts; nothing
+ * here acts on PWR's bare press and release edges.
  */
 static unsigned poll_buttons(void)
 {
     static unsigned tick;
     static bool long_pressed;
     unsigned boot = muse_gpio_button_poll(&s_boot);
-    unsigned ev = muse_gpio_button_poll(&s_talk) |
+    unsigned ev = muse_gpio_button_poll(&s_key) |
                   (boot & MUSE_BTN_TALK_PRESS ? MUSE_BTN_VOL_DOWN_PRESS : 0) |
                   (boot & MUSE_BTN_TALK_RELEASE ? MUSE_BTN_VOL_DOWN_RELEASE : 0);
     if (tick++ % PMU_KEY_EVERY == 0) {
-        unsigned key = muse_pmu_poll_key();
-        if (key & MUSE_PMU_KEY_PRESS) {
+        unsigned pmu = muse_pmu_poll_key();
+        if (pmu & MUSE_PMU_KEY_PRESS) {
             long_pressed = false;
         }
-        if (key & MUSE_PMU_KEY_LONG) {
+        if (pmu & MUSE_PMU_KEY_LONG) {
             long_pressed = true;
             ev |= MUSE_BTN_POWER_MENU;
-        } else if ((key & MUSE_PMU_KEY_CLICK) && !long_pressed) {
+        } else if ((pmu & MUSE_PMU_KEY_CLICK) && !long_pressed) {
             ev |= MUSE_BTN_VOL_UP;
         }
     }
     return ev;
 }
 
+static void wait_buttons(int timeout_ms)
+{
+    /* The PMU's IRQ line isn't wired to the ESP32, so PWR can't wake the chip
+     * from light sleep; its latched click or long press is read on the next
+     * poll, within wait_buttons' timeout. The PMU handles power off at 10 s. */
+    muse_gpio_buttons_wait((muse_gpio_button_t *const[]){ &s_key, &s_boot }, 2, timeout_ms);
+}
+
 static const muse_board_t s_board = {
     .name = "Waveshare ESP32-S3-Touch-AMOLED-2.16",
-    .width = BSP_LCD_H_RES,
-    .height = BSP_LCD_V_RES,
-    .round = false,
-    .touch = true,
-    .diagonal_in = 2.16f,
-    .talk_button = "top right",
-    .aux_button = "top left",   /* BOOT and PWR, in captions and wake logs */
-    /* Keys along the top edge (USB-C below): BOOT, PWR, then GPIO18. No
-     * aux_hint: the volume keys don't sleep or power off, so there's no
+    .width = BSP_LCD_H_RES, .height = BSP_LCD_V_RES, .round = false, .touch = true, .diagonal_in = 2.16f,
+    .talk_button = "key", .aux_button = "boot",
+    /* The buttons are on the top edge: BOOT, PWR, KEY3 from the left, seen from
+     * the front. The talk icon sits between the edge and the ring, under KEY3.
+     * No aux_hint: the volume keys don't sleep or power off, so there's no
      * power icon to show. */
-    .talk_hint = { LV_ALIGN_TOP_MID, 150, 16 },
+    .talk_hint = { LV_ALIGN_TOP_MID, 113, 6 },
     .frame_ms = 40,
     .init = init,
     .display_start = display_start,
@@ -294,7 +301,8 @@ static const muse_board_t s_board = {
     .audio_init = audio_init,
     .mic_slot = -1,
     .set_mic_gain = set_mic_gain,
-    .poll_buttons = poll_buttons,   /* PWR is on the PMU, so it's polled */
+    .poll_buttons = poll_buttons,
+    .wait_buttons = wait_buttons,
     .read_power = muse_pmu_read_power,
     .power_off = muse_pmu_power_off,
 };

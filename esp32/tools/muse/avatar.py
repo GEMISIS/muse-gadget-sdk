@@ -64,6 +64,7 @@ BOARDS = {
     "Waveshare ESP32-S3-Touch-AMOLED-2.16": "s3-216",
     "AIPI Lite": "aipi",
     "Waveshare ESP32-C6-Touch-AMOLED-1.8": "c6",
+    "Waveshare ESP32-C6-Touch-AMOLED-2.06": "c6-206",
     "Seeed SenseCAP Watcher": "watcher",
     "M5Stack StickS3": "sticks3",
     "M5Stack Cardputer ADV": "cardputer-adv",

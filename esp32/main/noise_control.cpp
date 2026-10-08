@@ -1415,6 +1415,13 @@ static char *build_register_json(void) {
                 "humidity need the Grove AHT20 plugged in.",
                 nullptr, nullptr);
 #endif
+#if CONFIG_HOMEHUB_RETERMINAL_SHT4X
+    add_command(commands, "sensors.read",
+                "Read the onboard air sensor: temperature in degrees Celsius "
+                "and relative humidity in percent. Each reading has its age "
+                "in seconds; a sensor with no recent reading is null.",
+                nullptr, nullptr);
+#endif
 
 #if CONFIG_MUSE_WATCHER_CAMERA
     add_command(commands, "camera.capture",

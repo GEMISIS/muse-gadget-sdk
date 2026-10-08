@@ -36,7 +36,7 @@ menu "Muse"
             depends on IDF_TARGET_ESP32S3
 
         config MUSE_BOARD_WAVESHARE_S3_216
-            bool "Waveshare ESP32-S3-Touch-AMOLED-2.16 (480x480 AMOLED, touch, speaker and microphones)"
+            bool "Waveshare ESP32-S3-Touch-AMOLED-2.16"
             depends on IDF_TARGET_ESP32S3
 
         config MUSE_BOARD_AIPI
@@ -49,6 +49,10 @@ menu "Muse"
 
         config MUSE_BOARD_WAVESHARE_C6_18
             bool "Waveshare ESP32-C6-Touch-AMOLED-1.8"
+            depends on IDF_TARGET_ESP32C6
+
+        config MUSE_BOARD_WAVESHARE_C6_206
+            bool "Waveshare ESP32-C6-Touch-AMOLED-2.06"
             depends on IDF_TARGET_ESP32C6
 
         config MUSE_BOARD_SENSECAP_WATCHER
@@ -104,6 +108,7 @@ menu "Muse"
         default "aipi" if MUSE_BOARD_AIPI
         default "espressif_box_3" if MUSE_BOARD_ESPRESSIF_BOX_3
         default "waveshare_c6_18" if MUSE_BOARD_WAVESHARE_C6_18
+        default "waveshare_c6_206" if MUSE_BOARD_WAVESHARE_C6_206
         default "sensecap_watcher" if MUSE_BOARD_SENSECAP_WATCHER
         default "m5stack_sticks3" if MUSE_BOARD_M5STACK_STICKS3
         default "m5stack_stickc_plus2" if MUSE_BOARD_M5STACK_STICKC_PLUS2
