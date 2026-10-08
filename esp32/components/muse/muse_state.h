@@ -48,6 +48,19 @@ void muse_state_init(void);
 void muse_state_set_mode(muse_mode_t mode);
 muse_mode_t muse_state_mode(float *secs_in_mode);
 
+/* How far a turn waiting on Muse (THINKING) has got, for the face to show in
+ * place of a caption (muse_pixel.h's acts): the note going up, there (sent,
+ * or its words heard), then the answer's words in. Each change of mode
+ * starts it over at SENDING. */
+typedef enum {
+    MUSE_TURN_SENDING,
+    MUSE_TURN_SENT,
+    MUSE_TURN_ANSWERED,
+} muse_turn_t;
+
+void muse_state_set_turn(muse_turn_t turn);
+muse_turn_t muse_state_turn(void);
+
 /* Live audio level (mic while listening, playback while speaking), 0..1. */
 void muse_state_set_level(float level);
 float muse_state_level(void);

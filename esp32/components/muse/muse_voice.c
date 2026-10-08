@@ -444,6 +444,11 @@ static bool hatch_reply(bool *delivered)
             } else if (ev == MUSE_HATCH_EV_DONE) {
                 muse_up_next_turn_done();
             }
+            /* The face's phone (muse_state_turn): to his ear once the note's there. */
+            if ((ev == MUSE_HATCH_EV_HEARD || ev == MUSE_HATCH_EV_SENT || ev == MUSE_HATCH_EV_IMAGE)
+                && muse_state_turn() == MUSE_TURN_SENDING) {
+                muse_state_set_turn(MUSE_TURN_SENT);
+            }
             switch (ev) {
             case MUSE_HATCH_EV_HEARD:
                 if (!speaking && !replied) {
@@ -453,11 +458,16 @@ static bool hatch_reply(bool *delivered)
             case MUSE_HATCH_EV_SENT:
                 *delivered = true;
                 if (!speaking && !replied) {
+#if CONFIG_MUSE_GADGET_HOME_EXTRAS
+                    muse_state_set_caption("%s", "");   /* Muse's phone says it */
+#else
                     muse_state_set_caption("NOTE SENT - WAITING FOR MUSE");
+#endif
                 }
                 break;
             case MUSE_HATCH_EV_REPLY:
                 replied = *delivered = true;
+                muse_state_set_turn(MUSE_TURN_ANSWERED);
                 /* Once speech starts, the caption follows it. The event only
                  * has room for the page's start; the page itself comes below. */
                 if (!speaking && !muse_hatch_turn_caption(played, page, sizeof(page))) {
@@ -845,9 +855,11 @@ static bool send_held(bool quiet)
         drop_oldest();
         s_next_send_us = 0;   /* the next one right away */
         s_send_backoff_us = RETRY_MIN_US;
+#if !CONFIG_MUSE_GADGET_HOME_EXTRAS
         if (quiet) {
             muse_state_set_caption("SAVED NOTE SENT");
         }
+#endif
         return interrupted;
     } else if (++h->tries >= HELD_TRIES) {
         ESP_LOGW(TAG, "giving up on a saved note after %d tries", h->tries);

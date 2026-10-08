@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
@@ -38,6 +39,10 @@
 #include "muse_console.h"
 #include "muse_gadget_mode.h"
 #include "muse_home_extras.h"
+#if CONFIG_MUSE_GADGET_EXTRAS
+#include "muse_extras.h"
+#include "muse_imu.h"
+#endif
 #if CONFIG_MUSE_GADGET_CHATS
 #include "muse_chats_ui.h"
 #endif
@@ -677,6 +682,74 @@ static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t co
     return l;
 }
 
+#if CORNERS
+/*
+ * Fades with the face's readouts: captions and the page dots come and go
+ * over FADE_MS rather than popping. A fade to nothing can hide what it
+ * faded (fade_hide).
+ */
+#define FADE_MS 250
+
+static void fade_opa(void *obj, int32_t v)
+{
+    lv_obj_set_style_opa(obj, (lv_opa_t)v, 0);
+}
+
+static void fade_to(lv_obj_t *o, lv_opa_t to, lv_anim_completed_cb_t done)
+{
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, o);
+    lv_anim_set_exec_cb(&a, fade_opa);
+    lv_anim_set_values(&a, lv_obj_get_style_opa(o, 0), to);
+    lv_anim_set_duration(&a, FADE_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+    lv_anim_set_completed_cb(&a, done);
+    lv_anim_start(&a);   /* in place of one still going */
+}
+
+static void fade_hide(lv_anim_t *a)
+{
+    lv_obj_add_flag(a->var, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(a->var, "");
+}
+
+/* A caption label to `text`: fading in, or out keeping its words till it's gone. */
+static void caption_fade(lv_obj_t *lbl, const char *text)
+{
+    bool shown = !lv_obj_has_flag(lbl, LV_OBJ_FLAG_HIDDEN);
+    if (!text[0]) {
+        if (shown) {
+            fade_to(lbl, LV_OPA_TRANSP, fade_hide);
+        }
+        return;
+    }
+    if (strcmp(lv_label_get_text(lbl), text) != 0) {
+        lv_label_set_text(lbl, text);
+    }
+    if (!shown) {
+        lv_obj_set_style_opa(lbl, LV_OPA_TRANSP, 0);
+        lv_obj_remove_flag(lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (!shown || lv_anim_get(lbl, fade_opa) || lv_obj_get_style_opa(lbl, 0) != LV_OPA_COVER) {
+        fade_to(lbl, LV_OPA_COVER, NULL);
+    }
+}
+
+/* Captions that only say how a turn's going, which Muse's acts show instead
+ * (pose_act): muse_voice.c's, and muse_chat_session.cpp's IMG_CAPTION. */
+static bool status_caption(const char *c)
+{
+    static const char *const STATUS[] = { "SENDING VOICE NOTE", "SENDING SAVED NOTE", "GETTING THE IMAGE..." };
+    for (size_t i = 0; i < sizeof(STATUS) / sizeof(STATUS[0]); i++) {
+        if (!strncmp(c, STATUS[i], strlen(STATUS[i]))) {
+            return true;
+        }
+    }
+    return false;
+}
+#endif
+
 static void show_speaker(bool on)
 {
     /* Off is the one that stands out, like a lit flashlight button. */
@@ -808,7 +881,7 @@ static void set_answer(int which)
             lv_obj_add_flag(l->hides[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (!muse_board->round) {
+    if (s_ring && !muse_board->round) {
         lv_obj_set_flag(s_ring, LV_OBJ_FLAG_HIDDEN, l != NULL);   /* the reply runs past a rectangle's ring */
     }
     if (l) {
@@ -1180,8 +1253,9 @@ static void build_screen(void)
         face = s_face;
     }
 
-    if (!s_small) {
-        /* Progress ring around the bezel. */
+    if (!s_small && !CORNERS) {
+        /* Progress ring around the bezel. With the face's readouts there's
+         * none: Muse's acts (muse_pose_t.act) say how a turn's going. */
         int d = (s_w < s_h ? s_w : s_h) - 8;
         s_ring = lv_arc_create(face);
         lv_obj_set_size(s_ring, d, d);
@@ -1312,6 +1386,7 @@ static void build_screen(void)
     lv_obj_set_style_text_line_space(s_caption_lbl, CAPTION_LINE_SPACE, 0);
     lv_label_set_long_mode(s_caption_lbl, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_align(s_caption_lbl, LV_ALIGN_CENTER, 0, cap_top + cap_h / 2);
+    lv_obj_set_flag(s_caption_lbl, LV_OBJ_FLAG_HIDDEN, CORNERS);   /* faded in with its first words */
 
     /* Chunky level meter. */
     int span = METER_SEGS * (METER_SEG_PX + METER_GAP_PX) - METER_GAP_PX;
@@ -1403,10 +1478,33 @@ static void on_camera_hint_clicked(lv_event_t *e)
 }
 #endif
 
+#if CORNERS
+/* The page dots, on the face, fade out DOTS_S after the last touch or swipe,
+ * and back in with the next; elsewhere they stay. */
+#define DOTS_S 3.0f
+static float s_touch_at;
+static bool s_dots_shown = true;
+
+static void dots_show(bool show)
+{
+    if (show == s_dots_shown || !s_tv) {
+        return;
+    }
+    s_dots_shown = show;
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        fade_to(s_dots[i], show ? LV_OPA_COVER : LV_OPA_TRANSP, NULL);
+    }
+}
+#endif
+
 static void on_any_press(lv_event_t *e)
 {
     (void)e;
     muse_state_poke();
+#if CORNERS
+    s_touch_at = (float)esp_timer_get_time() / 1e6f;
+    dots_show(true);
+#endif
 }
 
 static void photo_px_free(photo_px_t *p)
@@ -1994,6 +2092,10 @@ static void update_chrome(float now)
             }
             s_shown_page = shown;
         }
+#if CORNERS
+        bool touched = now - s_touch_at < DOTS_S || (s_indev && lv_indev_get_state(s_indev) == LV_INDEV_STATE_PRESSED);
+        dots_show(touched || active != s_face || lv_obj_get_scroll_x(s_tv) != FACE_COL * s_w);
+#endif
         muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > FACE_COL * s_w);
 #if CONFIG_MUSE_GADGET_CHATS
         muse_chats_ui_tick(lv_obj_get_scroll_x(s_tv) < FACE_COL * s_w);
@@ -2159,7 +2261,7 @@ static void update_status(muse_mode_t mode, float now)
         lv_obj_set_style_text_color(s_state_lbl, lv_color_hex(CORNERS ? COLOR_DIM : accent), 0);
         if (s_ring) {
             lv_obj_set_style_arc_color(s_ring, lv_color_hex(accent), LV_PART_INDICATOR);
-        } else {
+        } else if (s_bar) {
             lv_obj_set_style_bg_color(s_bar, lv_color_hex(accent), 0);
         }
         set_mic_color(mode == MUSE_MODE_LISTENING ? accent : COLOR_DIM);   /* lights up while recording */
@@ -2196,7 +2298,7 @@ static void update_status(muse_mode_t mode, float now)
             lv_arc_set_value(s_ring, ring);
             s_ring_value = ring;
         }
-    } else {
+    } else if (s_bar) {
         /* Bar along the bottom edge; a sliding segment while thinking. */
         int x = mode == MUSE_MODE_THINKING ? (int)(now * s_w) % s_w : 0;
         int w = ring * s_w / RING_RANGE;
@@ -2251,11 +2353,16 @@ static void update_status(muse_mode_t mode, float now)
             lv_obj_set_style_text_font(s_caption_lbl, muse_text_has_cjk(caption) ? caption_font() : &lv_font_unscii_8, 0);
         }
 #endif
+#if CORNERS
+        caption_fade(lbl, status_caption(caption) ? "" : caption);
+        caption_fade(answer >= 0 ? s_caption_lbl : s_reply_lbl, "");
+#else
         lv_label_set_text(lbl, caption);
         lv_obj_set_flag(lbl, LV_OBJ_FLAG_HIDDEN, !caption[0]);
         if (s_reply_lbl) {
             lv_obj_add_flag(answer >= 0 ? s_caption_lbl : s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
         }
+#endif
     }
     update_power(now);
 }
@@ -2281,26 +2388,56 @@ static void update_night(void)
 /*
  * The earthquake (muse_ui_quake): Muse jitters around where it stands, less
  * and less, then stays dizzy a moment. A request is only taken at a frame
- * that draws the face, idle; otherwise it's dropped.
+ * that draws the face, idle; otherwise it's dropped. While the board's still
+ * being shaken (muse_imu_shaking) he braces (muse_pose_t.brace, eased over
+ * BRACE_IN_S and BRACE_OUT_S), the quake held at its start, and the dizzy
+ * comes after.
  */
 #define QUAKE_S 1.5f
 #define DIZZY_S 2.3f            /* dizzy from the start until this */
 #define QUAKE_PX 12
+#define BRACE_IN_S 0.15f
+#define BRACE_OUT_S 0.4f
 
 static volatile bool s_quake_req;
 static float s_quake_at = -100.0f;
 static bool s_quaking;
+static volatile muse_ui_bench_t s_bench;   /* muse_ui_bench_pose */
 
 void muse_ui_quake(void)
 {
     s_quake_req = true;
 }
 
-/* Moves Muse for the quake; returns how dizzy it is, 0..1. */
-static float update_quake(muse_mode_t mode, float now, bool asked)
+void muse_ui_bench_pose(muse_ui_bench_t what)
+{
+    s_bench = what;
+}
+
+/* How braced Muse is, 0..1; *shaken while it's being shaken now. */
+static float update_brace(muse_mode_t mode, float now, bool *shaken)
+{
+    static float brace, last;
+    float dt = now - last;
+    last = now;
+    *shaken = false;
+#if CONFIG_MUSE_GADGET_IMU
+    *shaken = mode == MUSE_MODE_IDLE && !photo_shown() && muse_imu_shaking() > 0.0f;
+#endif
+    bool want = *shaken || (s_bench == MUSE_UI_BENCH_BRACE && mode == MUSE_MODE_IDLE);
+    brace += want ? dt / BRACE_IN_S : -dt / BRACE_OUT_S;
+    brace = brace < 0 ? 0 : brace > 1 ? 1 : brace;
+    return ease_in_out(brace);
+}
+
+/* Moves Muse for the quake; returns how dizzy it is, 0..1, `brace` taking its place. */
+static float update_quake(muse_mode_t mode, float now, bool asked, bool shaken, float brace)
 {
     if (asked && mode == MUSE_MODE_IDLE) {
         s_quake_at = now;
+    }
+    if (shaken && now - s_quake_at < DIZZY_S) {
+        s_quake_at = now;   /* still going: the settling and the dizzy wait */
     }
     float qt = now - s_quake_at;
     if (mode == MUSE_MODE_IDLE && qt < QUAKE_S) {
@@ -2320,7 +2457,7 @@ static float update_quake(muse_mode_t mode, float now, bool asked)
     if (qt >= DIZZY_S) {
         return 0.0f;
     }
-    return qt < QUAKE_S ? 1.0f : 1.0f - (qt - QUAKE_S) / (DIZZY_S - QUAKE_S);
+    return (qt < QUAKE_S ? 1.0f : 1.0f - (qt - QUAKE_S) / (DIZZY_S - QUAKE_S)) * (1.0f - brace);
 }
 
 /*
@@ -2362,10 +2499,14 @@ static float update_plugged(muse_mode_t mode, float now, bool face)
  * its own): tired as it runs down under TIRED_PCT, the most at
  * TIRED_FULL_PCT, unless charging or in bed; and the level on his belly
  * while charging (or on USB power, full), or for BELLY_PAT_S after a pat.
+ * With the face's readouts, not all the time on charge: BELLY_PLUG_S once
+ * plugged in, and while it's low (BELLY_LOW_PCT or less).
  */
 #define TIRED_PCT 40
 #define TIRED_FULL_PCT 10
 #define BELLY_PAT_S 3.0f
+#define BELLY_PLUG_S 4.0f
+#define BELLY_LOW_PCT 20
 
 static volatile int s_fake_batt = -1;   /* ">batt=": 0..100, +0x100 charging; -1 for the real one */
 
@@ -2395,11 +2536,119 @@ static void pose_battery(muse_pose_t *pose, float now)
     pose->battery = true;
     pose->battery_pct = p.battery_pct;
     pose->charging = p.charging || p.usb;
+#if CORNERS
+    static float plugged_at = -100.0f;
+    static bool was_charging;
+    if (pose->charging && !was_charging) {
+        plugged_at = now;
+    }
+    was_charging = pose->charging;
+    pose->belly = now - plugged_at < BELLY_PLUG_S || now - patted_at < BELLY_PAT_S || p.battery_pct <= BELLY_LOW_PCT;
+#else
     pose->belly = pose->charging || now - patted_at < BELLY_PAT_S;
+#endif
     if (!pose->charging && !pose->bed && p.battery_pct < TIRED_PCT) {
         float f = (float)(TIRED_PCT - p.battery_pct) / (TIRED_PCT - TIRED_FULL_PCT);
         pose->tired = f < 1.0f ? f : 1.0f;
     }
+}
+
+/*
+ * What Muse is busy with in a turn (muse_pose_t.act), with the face's
+ * readouts, in place of the captions that said it (status_caption): talking
+ * into his phone while the note goes up (PHONE_TALK_S at least, to read),
+ * then the phone to his ear till the answer's words come (muse_state_turn),
+ * and hauling boxes while an image the reply waits for comes down.
+ */
+#define PHONE_TALK_S 1.2f
+#define BENCH_BOXES_S 6.0f      /* ">face=packages": the boxes' count goes round this often */
+
+static void pose_act(muse_pose_t *pose, muse_mode_t mode, float mode_t, float now)
+{
+#if CORNERS
+    static muse_act_t act;
+    static float act_at;
+    muse_ui_bench_t bench = s_bench;
+    muse_act_t want = MUSE_ACT_NONE;
+    float progress = -1.0f;
+    if (mode == MUSE_MODE_THINKING && pose->reach <= 0.0f && !pose->holding) {
+        int image = -1;
+#if CONFIG_MUSE_HATCH
+        image = muse_present_progress();
+#endif
+        muse_turn_t turn = muse_state_turn();
+        if (bench == MUSE_UI_BENCH_PACKAGES) {
+            want = MUSE_ACT_PACKAGES;
+            progress = fmodf(now / BENCH_BOXES_S, 1.0f);
+        } else if (bench == MUSE_UI_BENCH_PHONE) {
+            want = MUSE_ACT_PHONE_TALK;
+        } else if (bench == MUSE_UI_BENCH_LISTEN_PHONE) {
+            want = MUSE_ACT_PHONE_LISTEN;
+        } else if (image >= 0 && image < 100) {
+            want = MUSE_ACT_PACKAGES;
+            progress = image / 100.0f;
+        } else if (turn == MUSE_TURN_SENDING || (turn == MUSE_TURN_SENT && mode_t < PHONE_TALK_S)) {
+            want = MUSE_ACT_PHONE_TALK;
+        } else if (turn == MUSE_TURN_SENT) {
+            want = MUSE_ACT_PHONE_LISTEN;
+        }
+    }
+    if (want != act) {
+        act = want;
+        act_at = now;
+    }
+    pose->act = act;
+    pose->act_t = now - act_at;
+    pose->act_progress = progress;
+#else
+    (void)mode;
+    (void)mode_t;
+    (void)now;
+    pose->act_progress = -1.0f;
+#endif
+}
+
+/*
+ * The time of day on Muse (muse_pose_t.tea, .pajamas), with the face's
+ * readouts and the clock set: idle and up, a cup of tea from TEA_FROM_MIN to
+ * TEA_TO_MIN; pajamas from PAJAMAS_EARLY_MIN before the Night window until
+ * it ends, and in bed on the Night face.
+ */
+#define TEA_FROM_MIN (6 * 60)
+#define TEA_TO_MIN (10 * 60 + 30)
+#define PAJAMAS_EARLY_MIN 60
+
+#if CONFIG_MUSE_GADGET_HOME_EXTRAS
+/* Whether minute `m` of the day is in [from, to), across midnight or not. */
+static bool in_window(int m, int from, int to)
+{
+    return from <= to ? m >= from && m < to : m >= from || m < to;
+}
+#endif
+
+static void pose_time(muse_pose_t *pose, muse_mode_t mode)
+{
+    muse_ui_bench_t bench = s_bench;
+    if (bench == MUSE_UI_BENCH_TEA || bench == MUSE_UI_BENCH_PAJAMAS) {
+        pose->tea = bench == MUSE_UI_BENCH_TEA && mode == MUSE_MODE_IDLE;
+        pose->pajamas = bench == MUSE_UI_BENCH_PAJAMAS;
+        return;
+    }
+#if CONFIG_MUSE_GADGET_HOME_EXTRAS
+    int m = -1;
+    if (muse_time_valid()) {
+        time_t t = time(NULL);
+        struct tm tm;
+        localtime_r(&t, &tm);
+        m = tm.tm_hour * 60 + tm.tm_min;
+    }
+    int from, to;
+    muse_gadget_mode_night(&from, &to);
+    pose->pajamas = s_night || (m >= 0 && in_window(m, (from - PAJAMAS_EARLY_MIN + 24 * 60) % (24 * 60), to));
+    pose->tea = mode == MUSE_MODE_IDLE && !s_night && m >= 0 && in_window(m, TEA_FROM_MIN, TEA_TO_MIN);
+#else
+    (void)mode;
+#endif
 }
 
 static volatile bool s_snapshot;
@@ -2501,6 +2750,8 @@ static void frame_tick(lv_timer_t *timer)
     s_level += (level - s_level) * (level > s_level ? 0.6f : 0.2f);
 
     update_night();
+    bool shaken;
+    float brace = update_brace(mode, now, &shaken);
     muse_pose_t pose = {
         .mode = mode,
         .t = now,
@@ -2508,17 +2759,20 @@ static void frame_tick(lv_timer_t *timer)
         .level = s_level,
         .happy = muse_state_happiness(),
         .bed = s_night && !photo_shown(),   /* up out of bed to show it */
-        .dizzy = update_quake(mode, now, quake && !photo_shown()),
+        .dizzy = update_quake(mode, now, quake && !photo_shown(), shaken, brace),
         .reach = reach,
         .holding = holding,
         .plugged = update_plugged(mode, now, !photo_shown()),
+        .brace = brace,
     };
     pose_battery(&pose, now);
     pose.offline = s_offline;
+    pose_act(&pose, mode, mode_t, now);
+    pose_time(&pose, mode);
     /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
      * (or an earthquake, or being plugged in). */
     pose.sleepy = pose.bed && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f
-                  && pose.plugged <= 0.0f;
+                  && pose.plugged <= 0.0f && pose.brace <= 0.0f;
     muse_pixel_render(&pose);
     invalidate_muse();
 

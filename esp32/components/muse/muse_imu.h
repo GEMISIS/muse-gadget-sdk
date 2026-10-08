@@ -33,7 +33,7 @@ extern "C" {
  *   - double tap: wakes the screen
  *   - picked up or tilted (CONFIG_MUSE_GADGET_MOTION_WAKE): wakes the screen
  *   - shaken hard while idle: an earthquake on the face (muse_ui_quake):
- *     Muse jitters about and goes dizzy for a moment
+ *     Muse braces while it lasts (muse_imu_shaking), then goes dizzy
  *   - steps: the chip's count, reset at local midnight, kept in NVS
  */
 
@@ -53,9 +53,13 @@ int muse_imu_steps(void);
  * second and a half: which way up it is, as the axis pointing up reads +1 g.
  * False until it has. Any task. */
 bool muse_imu_gravity(float out[3]);
+/* Being shaken hard right now, screen on: 1 at a jolt, easing to 0 within
+ * half a second of the last (muse_pose_t.brace). Any task. */
+float muse_imu_shaking(void);
 #else
 static inline int muse_imu_steps(void) { return -1; }
 static inline bool muse_imu_gravity(float out[3]) { (void)out; return false; }
+static inline float muse_imu_shaking(void) { return 0.0f; }
 #endif
 
 #ifdef __cplusplus

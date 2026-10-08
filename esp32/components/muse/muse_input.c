@@ -673,7 +673,9 @@ static void chat_cancel(void)
 /*
  * Bench: puts the face in a mode ("face=thinking") until the voice path or
  * another "face=" moves it on. "face=happy" goes back to idle with the happy
- * hop, as a finished turn does.
+ * hop, as a finished turn does. The rest are what Muse is up to
+ * (muse_ui_bench_pose), held until the next "face=": "phone", "listen_phone"
+ * and "packages" thinking, "tea", "pajamas" and "brace" idle.
  */
 static void set_face(const char *name)
 {
@@ -686,22 +688,46 @@ static void set_face(const char *name)
         [MUSE_MODE_ERROR] = "error",
         [MUSE_MODE_OFF] = "off",
     };
+    static const struct {
+        const char *name;
+        muse_ui_bench_t what;
+        const char *mode;
+    } poses[] = {
+        { "phone", MUSE_UI_BENCH_PHONE, "thinking" },
+        { "listen_phone", MUSE_UI_BENCH_LISTEN_PHONE, "thinking" },
+        { "packages", MUSE_UI_BENCH_PACKAGES, "thinking" },
+        { "tea", MUSE_UI_BENCH_TEA, "idle" },
+        { "pajamas", MUSE_UI_BENCH_PAJAMAS, "idle" },
+        { "brace", MUSE_UI_BENCH_BRACE, "idle" },
+    };
     muse_state_poke();
+    muse_ui_bench_t pose = MUSE_UI_BENCH_NONE;
+    for (size_t i = 0; i < sizeof(poses) / sizeof(poses[0]); i++) {
+        if (!strcmp(name, poses[i].name)) {
+            pose = poses[i].what;
+            name = poses[i].mode;
+        }
+    }
     bool happy = !strcmp(name, "happy");
     if (happy) {
         name = "idle";   /* where a finished turn hops to */
     }
     for (int m = 0; m < MUSE_MODE_COUNT; m++) {
         if (!strcmp(name, modes[m])) {
+            muse_ui_bench_pose(pose);
             muse_state_set_mode(MUSE_MODE_IDLE);   /* only idle leaves "off" */
             muse_state_set_mode((muse_mode_t)m);
+            if (m == MUSE_MODE_THINKING && pose == MUSE_UI_BENCH_NONE) {
+                muse_state_set_turn(MUSE_TURN_ANSWERED);   /* just thinking: no note on its way */
+            }
             if (happy) {
                 muse_state_make_happy();
             }
             return;
         }
     }
-    printf("@face.error unknown face \"%s\": boot idle listening thinking speaking error off happy\n", name);
+    printf("@face.error unknown face \"%s\": boot idle listening thinking speaking error off happy"
+           " phone listen_phone packages tea pajamas brace\n", name);
     fflush(stdout);
 }
 
