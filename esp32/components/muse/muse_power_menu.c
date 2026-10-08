@@ -27,22 +27,21 @@
 #include "muse_input.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#include "muse_style.h"
 #include "muse_voice.h"
 
 static const char *TAG = "muse_power_menu";
-
-#define COLOR_TEXT 0xf2efff
-#define COLOR_DIM 0x8b84a8
-#define COLOR_CARD 0x1a1530
-#define COLOR_SELECTED 0x2e2552
-#define COLOR_ACCENT 0xa77dff
-#define COLOR_DANGER 0xff5c5c
 
 #define VOLUME_SHOW_S 1.5f      /* the volume bar, after the last step */
 #define IDLE_CLOSE_S 15.0f      /* the menu, left alone */
 #define KEY_QUEUE 8
 #define CARD_W 300
-#define ITEM_H 52
+/* The keys' hint: the cards' text on the 2.16, as it was elsewhere. */
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_216
+#define FONT_HINT MUSE_FONT_NOTE
+#else
+#define FONT_HINT (&lv_font_montserrat_14)
+#endif
 
 enum { ITEM_SLEEP, ITEM_POWER_OFF, ITEM_RESTART, ITEM_CANCEL, ITEM_COUNT };
 
@@ -54,10 +53,10 @@ static const char *const ITEM_TEXT[ITEM_COUNT] = {
 };
 
 static const uint32_t ITEM_COLOR[ITEM_COUNT] = {
-    [ITEM_SLEEP] = COLOR_ACCENT,
-    [ITEM_POWER_OFF] = COLOR_DANGER,
-    [ITEM_RESTART] = COLOR_TEXT,
-    [ITEM_CANCEL] = COLOR_TEXT,
+    [ITEM_SLEEP] = MUSE_COLOR_ACCENT,
+    [ITEM_POWER_OFF] = MUSE_COLOR_DANGER,
+    [ITEM_RESTART] = MUSE_COLOR_TEXT,
+    [ITEM_CANCEL] = MUSE_COLOR_TEXT,
 };
 
 /* Written by the input task, read by the LVGL task. */
@@ -106,8 +105,8 @@ static void highlight(void)
 {
     for (int i = 0; i < ITEM_COUNT; i++) {
         bool sel = i == s_sel;
-        lv_obj_set_style_bg_color(s_items[i], lv_color_hex(sel ? COLOR_SELECTED : COLOR_CARD), 0);
-        lv_obj_set_style_border_width(s_items[i], sel ? 2 : 0, 0);
+        lv_obj_set_style_bg_color(s_items[i], lv_color_hex(sel ? MUSE_COLOR_RAISED_PRESSED : MUSE_COLOR_CARD_PRESSED), 0);
+        lv_obj_set_style_border_width(s_items[i], sel ? MUSE_CARD_BORDER : 0, 0);
     }
 }
 
@@ -162,93 +161,55 @@ static void on_backdrop(lv_event_t *e)
 
 static void build_menu(lv_obj_t *layer, int w)
 {
-    /* Dims the face and takes every tap while the menu is up. */
-    s_backdrop = lv_obj_create(layer);
-    lv_obj_remove_style_all(s_backdrop);
-    lv_obj_set_size(s_backdrop, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(s_backdrop, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(s_backdrop, LV_OPA_60, 0);
-    lv_obj_add_flag(s_backdrop, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(s_backdrop, LV_OBJ_FLAG_SCROLLABLE);
+    (void)w;   /* muse_style_backdrop keeps the card inside the screen */
+    /* Dims the face and takes every tap while the menu is up: a dialog's
+     * card (muse_dialog.h), its items the dialog's options. */
+    lv_obj_t *card;
+    s_backdrop = muse_style_backdrop(layer, CARD_W, &card);
+    lv_obj_add_flag(s_backdrop, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(s_backdrop, on_backdrop, LV_EVENT_CLICKED, NULL);
 
-    lv_obj_t *card = lv_obj_create(s_backdrop);
-    lv_obj_remove_style_all(card);
-    lv_obj_set_size(card, w - 32 < CARD_W ? w - 32 : CARD_W, LV_SIZE_CONTENT);
-    lv_obj_center(card);
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(card, 16, 0);
-    lv_obj_set_style_pad_row(card, 8, 0);
-    lv_obj_set_style_radius(card, 24, 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(card, lv_color_hex(0x120e22), 0);
-    lv_obj_set_style_border_color(card, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_set_style_border_width(card, 2, 0);
-    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);   /* a tap on the card itself isn't "beside" it */
-    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t *title = lv_label_create(card);
-    lv_obj_set_style_text_font(title, &lv_font_unscii_16, 0);
-    lv_obj_set_style_text_color(title, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_set_style_text_letter_space(title, 2, 0);
-    lv_label_set_text(title, "POWER");
+    muse_style_label(card, MUSE_FONT_CARD_TITLE, MUSE_COLOR_TEXT, "Power");
 
     for (int i = 0; i < ITEM_COUNT; i++) {
-        lv_obj_t *b = lv_button_create(card);
-        lv_obj_remove_style_all(b);
-        lv_obj_set_size(b, lv_pct(100), ITEM_H);
-        lv_obj_set_style_radius(b, 18, 0);
-        lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_CARD), 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(COLOR_SELECTED), LV_STATE_PRESSED);
-        lv_obj_set_style_border_color(b, lv_color_hex(COLOR_ACCENT), 0);
+        lv_obj_t *b = muse_style_row(card, true, true);
+        lv_obj_set_height(b, MUSE_BUTTON_H);
+        lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_border_color(b, lv_color_hex(MUSE_COLOR_ACCENT), 0);
         lv_obj_add_event_cb(b, on_item, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-        lv_obj_t *l = lv_label_create(b);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_20, 0);
-        lv_obj_set_style_text_color(l, lv_color_hex(ITEM_COLOR[i]), 0);
-        lv_label_set_text(l, ITEM_TEXT[i]);
-        lv_obj_center(l);
+        muse_style_label(b, MUSE_FONT_BUTTON, ITEM_COLOR[i], ITEM_TEXT[i]);
         s_items[i] = b;
     }
 
-    s_hint = lv_label_create(card);
+    s_hint = muse_style_label(card, FONT_HINT, MUSE_COLOR_DIM, "");
     lv_obj_set_width(s_hint, lv_pct(100));
-    lv_obj_set_style_text_font(s_hint, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(s_hint, lv_color_hex(COLOR_DIM), 0);
     lv_obj_set_style_text_align(s_hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(s_hint, LV_LABEL_LONG_MODE_WRAP);
     muse_power_menu_set_turn(0);
 }
 
+/* A card as the dialogs' are, a little see-through, over the top of the face. */
 static void build_volume(lv_obj_t *layer, int w, int h)
 {
     s_volume = lv_obj_create(layer);
     lv_obj_remove_style_all(s_volume);
     lv_obj_set_size(s_volume, w - 32 < 280 ? w - 32 : 280, LV_SIZE_CONTENT);
     lv_obj_align(s_volume, LV_ALIGN_TOP_MID, 0, h / 6);
+    muse_style_card(s_volume);
+    lv_obj_set_style_bg_opa(s_volume, LV_OPA_90, 0);
+    lv_obj_set_style_pad_row(s_volume, 10, 0);
     lv_obj_set_flex_flow(s_volume, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_volume, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_all(s_volume, 14, 0);
-    lv_obj_set_style_pad_row(s_volume, 10, 0);
-    lv_obj_set_style_radius(s_volume, 20, 0);
-    lv_obj_set_style_bg_opa(s_volume, LV_OPA_90, 0);
-    lv_obj_set_style_bg_color(s_volume, lv_color_hex(COLOR_CARD), 0);
-    lv_obj_set_style_border_color(s_volume, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_set_style_border_width(s_volume, 2, 0);
     lv_obj_remove_flag(s_volume, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(s_volume, LV_OBJ_FLAG_HIDDEN);
 
-    s_volume_lbl = lv_label_create(s_volume);
-    lv_obj_set_style_text_font(s_volume_lbl, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(s_volume_lbl, lv_color_hex(COLOR_TEXT), 0);
-    lv_label_set_text(s_volume_lbl, "");
+    s_volume_lbl = muse_style_label(s_volume, MUSE_FONT_CARD_TITLE, MUSE_COLOR_TEXT, "");
 
     s_volume_bar = lv_bar_create(s_volume);
     lv_obj_set_size(s_volume_bar, lv_pct(100), 12);
     lv_bar_set_range(s_volume_bar, 0, 100);
-    lv_obj_set_style_bg_color(s_volume_bar, lv_color_hex(0x2a2345), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_volume_bar, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(s_volume_bar, lv_color_hex(MUSE_COLOR_TRACK), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_volume_bar, lv_color_hex(MUSE_COLOR_ACCENT), LV_PART_INDICATOR);
 }
 
 void muse_power_menu_set_turn(int quarters)
