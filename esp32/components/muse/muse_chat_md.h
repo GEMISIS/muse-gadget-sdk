@@ -46,7 +46,9 @@ typedef struct {
 } muse_chat_image_t;
 
 /* The workspace file a reference names: past "sandbox://", or past
- * "/media/raw/" in the URL the VM serves it at. NULL if neither. */
+ * "/media/raw/" in the URL the VM serves it at. Otherwise an http(s) URL
+ * on the web, whole (Muse fetches it to push it: muse_present_ask). NULL
+ * if none of those. */
 static inline const char *muse_chat_image_file(const char *ref)
 {
     if (!ref) {
@@ -56,7 +58,13 @@ static inline const char *muse_chat_image_file(const char *ref)
         return ref[10] ? ref + 10 : NULL;
     }
     const char *raw = strstr(ref, "/media/raw/");
-    return raw && raw[11] ? raw + 11 : NULL;
+    if (raw) {
+        return raw[11] ? raw + 11 : NULL;
+    }
+    if ((!strncmp(ref, "https://", 8) && ref[8]) || (!strncmp(ref, "http://", 7) && ref[7])) {
+        return ref;
+    }
+    return NULL;
 }
 
 /*

@@ -378,12 +378,14 @@ static void ask_tick(void)
                      "First, quietly delete the chat with session id %s (an earlier one of these); don't "
                      "mention it. Then: ", s_ask_prev);
     }
+    /* A file in Muse's workspace (generated), or an image on the web it fetches first. */
+    bool web = !strncmp(path, "http://", 7) || !strncmp(path, "https://", 8);
     snprintf(msg + n, sizeof(msg) - n,
-             "Send the image at \"%s\" (\"%s\") to this gadget with display.show_image: first make a copy "
+             "%s the image at \"%s\" (\"%s\") %sto this gadget with display.show_image: first make a copy "
              "scaled to 240x240 (keep the aspect, fit inside), saved as a baseline JPEG at about 70%% quality, "
              "under 16 KiB, then send that copy in one chunk (offset 0, final=true), or in chunks of up to 16 KiB if it "
              "won't fit. Don't create links. Reply with just: sent.",
-             path, label);
+             web ? "Download" : "Send", path, label, web ? "and send it " : "");
     new_sid(s_ask_sid);
     if (!muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_IMAGE, s_ask_sid, msg)) {
         return;   /* someone else's request is under way, or a turn: next time */
