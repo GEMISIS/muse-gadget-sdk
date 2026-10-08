@@ -1778,7 +1778,10 @@ static void on_event(cJSON *line)
              * only a title that still reads like a placeholder asks again. */
             bool by_voice = started && !strcmp(sid, s_voice_new_sid);
             if (by_voice || strcasestr(title, "audio file") || strcasestr(title, "session title")) {
+                muse_settings_chat_set_titling(sid);   /* "Title generating..." meanwhile */
                 muse_gadget_mode_retitle(sid);
+            } else {
+                muse_settings_chat_titled(sid);   /* a real title: no more "Title generating..." */
             }
             if (by_voice) {
                 s_voice_new_sid[0] = '\0';

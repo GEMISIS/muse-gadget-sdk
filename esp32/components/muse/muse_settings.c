@@ -60,6 +60,7 @@ static struct {
     uint32_t chats_gen;                        /* bumped when the list or the pick changes */
     bool chats_dirty;                          /* retitled: save_chats() is due (muse_settings_chats_flush) */
     char new_sid[MUSE_CHAT_SID_MAX + 1];       /* the new chat picked, until the Muse titles it (RAM only) */
+    char titling_sid[MUSE_CHAT_SID_MAX + 1];   /* waiting on a real title (muse_settings_chat_set_titling) */
     /* The gadget mode each chat last heard (muse_settings_chat_told), -1 for none;
      * the named chats keep theirs in their entries. */
     int8_t told_main, told_gadget;             /* NVS "told_main", "told_gadget" */
@@ -536,6 +537,26 @@ esp_err_t muse_settings_chat_pick_new(void)
     return ESP_OK;
 }
 
+void muse_settings_chat_set_titling(const char *sid)
+{
+    LOCKED({
+        if (strcmp(s.titling_sid, sid ? sid : "") != 0) {
+            strlcpy(s.titling_sid, sid ? sid : "", sizeof(s.titling_sid));
+            s.chats_gen++;
+        }
+    });
+}
+
+void muse_settings_chat_titled(const char *sid)
+{
+    LOCKED({
+        if (sid && s.titling_sid[0] && !strcmp(s.titling_sid, sid)) {
+            s.titling_sid[0] = '\0';
+            s.chats_gen++;
+        }
+    });
+}
+
 bool muse_settings_chat_untitled(const char *sid)
 {
     bool untitled = false;
@@ -722,7 +743,9 @@ int muse_settings_chat_items(muse_chat_item_t *out, int max, int *current)
         n++;
         for (int i = 0; i < s.chats_n; i++, n++) {
             if (n < max) {
-                chat_item(&out[n], MUSE_CHAT_NAMED, s.chats[i].name, s.chats[i].sid, s.chats[i].told_mode);
+                bool titling = s.titling_sid[0] && !strcmp(s.titling_sid, s.chats[i].sid);
+                chat_item(&out[n], MUSE_CHAT_NAMED, titling ? MUSE_CHAT_TITLING : s.chats[i].name, s.chats[i].sid,
+                          s.chats[i].told_mode);
             }
             if (!strcmp(s.chat_sid, s.chats[i].sid)) {
                 cur = n;
