@@ -179,7 +179,19 @@ static void rebuild(void)
     s_count = muse_settings_chat_items(s_items, MUSE_CHAT_ITEMS_MAX, &s_current);
     s_armed = -1;
     lv_obj_clean(s_list);
-    for (int i = 0; i < s_count; i++) {
+    /* Main chat first, New chat right under it, then the rest as listed. */
+    int order[MUSE_CHAT_ITEMS_MAX], n = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        for (int i = 0; i < s_count; i++) {
+            muse_chat_kind_t k = s_items[i].kind;
+            if ((pass == 0 && k == MUSE_CHAT_MAIN) || (pass == 1 && k == MUSE_CHAT_NEW)
+                || (pass == 2 && k != MUSE_CHAT_MAIN && k != MUSE_CHAT_NEW)) {
+                order[n++] = i;
+            }
+        }
+    }
+    for (int o = 0; o < n; o++) {
+        int i = order[o];
         const muse_chat_item_t *c = &s_items[i];
         if (c->kind == MUSE_CHAT_NEW) {
             s_values[i] = row(LV_SYMBOL_PLUS, "New chat", NULL, on_new, (void *)(intptr_t)i);
