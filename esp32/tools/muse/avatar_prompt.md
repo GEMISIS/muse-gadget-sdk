@@ -43,6 +43,8 @@ API (muse_pixel.h, unchanged; implement exactly these)
       bool bed;       // optional: the Night face, tucked up in bed
       bool sleepy;    // optional: asleep in it (eyes shut, slow breaths); false sits up
       float dizzy;    // optional: 0..1 shaken by an earthquake, easing out
+      float reach;    // optional: 0..1 reaching into a pocket on the body's right side
+      bool holding;   // optional: holding a reply's image up; the UI draws the arms
   } muse_pose_t;
   uint32_t muse_pixel_accent(muse_mode_t mode);    // 0xRRGGBB accent for the UI around the avatar
   void muse_pixel_render(const muse_pose_t *pose); // draw one frame into the 64x64 grid
@@ -122,6 +124,13 @@ ANIMATION BEATS (every one of these, adapted to your body)
   avatar about meanwhile): swirly eyes, a wobbly zigzag mouth, reeling side
   to side, stars circling the head; at 1 (still shaking) grit falling from
   above and a "!". It eases out from 1 to 0 over ~0.8 s. Not in ERROR or OFF.
+- reach > 0 (optional; Muse is about to show an image from a reply): the
+  arm on the viewer's right goes down into a pocket on the lower right of
+  the body (around grid (42, 47)), the face tips down and the eyes glance
+  at it; the pocket shows while reach > 0 or holding. holding (optional):
+  the image is held up over the head and the UI draws the arms from the
+  shoulders (grid (18, 34) and (46, 34)) to its corners, so draw no arms of
+  your own; look up a little and pleased (more blush).
 - Keep it readable at 64x64: expressions come from 2-5 px shapes, so
   exaggerate. The face needs strong contrast against the body.
 

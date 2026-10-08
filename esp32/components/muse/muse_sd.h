@@ -32,7 +32,8 @@ extern "C" {
  * without it, everything here is a no-op and muse_sd_ready() is false.
  *
  * Files Muse keeps go under /sdcard/muse/:
- *   images/<YYYYMMDD-HHMMSS>.jpg|.raw  display.draw_url downloads, as sent
+ *   images/<YYYYMMDD-HHMMSS>.jpg|.raw  display.draw_url downloads and the
+ *                                      images in chat replies, as sent
  *   captions.log                       what was heard and Muse's replies
  */
 
@@ -69,6 +70,16 @@ void muse_sd_tee_write(muse_sd_tee_t *t, const void *data, size_t len);
 /* ext: "jpg" or "raw"; a raw image's name also gets its size, w x h. */
 void muse_sd_tee_end(muse_sd_tee_t *t, bool ok, const char *ext, int w, int h);
 
+/*
+ * A whole image already in memory (a chat reply's, muse_present.c), from any
+ * task: copied and saved to images/ by the extras task, whose stack can reach
+ * NVS for the setting. One waits at a time; false if it isn't taken (no card,
+ * one waiting already, no memory).
+ */
+bool muse_sd_queue_image(const void *data, size_t len, const char *ext);
+/* From the extras task: saves the image waiting, if any. */
+void muse_sd_image_write(void);
+
 #else
 
 static inline void muse_sd_mount(void) {}
@@ -80,6 +91,8 @@ static inline void muse_sd_set_save_images(bool on) {}
 static inline muse_sd_tee_t *muse_sd_tee_begin(void) { return NULL; }
 static inline void muse_sd_tee_write(muse_sd_tee_t *t, const void *data, size_t len) {}
 static inline void muse_sd_tee_end(muse_sd_tee_t *t, bool ok, const char *ext, int w, int h) {}
+static inline bool muse_sd_queue_image(const void *data, size_t len, const char *ext) { return false; }
+static inline void muse_sd_image_write(void) {}
 
 #endif
 

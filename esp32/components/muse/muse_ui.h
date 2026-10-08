@@ -52,6 +52,17 @@ void muse_ui_preview_brightness(int pct);
 bool muse_ui_image_size(int *w, int *h);
 bool muse_ui_image_draw(int x, int y, int w, int h, const uint16_t *pixels);
 void muse_ui_image_hide(void);
+/*
+ * An image from a chat reply (muse_present.h), from any task: Muse takes it
+ * out of his pocket and holds it up over his head, a tap shows it full size,
+ * and he puts it back at the next talk, the power menu, or a minute after
+ * the reply. sizes() gives the screen and the side of the square the held
+ * copy must fit (0 on compact layouts, which only show it full size); false
+ * without PSRAM or before the UI is up. present() takes both RGB565 buffers
+ * (heap_caps_malloc'd) when it returns true: `full` fits the screen.
+ */
+bool muse_ui_present_sizes(int *screen_w, int *screen_h, int *photo_px);
+bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int hh);
 /* Watcher camera mode: shows an on-screen shutter hint over the live image. */
 void muse_ui_camera_hint(bool visible);
 
