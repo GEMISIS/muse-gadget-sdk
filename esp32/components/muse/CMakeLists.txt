@@ -80,6 +80,9 @@ if(CONFIG_MUSE_ENABLED)
                 list(APPEND srcs "muse_orient.c")   # upside down at night
             endif()
         endif()
+        if(CONFIG_MUSE_GADGET_CHATS)
+            list(APPEND srcs "muse_chats_ui.c")   # the Chats screen, left of Muse
+        endif()
     elseif(CONFIG_MUSE_BOARD_AIPI)
         list(APPEND srcs "boards/board_aipi.c")
     elseif(CONFIG_MUSE_BOARD_ESPRESSIF_BOX_3)

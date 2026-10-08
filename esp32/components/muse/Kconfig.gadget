@@ -131,4 +131,13 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
             listen and answer, and goes back to sleep after. Needs
             LV_FONT_MONTSERRAT_48 for the clock.
 
+    config MUSE_GADGET_CHATS
+        bool "Chats screen: swipe right from Muse to pick a chat"
+        default y
+        help
+            A third screen, left of Muse, lists the main chat, the gadget's
+            own chat and chats made on the device; the one tapped is where
+            the conversation goes until the next restart, which starts on
+            the main chat again (muse_chats_ui.c).
+
 endmenu
