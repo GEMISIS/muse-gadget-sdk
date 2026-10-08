@@ -973,10 +973,15 @@ static bool console_command(char *line, bool whole)
     if (!strncmp(line, "say=", 4) && line[4]) {
         /* Typed words as a voice turn, on the face: a talk press and release, the mic's audio dropped. */
         char *words = strdup(line + 4);
+        muse_ui_bench_pose(MUSE_UI_BENCH_NONE);   /* a real turn: no bench face left over */
         if (words) {
             muse_hatch_unescape(words);
             muse_hatch_typed_voice(words);
             muse_state_poke();
+            for (int i = 0; i < 40 && muse_state_asleep(); i++) {
+                vTaskDelay(pdMS_TO_TICKS(50));   /* awake first: a press that wakes it is only a wake */
+            }
+            vTaskDelay(pdMS_TO_TICKS(300));
             post(MUSE_PTT_DOWN, false);
             vTaskDelay(pdMS_TO_TICKS(600));   /* past a tap's length */
             post(MUSE_PTT_UP, false);
@@ -1071,6 +1076,7 @@ static void serial_task(void *arg)
             }
             free(line);
         } else if (c == 'd' || c == 'u') {
+            muse_ui_bench_pose(MUSE_UI_BENCH_NONE);
             muse_state_poke();
             post(c == 'd' ? MUSE_PTT_DOWN : MUSE_PTT_UP, false);
         }
