@@ -70,7 +70,7 @@ static const char *TAG = "muse_present";
 #define PATH_MAX_LEN 256                /* a workspace file's path, to ask for */
 #define ASK_POLL_MS 1000                /* how often a request waiting to go, or for its reply, is looked at */
 #define ASK_GIVE_UP_US (120 * 1000000LL)        /* waiting to ask */
-#define ASK_ANSWER_US (150 * 1000000LL)         /* waiting for the request's end: past the session's own two minutes */
+#define ASK_ANSWER_US (270 * 1000000LL)         /* waiting for the request's end: past the session's own four minutes */
 #define ASKED_AGAIN_US (10 * 60 * 1000000LL)    /* a path asked for isn't asked for again this soon */
 #define ASKED_KEPT 4
 #define FETCH_STALE_US (20 * 1000000LL)  /* a push's chunks stopped this long: given up on, as far as the face goes */
@@ -573,13 +573,13 @@ static void ask_tick(void)
         char reply[64];
         muse_chat_bg_state_t st = muse_chat_bg_result_for(MUSE_CHAT_BG_FOR_IMAGE, reply, sizeof(reply));
         if (st == MUSE_CHAT_BG_BUSY && esp_timer_get_time() - s_asking_us > ASK_ANSWER_US) {
-            /* The session ends a request in two minutes: this one never started, or lost its way. */
+            /* The session ends a request in four minutes: this one never started, or lost its way. */
             ESP_LOGW(TAG, "\"%s\": the request to push it never ended; given up", s_asking_label);
             muse_chat_bg_abandon(MUSE_CHAT_BG_FOR_IMAGE);
             st = MUSE_CHAT_BG_FAILED;
         }
         if (st == MUSE_CHAT_BG_BUSY) {
-            return;   /* the request gives up by itself after two minutes */
+            return;   /* the request gives up by itself after four minutes */
         }
         s_asking = false;
         portENTER_CRITICAL(&s_ask_lock);
