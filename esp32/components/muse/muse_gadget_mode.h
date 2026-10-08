@@ -26,8 +26,11 @@ extern "C" {
 
 /*
  * How the gadget behaves where it is: at the desk, at night or out and about.
- * Each change tells the Muse once, with a typed turn that sets how it should
- * answer (muse_hatch_text_turn), sent as soon as no voice turn is running.
+ * Like a system prompt per chat: each chat (the main one, the gadget's, each
+ * named one) remembers the mode it last heard (muse_settings_chat_told), and
+ * the next message sent to a chat that heard another one, typed or spoken,
+ * carries the mode's contract after the words (muse_gadget_mode_context). A
+ * change sends nothing by itself.
  *
  * With the clock set (year 2025 or later), the schedule picks Night from 21:00
  * to 05:00 and Desk otherwise, checked every minute in local time. A mode
@@ -46,22 +49,29 @@ typedef enum {
     MUSE_GADGET_MODE_COUNT,
 } muse_gadget_mode_t;
 
-/* Starts the schedule and the Muse messages; after muse_hatch_start(). */
+/* Starts the schedule. */
 void muse_gadget_mode_start(void);
 
 /* All of these are safe from any task. */
 muse_gadget_mode_t muse_gadget_mode(void);
 /* By hand: holds until the next 05:00 or 21:00. */
 void muse_gadget_mode_pick(muse_gadget_mode_t mode);
-/* Tells the Muse the current mode again, as a change does (another chat picked). */
-void muse_gadget_mode_resend(void);
-/* The new chat picked has its title from its first message
- * (muse_settings_chat_retitle): tell it the mode now, once that turn's done. */
-void muse_gadget_mode_chat_started(void);
+/*
+ * What a message to chat `sid` ("" the main chat) carries after its words:
+ * the current mode's contract ("[gadget mode: DESK] ..."), or NULL if that
+ * chat heard this mode last. *mode (may be NULL) is set to the current mode;
+ * once the Muse takes the message, pass it to muse_gadget_mode_told().
+ */
+const char *muse_gadget_mode_context(const char *sid, int *mode);
+/* The Muse took a message that told chat `sid` this mode (saved, as
+ * muse_settings_chat_set_told). */
+void muse_gadget_mode_told(const char *sid, int mode);
 /* "desk", "night" or "on_the_go"; false for anything else. */
 bool muse_gadget_mode_parse(const char *name, muse_gadget_mode_t *out);
 /* "Desk", "Night", "On-the-go". */
 const char *muse_gadget_mode_name(muse_gadget_mode_t mode);
+/* "desk", "night", "on_the_go" (as muse_gadget_mode_parse takes them); NULL for anything else. */
+const char *muse_gadget_mode_key(muse_gadget_mode_t mode);
 /* Saves the network joined now as home; false if there isn't one. */
 bool muse_gadget_mode_set_home(void);
 /* Saves the network joined now as the On-the-go one: joining it switches to

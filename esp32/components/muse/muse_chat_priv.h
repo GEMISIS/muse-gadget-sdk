@@ -69,23 +69,45 @@ static inline void muse_chat_reject(muse_chat_rejected_t *rejected, const char *
 }
 
 /* A voice note is a POST /chat/stream body: NOTE_HEAD, a base64 WAV, NOTE_TAIL. */
-#define MUSE_HATCH_NOTE_HEAD \
-    "{\"message\":\"\",\"output_modality\":\"text\",\"items\":[{\"type\":\"file\"," \
+#define MUSE_HATCH_NOTE_REST \
+    "\",\"output_modality\":\"text\",\"items\":[{\"type\":\"file\"," \
     "\"mime_type\":\"audio/wav\",\"filename\":\"voice_note.wav\",\"data_base64\":\""
+#define MUSE_HATCH_NOTE_HEAD "{\"message\":\"" MUSE_HATCH_NOTE_REST
 #define MUSE_HATCH_NOTE_TAIL "\"}]}"
-/* Room for NOTE_HEAD with a session_id (muse_chat_note_head), and for a subscribe body. */
-#define MUSE_CHAT_NOTE_HEAD_MAX (sizeof(MUSE_HATCH_NOTE_HEAD) + 96)
+/* The longest message a note's head carries (the gadget mode's contract), in bytes. */
+#define MUSE_CHAT_NOTE_MESSAGE_MAX 320
+/* Room for NOTE_HEAD with a session_id and a message (muse_chat_note_head), and for a subscribe body. */
+#define MUSE_CHAT_NOTE_HEAD_MAX (sizeof(MUSE_HATCH_NOTE_HEAD) + 96 + 2 * MUSE_CHAT_NOTE_MESSAGE_MAX)
 #define MUSE_CHAT_SUB_BODY_MAX 96
 
 /*
  * NOTE_HEAD for a note to the chat `sid` (a valid session_id, or "" for the
- * main chat, which leaves it out). Returns the length, 0 if it doesn't fit.
+ * main chat, which leaves it out), with `message` (NULL or "" for none) as
+ * the text that goes with the audio. Returns the length, 0 if it doesn't fit.
  */
-static inline size_t muse_chat_note_head(const char *sid, char *out, size_t cap)
+static inline size_t muse_chat_note_head(const char *sid, const char *message, char *out, size_t cap)
 {
-    int n = sid[0] ? snprintf(out, cap, "{\"session_id\":\"%s\",%s", sid, &MUSE_HATCH_NOTE_HEAD[1])
-                   : snprintf(out, cap, "%s", MUSE_HATCH_NOTE_HEAD);
-    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+    int n = sid[0] ? snprintf(out, cap, "{\"session_id\":\"%s\",\"message\":\"", sid) : snprintf(out, cap, "{\"message\":\"");
+    if (n <= 0 || (size_t)n >= cap) {
+        return 0;
+    }
+    size_t o = (size_t)n;
+    for (const unsigned char *p = (const unsigned char *)(message ? message : ""); *p; p++) {
+        char esc = *p == '"' ? '"' : *p == '\\' ? '\\' : *p == '\n' ? 'n' : *p == '\r' ? 'r' : *p == '\t' ? 't' : 0;
+        if (o + (esc ? 2 : *p < 0x20 ? 6 : 1) >= cap) {
+            return 0;
+        }
+        if (esc) {
+            out[o++] = '\\';
+            out[o++] = esc;
+        } else if (*p < 0x20) {
+            o += (size_t)snprintf(out + o, cap - o, "\\u%04x", *p);
+        } else {
+            out[o++] = (char)*p;
+        }
+    }
+    n = snprintf(out + o, cap - o, "%s", MUSE_HATCH_NOTE_REST);
+    return n > 0 && o + (size_t)n < cap ? o + (size_t)n : 0;
 }
 
 /* POST /chat/subscribe's body: {} or {"session_id":"<sid>"}. Returns the length, 0 if it doesn't fit. */

@@ -98,8 +98,19 @@ static bool chat_sid_valid(const char *sid) {
     return true;
 }
 
-// {chat, session_id, name?} for a chat's id: "" the main chat, the gadget's
-// own, one of the named chats kept on the device, or any other.
+// told_mode: the gadget mode a chat last heard ("desk", "night" or
+// "on_the_go"), or null if it hasn't heard one.
+static void add_told_mode(cJSON *chat, int mode) {
+    const char *key = mode >= 0 ? muse_gadget_mode_key((muse_gadget_mode_t)mode) : NULL;
+    if (key) {
+        cJSON_AddStringToObject(chat, "told_mode", key);
+    } else {
+        cJSON_AddNullToObject(chat, "told_mode");
+    }
+}
+
+// {chat, session_id, name?, told_mode} for a chat's id: "" the main chat, the
+// gadget's own, one of the named chats kept on the device, or any other.
 static cJSON *chat_json(const char *sid) {
     char gadget[MUSE_CHAT_SID_MAX + 1], name[MUSE_CHAT_NAME_MAX + 1];
     muse_settings_gadget_chat_sid(gadget);
@@ -114,6 +125,7 @@ static cJSON *chat_json(const char *sid) {
     if (named) {
         cJSON_AddStringToObject(chat, "name", name);
     }
+    add_told_mode(chat, muse_settings_chat_told(sid));
     return chat;
 }
 
@@ -198,6 +210,7 @@ cJSON *gadget_list_chats_command(const cJSON *params) {
         cJSON *chat = cJSON_CreateObject();
         cJSON_AddStringToObject(chat, "name", chats[i].name);
         cJSON_AddStringToObject(chat, "session_id", chats[i].sid);
+        add_told_mode(chat, chats[i].told_mode);
         cJSON_AddItemToArray(list, chat);
     }
     return gadget_ok(payload);

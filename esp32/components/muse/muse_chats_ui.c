@@ -71,8 +71,8 @@ static void set_text(lv_obj_t *l, const char *text)
     }
 }
 
-/* Tappable row: an icon, the text, and a value on the right. */
-static lv_obj_t *row(const char *icon, const char *text, lv_event_cb_t cb, void *user)
+/* Tappable row: an icon, the text over a smaller dim line (sub, if not NULL), and a value on the right. */
+static lv_obj_t *row(const char *icon, const char *text, const char *sub, lv_event_cb_t cb, void *user)
 {
     lv_obj_t *c = lv_button_create(s_list);
     lv_obj_remove_style_all(c);
@@ -87,9 +87,18 @@ static lv_obj_t *row(const char *icon, const char *text, lv_event_cb_t cb, void 
     lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(c, LV_OBJ_FLAG_SCROLLABLE);
     label(c, &lv_font_montserrat_20, COLOR_ACCENT, icon);
-    lv_obj_t *t = label(c, &lv_font_montserrat_20, COLOR_TEXT, text);
-    lv_obj_set_flex_grow(t, 1);
+    lv_obj_t *col = lv_obj_create(c);
+    lv_obj_remove_style_all(col);
+    lv_obj_remove_flag(col, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);   /* taps go to the row */
+    lv_obj_set_height(col, LV_SIZE_CONTENT);
+    lv_obj_set_flex_grow(col, 1);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_t *t = label(col, &lv_font_montserrat_20, COLOR_TEXT, text);
+    lv_obj_set_width(t, lv_pct(100));
     lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_DOTS);
+    if (sub) {
+        label(col, &lv_font_montserrat_14, COLOR_DIM, sub);
+    }
     lv_obj_add_event_cb(c, cb, LV_EVENT_ALL, user);
     return label(c, &lv_font_montserrat_16, COLOR_ACCENT, "");
 }
@@ -138,16 +147,18 @@ static void on_new(lv_event_t *e)
     muse_ui_show_face();   /* to ask the first thing, which the Muse names it by */
 }
 
-/* Rows for the chats as they are now: after one is made, picked or forgotten. */
+/* Rows for the chats as they are now: after one is made, picked, forgotten or told a mode. */
 static void rebuild(void)
 {
+    /* The gadget mode each chat last heard (muse_gadget_mode_t order, as muse_gadget_mode_name). */
+    static const char *const TOLD[] = { "Desk mode", "Night mode", "On-the-go mode" };
     s_count = muse_settings_chat_items(s_items, MUSE_CHAT_ITEMS_MAX, &s_current);
     s_armed = -1;
     lv_obj_clean(s_list);
     for (int i = 0; i < s_count; i++) {
         const muse_chat_item_t *c = &s_items[i];
         if (c->kind == MUSE_CHAT_NEW) {
-            s_values[i] = row(LV_SYMBOL_PLUS, "New chat", on_new, (void *)(intptr_t)i);
+            s_values[i] = row(LV_SYMBOL_PLUS, "New chat", NULL, on_new, (void *)(intptr_t)i);
             continue;
         }
         const char *icon = c->kind == MUSE_CHAT_MAIN ? LV_SYMBOL_HOME
@@ -155,7 +166,9 @@ static void rebuild(void)
         const char *name = c->kind == MUSE_CHAT_MAIN ? "Main chat"
                          : c->kind == MUSE_CHAT_GADGET ? "Gadget chat"
                          : c->name[0] ? c->name : c->sid;
-        s_values[i] = row(icon, name, on_chat, (void *)(intptr_t)i);
+        const char *told = c->told_mode >= 0 && c->told_mode < (int)(sizeof(TOLD) / sizeof(TOLD[0]))
+                         ? TOLD[c->told_mode] : NULL;
+        s_values[i] = row(icon, name, told, on_chat, (void *)(intptr_t)i);
     }
     s_note = label(s_list, &lv_font_montserrat_16, COLOR_DIM,
                    "Where you talk to Muse from here on; a restart goes back to the main chat. "

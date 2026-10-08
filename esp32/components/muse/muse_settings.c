@@ -17,6 +17,7 @@
 #include "muse_settings.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -59,6 +60,13 @@ static struct {
     uint32_t chats_gen;                        /* bumped when the list or the pick changes */
     bool chats_dirty;                          /* retitled: save_chats() is due (muse_settings_chats_flush) */
     char new_sid[MUSE_CHAT_SID_MAX + 1];       /* the new chat picked, until the Muse titles it (RAM only) */
+    /* The gadget mode each chat last heard (muse_settings_chat_told), -1 for none;
+     * the named chats keep theirs in their entries. */
+    int8_t told_main, told_gadget;             /* NVS "told_main", "told_gadget" */
+    bool told_dirty;                           /* one of those changed: muse_settings_chats_flush is due */
+    int8_t told_new;                           /* the new chat's, until it joins the named ones (RAM only) */
+    char told_other_sid[MUSE_CHAT_SID_MAX + 1];   /* a chat picked by its id alone (RAM only) */
+    int8_t told_other;
 } s = {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
@@ -67,6 +75,10 @@ static struct {
     .sleep_s = 120,
     .wifi_on = true,
     .host = DEFAULT_HOST,
+    .told_main = -1,
+    .told_gadget = -1,
+    .told_new = -1,
+    .told_other = -1,
 };
 
 static SemaphoreHandle_t s_lock;
@@ -131,24 +143,76 @@ static void save_chats(void)
     nvs_commit(s_nvs);
 }
 
+/* A named chat as builds before told_mode kept it: the blob's entries were this size. */
+typedef struct {
+    char name[MUSE_CHAT_NAME_MAX + 1];
+    char sid[MUSE_CHAT_SID_MAX + 1];
+} chat_entry_v1_t;
+
+/* The "chats" blob into s.chats; returns how many entries it held. One in the
+ * old layout is read too, its chats told no mode yet; *old is then set. */
+static int read_chats(bool *old)
+{
+    *old = false;
+    size_t n = 0;
+    if (nvs_get_blob(s_nvs, "chats", NULL, &n) != ESP_OK || !n) {
+        return 0;
+    }
+    /* Entries of 71 and 70 bytes: no blob of up to MUSE_CHATS_MAX of them is a whole number of both. */
+    if (n % sizeof(muse_chat_entry_t) == 0 && n <= sizeof(s.chats)) {
+        return nvs_get_blob(s_nvs, "chats", s.chats, &n) == ESP_OK ? (int)(n / sizeof(s.chats[0])) : 0;
+    }
+    if (n % sizeof(chat_entry_v1_t) || n > MUSE_CHATS_MAX * sizeof(chat_entry_v1_t)) {
+        ESP_LOGW(TAG, "chats: a %u byte blob in no layout known, ignored", (unsigned)n);
+        return 0;
+    }
+    chat_entry_v1_t *v1 = malloc(n);
+    if (!v1 || nvs_get_blob(s_nvs, "chats", v1, &n) != ESP_OK) {
+        free(v1);
+        return 0;
+    }
+    int count = (int)(n / sizeof(*v1));
+    for (int i = 0; i < count; i++) {
+        memcpy(s.chats[i].name, v1[i].name, sizeof(s.chats[i].name));
+        memcpy(s.chats[i].sid, v1[i].sid, sizeof(s.chats[i].sid));
+        s.chats[i].told_mode = -1;
+    }
+    free(v1);
+    *old = true;
+    return count;
+}
+
 /* Entries that don't hold a name and a valid id are dropped. */
 static void load_chats(void)
 {
-    size_t n = sizeof(s.chats);
-    if (nvs_get_blob(s_nvs, "chats", s.chats, &n) != ESP_OK || n % sizeof(s.chats[0])) {
-        n = 0;
-    }
+    bool old;
+    int n = read_chats(&old);
     int kept = 0;
-    for (int i = 0; i < (int)(n / sizeof(s.chats[0])); i++) {
+    for (int i = 0; i < n; i++) {
         muse_chat_entry_t *c = &s.chats[i];
         if (!memchr(c->name, '\0', sizeof(c->name)) || !c->name[0] || !memchr(c->sid, '\0', sizeof(c->sid))
             || !muse_settings_chat_sid_valid(c->sid)) {
             continue;
         }
         lower(c->sid);
+        if (c->told_mode < -1 || c->told_mode > 2) {
+            c->told_mode = -1;
+        }
         s.chats[kept++] = *c;
     }
     s.chats_n = kept;
+    if (old) {
+        ESP_LOGI(TAG, "chats: %d moved to the layout that keeps each one's mode", kept);
+        save_chats();   /* once: from now on it's read in the new layout */
+    }
+}
+
+static void load_told(const char *key, int8_t *out)
+{
+    int8_t v;
+    if (nvs_get_i8(s_nvs, key, &v) == ESP_OK && v >= -1 && v <= 2) {
+        *out = v;
+    }
 }
 
 static int find_chat_sid(const char *sid)
@@ -245,6 +309,8 @@ esp_err_t muse_settings_init(void)
         nvs_commit(s_nvs);
     }
     load_chats();
+    load_told("told_main", &s.told_main);
+    load_told("told_gadget", &s.told_gadget);
 
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
@@ -429,6 +495,7 @@ esp_err_t muse_settings_chat_add(const char *name, char sid_out[MUSE_CHAT_SID_MA
         } else {
             muse_chat_entry_t *c = &s.chats[s.chats_n++];
             memset(c, 0, sizeof(*c));
+            c->told_mode = -1;
             strlcpy(c->name, clean, sizeof(c->name));
             strlcpy(c->sid, sid, sizeof(c->sid));
             save_chats();
@@ -458,6 +525,7 @@ esp_err_t muse_settings_chat_pick_new(void)
         full = s.chats_n >= MUSE_CHATS_MAX;
         if (!full) {
             strlcpy(s.new_sid, sid, sizeof(s.new_sid));
+            s.told_new = -1;
         }
     });
     if (full) {
@@ -507,7 +575,9 @@ bool muse_settings_chat_retitle(const char *sid, const char *title, bool *starte
             i = s.chats_n++;
             memset(&s.chats[i], 0, sizeof(s.chats[i]));
             strlcpy(s.chats[i].sid, sid, sizeof(s.chats[i].sid));
+            s.chats[i].told_mode = s.told_new;   /* its first message may have told it the mode */
             s.new_sid[0] = '\0';
+            s.told_new = -1;
             joined = true;
         }
         if (i >= 0) {
@@ -536,6 +606,79 @@ void muse_settings_chats_flush(void)
             s.chats_dirty = false;
             save_chats();
         }
+        if (s.told_dirty) {
+            s.told_dirty = false;
+            nvs_set_i8(s_nvs, "told_main", s.told_main);
+            nvs_set_i8(s_nvs, "told_gadget", s.told_gadget);
+            nvs_commit(s_nvs);
+        }
+    });
+}
+
+/* With the lock held: where the mode `sid` last heard is kept. NULL for a chat
+ * picked by its id alone other than the one kept in RAM, unless `add` makes
+ * it that one. */
+static int8_t *told_slot(const char *sid, const char *gadget, bool add)
+{
+    if (!sid[0]) {
+        return &s.told_main;
+    }
+    if (!strcasecmp(sid, gadget)) {
+        return &s.told_gadget;
+    }
+    int i = find_chat_sid(sid);
+    if (i >= 0) {
+        return &s.chats[i].told_mode;
+    }
+    if (s.new_sid[0] && !strcasecmp(s.new_sid, sid)) {
+        return &s.told_new;
+    }
+    if (strcasecmp(s.told_other_sid, sid)) {
+        if (!add) {
+            return NULL;
+        }
+        strlcpy(s.told_other_sid, sid, sizeof(s.told_other_sid));
+        lower(s.told_other_sid);
+        s.told_other = -1;
+    }
+    return &s.told_other;
+}
+
+int muse_settings_chat_told(const char *sid)
+{
+    if (!sid) {
+        return -1;
+    }
+    char gadget[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_gadget_chat_sid(gadget);
+    int mode = -1;
+    LOCKED({
+        int8_t *slot = told_slot(sid, gadget, false);
+        if (slot) {
+            mode = *slot;
+        }
+    });
+    return mode;
+}
+
+void muse_settings_chat_set_told(const char *sid, int mode)
+{
+    if (!sid || mode < -1 || mode > 2) {
+        return;
+    }
+    char gadget[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_gadget_chat_sid(gadget);
+    LOCKED({
+        int8_t *slot = told_slot(sid, gadget, true);
+        if (*slot != mode) {
+            *slot = (int8_t)mode;
+            if (slot == &s.told_main || slot == &s.told_gadget) {
+                s.told_dirty = true;
+            } else if (slot != &s.told_new && slot != &s.told_other) {
+                s.chats_dirty = true;   /* a named chat's entry */
+            }
+            s.chats_gen++;   /* the Chats screen shows it */
+        }
     });
 }
 
@@ -552,11 +695,12 @@ esp_err_t muse_settings_chat_new(const char *name, char sid_out[MUSE_CHAT_SID_MA
     return err;
 }
 
-static void chat_item(muse_chat_item_t *it, muse_chat_kind_t kind, const char *name, const char *sid)
+static void chat_item(muse_chat_item_t *it, muse_chat_kind_t kind, const char *name, const char *sid, int told)
 {
     it->kind = kind;
     strlcpy(it->name, name, sizeof(it->name));
     strlcpy(it->sid, sid, sizeof(it->sid));
+    it->told_mode = (int8_t)told;
 }
 
 int muse_settings_chat_items(muse_chat_item_t *out, int max, int *current)
@@ -566,11 +710,11 @@ int muse_settings_chat_items(muse_chat_item_t *out, int max, int *current)
     int n = 0, cur = 0;
     LOCKED({
         if (n < max) {
-            chat_item(&out[n], MUSE_CHAT_MAIN, "Main chat", "");
+            chat_item(&out[n], MUSE_CHAT_MAIN, "Main chat", "", s.told_main);
         }
         n++;
         if (n < max) {
-            chat_item(&out[n], MUSE_CHAT_GADGET, "Gadget chat", gadget);
+            chat_item(&out[n], MUSE_CHAT_GADGET, "Gadget chat", gadget, s.told_gadget);
         }
         if (!strcmp(s.chat_sid, gadget)) {
             cur = n;
@@ -578,7 +722,7 @@ int muse_settings_chat_items(muse_chat_item_t *out, int max, int *current)
         n++;
         for (int i = 0; i < s.chats_n; i++, n++) {
             if (n < max) {
-                chat_item(&out[n], MUSE_CHAT_NAMED, s.chats[i].name, s.chats[i].sid);
+                chat_item(&out[n], MUSE_CHAT_NAMED, s.chats[i].name, s.chats[i].sid, s.chats[i].told_mode);
             }
             if (!strcmp(s.chat_sid, s.chats[i].sid)) {
                 cur = n;
@@ -588,12 +732,13 @@ int muse_settings_chat_items(muse_chat_item_t *out, int max, int *current)
         bool is_new = s.new_sid[0] && !strcmp(s.chat_sid, s.new_sid);
         if (s.chat_sid[0] && !cur && !is_new) {
             if (n < max) {
-                chat_item(&out[n], MUSE_CHAT_CUSTOM, "Other chat", s.chat_sid);
+                chat_item(&out[n], MUSE_CHAT_CUSTOM, "Other chat", s.chat_sid,
+                          !strcmp(s.told_other_sid, s.chat_sid) ? s.told_other : -1);
             }
             cur = n++;
         }
         if (n < max) {
-            chat_item(&out[n], MUSE_CHAT_NEW, "New chat", is_new ? s.new_sid : "");
+            chat_item(&out[n], MUSE_CHAT_NEW, "New chat", is_new ? s.new_sid : "", is_new ? s.told_new : -1);
         }
         if (is_new) {
             cur = n;
