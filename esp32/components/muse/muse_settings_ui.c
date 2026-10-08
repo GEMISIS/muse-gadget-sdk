@@ -29,6 +29,7 @@
 #include "muse_ble.h"
 #include "muse_board.h"
 #include "muse_chat.h"
+#include "muse_dialog.h"
 #include "muse_gadget_mode.h"
 #include "muse_home_extras.h"
 #include "muse_input.h"
@@ -136,9 +137,8 @@ static const char *const SLEEP_NAMES[] = { "Never", "30 seconds", "1 minute", "2
 static lv_obj_t *s_sleep_checks[SLEEP_COUNT];
 
 /* Mode */
-static lv_obj_t *s_mode_checks[MUSE_GADGET_MODE_COUNT], *s_mode_home, *s_mode_away, *s_mode_note;
-static lv_obj_t *s_mode_pick[2];   /* under the Home and On-the-go rows: the saved networks to pick from */
-static muse_wifi_saved_t s_mode_nets[MUSE_WIFI_SAVED_MAX];
+static lv_obj_t *s_mode_home, *s_mode_away;
+static muse_wifi_saved_t s_mode_nets[MUSE_WIFI_SAVED_MAX];   /* the Wi-Fi dialog's, while it's open */
 
 /* Battery page. */
 static lv_obj_t *s_batt_status, *s_batt_level, *s_batt_drain, *s_batt_full, *s_batt_off, *s_batt_slept, *s_batt_wakes,
@@ -462,6 +462,7 @@ static void show(lv_obj_t *p)
     if (prev) {
         lv_obj_add_flag(prev, LV_OBJ_FLAG_HIDDEN);
     }
+    muse_dialog_close_on(s_tile);   /* it was about the page left */
     if (prev == s_sound) {
         muse_voice_set_monitor(false);
     }
@@ -1200,33 +1201,19 @@ static void tick_sleep(void)
 
 /* ---------- Mode ---------- */
 
-static void on_mode_choice(lv_event_t *e)
-{
-    muse_gadget_mode_pick((muse_gadget_mode_t)(intptr_t)lv_event_get_user_data(e));
-}
-
-static void on_mode_home(lv_event_t *e)
-{
-    (void)e;
-    set_text(s_mode_note, muse_gadget_mode_set_home() ? "Saved." : "Join a Wi-Fi network first.");
-}
-
 static void on_clock_24h_sw(lv_event_t *e)
 {
     muse_home_extras_set_24h(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
-static void on_mode_away(lv_event_t *e)
-{
-    (void)e;
-    set_text(s_mode_note, muse_gadget_mode_set_away() ? "Saved: joining it switches to On-the-go."
-                                                      : "Join a Wi-Fi network first.");
-}
-
 enum { PICK_HOME, PICK_AWAY };
+#define PICK_NONE 0xff   /* "None": no network */
 
-static void set_mode_net(int which, const char *ssid)
+static void on_mode_net(void *user)
 {
+    intptr_t v = (intptr_t)user;
+    int which = (int)(v >> 8), i = (int)(v & 0xff);
+    const char *ssid = i == PICK_NONE ? "" : s_mode_nets[i].ssid;
     if (which == PICK_HOME) {
         muse_settings_set_home_ssid(ssid);
     } else {
@@ -1234,36 +1221,39 @@ static void set_mode_net(int which, const char *ssid)
     }
 }
 
-static void on_mode_net(lv_event_t *e)
-{
-    intptr_t v = (intptr_t)lv_event_get_user_data(e);
-    int which = (int)(v >> 8), i = (int)(v & 0xff);
-    set_mode_net(which, i == 0xff ? "" : s_mode_nets[i].ssid);
-    lv_obj_add_flag(s_mode_pick[which], LV_OBJ_FLAG_HIDDEN);
-    set_text(s_mode_note, i == 0xff ? "Cleared." : "Saved.");
-}
-
-/* Opens (or closes) the saved networks under a row, filled in fresh. */
+/* A Wi-Fi row was tapped: the saved networks and "None" to pick from, the
+ * one set now ticked. */
 static void on_mode_pick(lv_event_t *e)
 {
     int which = (int)(intptr_t)lv_event_get_user_data(e);
-    lv_obj_t *box = s_mode_pick[which];
-    lv_obj_add_flag(s_mode_pick[!which], LV_OBJ_FLAG_HIDDEN);
-    if (!lv_obj_has_flag(box, LV_OBJ_FLAG_HIDDEN)) {
-        lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
-        return;
+    char cur[MUSE_SSID_MAX + 1];
+    if (which == PICK_HOME) {
+        muse_settings_home_ssid(cur);
+    } else {
+        muse_settings_away_ssid(cur);
     }
-    lv_obj_clean(box);
     int n = muse_wifi_saved(s_mode_nets, MUSE_WIFI_SAVED_MAX);
-    if (!n) {
-        note(box, "No saved networks yet: add one on the Wi-Fi page.");
-    }
+    muse_dialog_option_t options[MUSE_WIFI_SAVED_MAX + 1];
+    bool ticked = false;
     for (int i = 0; i < n; i++) {
-        row(box, LV_SYMBOL_WIFI, s_mode_nets[i].ssid, NULL, on_mode_net, (void *)(intptr_t)((which << 8) | i));
+        bool on = !strcmp(cur, s_mode_nets[i].ssid);
+        ticked |= on;
+        options[i] = (muse_dialog_option_t){ s_mode_nets[i].ssid, LV_SYMBOL_WIFI, on, on_mode_net,
+                                             (void *)(intptr_t)((which << 8) | i) };
     }
-    row(box, LV_SYMBOL_CLOSE, "None", NULL, on_mode_net, (void *)(intptr_t)((which << 8) | 0xff));
-    lv_obj_remove_flag(box, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_scroll_to_view(box, LV_ANIM_ON);
+    options[n] = (muse_dialog_option_t){ "None", LV_SYMBOL_CLOSE, !ticked, on_mode_net,
+                                         (void *)(intptr_t)((which << 8) | PICK_NONE) };
+    const muse_dialog_t d = {
+        .title = which == PICK_HOME ? "Home Wi-Fi" : "On-the-go Wi-Fi",
+        .text = n ? NULL : "No saved networks yet: add one on the Wi-Fi page.",
+        .help = which == PICK_HOME
+                    ? "Home Wi-Fi is the network where you usually are. On another one, Muse offers On-the-go mode."
+                    : "On-the-go Wi-Fi is one you join when you're out, such as your phone's hotspot. "
+                      "Joining it switches Muse to On-the-go mode by itself.",
+        .options = options,
+        .option_count = n + 1,
+    };
+    muse_dialog_open(s_tile, &d);
 }
 
 /* ---- Mode: Night's times and the alarm's, set with a picker over the page ---- */
@@ -1409,21 +1399,12 @@ static void build_time_picker(lv_obj_t *p)
     time_button(s_time_box, LV_SYMBOL_OK "  OK", COLOR_ACCENT, 78, true);
 }
 
-/* A row showing a network, tapped for the list of saved ones beneath it. */
+/* A row showing a network, tapped to pick from the saved ones. */
 static lv_obj_t *mode_net_row(lv_obj_t *list, const char *text, int which)
 {
     lv_obj_t *value;
-    row(list, NULL, text, &value, on_mode_pick, (void *)(intptr_t)which);
+    row(list, LV_SYMBOL_WIFI, text, &value, on_mode_pick, (void *)(intptr_t)which);
     lv_obj_set_style_text_color(value, lv_color_hex(COLOR_ACCENT), 0);
-    lv_obj_t *box = lv_obj_create(list);
-    lv_obj_remove_style_all(box);
-    lv_obj_set_size(box, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(box, 10, 0);
-    lv_obj_set_style_pad_left(box, 24, 0);   /* indented under its row */
-    lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
-    s_mode_pick[which] = box;
     return value;
 }
 
@@ -1431,18 +1412,11 @@ static void build_mode_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_mode = page(tile, "MODE", &list);
-    for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
-        row(list, NULL, muse_gadget_mode_name((muse_gadget_mode_t)m), &s_mode_checks[m], on_mode_choice,
-            (void *)(intptr_t)m);
-        lv_obj_set_style_text_color(s_mode_checks[m], lv_color_hex(COLOR_ACCENT), 0);
-    }
     for (int i = TIME_NIGHT_FROM; i <= TIME_NIGHT_TO; i++) {
         row(list, LV_SYMBOL_EYE_CLOSE, i == TIME_NIGHT_FROM ? "Night starts" : "Night ends", &s_time_vals[i],
             on_time_pick, (void *)(intptr_t)i);
         lv_obj_set_style_text_color(s_time_vals[i], lv_color_hex(COLOR_ACCENT), 0);
     }
-    note(list, "Night runs between these times and Desk the rest of the day, once the clock is set. "
-               "A mode picked here holds until the next switch.");
 #if CONFIG_MUSE_GADGET_ALARM
     bool alarm_on;
     muse_rtc_alarm(&alarm_on);
@@ -1451,15 +1425,9 @@ static void build_mode_page(lv_obj_t *tile)
     lv_obj_set_style_text_color(s_time_vals[TIME_ALARM], lv_color_hex(COLOR_ACCENT), 0);
 #endif
     s_mode_home = mode_net_row(list, "Home Wi-Fi", PICK_HOME);
-    button(list, LV_SYMBOL_WIFI "  Set current as home", COLOR_ACCENT, on_mode_home, NULL);
     s_mode_away = mode_net_row(list, "On-the-go Wi-Fi", PICK_AWAY);
-    button(list, LV_SYMBOL_GPS "  Set current as on-the-go", COLOR_ACCENT, on_mode_away, NULL);
-    s_mode_note = note(list, "On the on-the-go Wi-Fi (your phone's hotspot, say), Muse switches to "
-                             "On-the-go by itself. Without one, other networks away from home offer it. "
-                             "Tap a Wi-Fi row to pick from the saved networks.");
 #if CONFIG_MUSE_GADGET_HOME_EXTRAS
     switch_row(list, "24-hour clock", muse_home_extras_24h(), on_clock_24h_sw);
-    note(list, "Off shows the 12-hour clock, as 9:30 PM.");
 #endif
     back_row(list, "Back");
     build_time_picker(s_mode);
@@ -1467,10 +1435,6 @@ static void build_mode_page(lv_obj_t *tile)
 
 static void tick_mode(void)
 {
-    muse_gadget_mode_t cur = muse_gadget_mode();
-    for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
-        set_text(s_mode_checks[m], (int)cur == m ? LV_SYMBOL_OK : "");
-    }
     char home[MUSE_SSID_MAX + 1];
     muse_settings_home_ssid(home);
     set_text(s_mode_home, home[0] ? home : "Not set");
@@ -1776,6 +1740,7 @@ void muse_settings_ui_tick(bool visible)
         muse_voice_set_monitor(visible && s_current == s_sound);
     }
     if (!visible) {
+        muse_dialog_close_on(s_tile);   /* not still open on the way back */
         return;
     }
     if (s_current == s_general) {
@@ -1801,5 +1766,5 @@ void muse_settings_ui_tick(bool visible)
 
 bool muse_settings_ui_in_subpage(void)
 {
-    return s_current != s_home;
+    return s_current != s_home || muse_dialog_is_open();   /* a dialog holds the screen as a page does */
 }
