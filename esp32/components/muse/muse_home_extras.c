@@ -165,7 +165,8 @@ static void up_fit(const char *line)
 {
     lv_point_t size;
     lv_text_get_size(&size, line, &lv_font_unscii_16, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-    lv_obj_set_width(s_up_lbl, size.x < UP_TEXT_W ? size.x : UP_TEXT_W);
+    lv_obj_set_size(s_up_lbl, size.x < UP_TEXT_W ? size.x : UP_TEXT_W,
+                    lv_font_get_line_height(&lv_font_unscii_16));   /* one line: the dots need a height too */
 }
 
 /* Fades the pill in when there's a line, out when there isn't. */
