@@ -49,6 +49,8 @@
  * An image in a reply (a delta.presentation event) names a file in Muse's
  * workspace, which the VM won't serve to the gadget: muse_present.h asks Muse
  * to push it over Link (display.show_image), and Muse holds it up on the face.
+ * One written into the reply's text as Markdown (`![alt](sandbox://...)`)
+ * is taken out of the text, and asked for the same way if no event named one.
  *
  * A background request (muse_chat_bg_ask, for the face's "up next" line) is a
  * typed message to a chat of the asker's, on streams of its own beside the
@@ -291,7 +293,9 @@ struct turn_t {
     size_t rec_pos;          /* how much of rec dictation has had */
     char sid[MUSE_CHAT_SID_MAX + 1];   /* the chat the message went to */
     int8_t tells;            /* the gadget mode the message tells that chat, or -1 */
-    char *texts;             /* MAX_MSGS * TEXT_MAX: each message's text */
+    char *texts;             /* MAX_MSGS * TEXT_MAX: each message's text, its Markdown images taken out */
+    muse_chat_image_t md_img;   /* the first of those images, asked for once its message is done */
+    bool img_seen;           /* a delta.presentation image came for this turn */
     uint32_t pcm_out;        /* reply audio frames handed to the voice task */
     char committed[512];     /* finals that arrived before the half-close */
     char partial[512];
@@ -1615,14 +1619,17 @@ static int bind_msg(const char *id, cJSON *payload)
 static void append_text(msg_t &m, const char *text)
 {
     size_t add = strlen(text);
+    size_t gone = 0;
     if (s_turn.texts) {
         char *full = s_turn.texts + (&m - s_turn.msgs) * TEXT_MAX;
         if (!m.len) {
             full[0] = '\0';
         }
         strlcat(full, text, TEXT_MAX);
+        /* Markdown images, whole now, maybe from several pieces: not for the caption or the speech. */
+        gone = muse_chat_strip_images(full, &s_turn.md_img);
     }
-    m.len += add;
+    m.len = m.len + add - (gone < m.len + add ? gone : m.len + add);
     size_t have = strlen(m.tail);
     if (add >= sizeof(m.tail) - 1) {
         strlcpy(m.tail, text + add - (sizeof(m.tail) - 1), sizeof(m.tail));
@@ -1656,6 +1663,28 @@ static void show_reply_start(const msg_t &m)
     }
 }
 
+static void img_ask(const char *path, const char *label);   /* Turn: images, below */
+
+/* An image written into a done message's text, and no event showing one: Muse is asked for it as for those. */
+static void img_from_text(const char *final_text)
+{
+    if (s_turn.img_seen) {
+        return;
+    }
+    if (s_turn.text && final_text && !s_turn.md_img.path[0]) {
+        muse_chat_first_image(final_text, &s_turn.md_img);   /* typed: the text isn't kept */
+    }
+    if (!s_turn.md_img.path[0]) {
+        return;
+    }
+    ESP_LOGI(TAG, "image \"%s\" in the reply's text: %s", s_turn.md_img.label, s_turn.md_img.path);
+    if (s_turn.text) {
+        muse_hatch_console("image", s_turn.md_img.label, "\"bytes\":%u", 0u);
+    }
+    img_ask(s_turn.md_img.path, s_turn.md_img.label);
+    s_turn.img_seen = true;   /* once a turn */
+}
+
 static void message_done(int i, const char *final_text)
 {
     msg_t &m = s_turn.msgs[i];
@@ -1665,6 +1694,7 @@ static void message_done(int i, const char *final_text)
     m.done = true;
     mark(M_DONE);
     if (s_turn.text) {
+        img_from_text(final_text);
         /* The whole text if the pieces didn't add up to it (a line skipped, say): the reader uses it instead. */
         size_t n = m.len;
         if (final_text && final_text[0] && strlen(final_text) != m.len) {
@@ -1678,6 +1708,7 @@ static void message_done(int i, const char *final_text)
     if (!m.len && final_text && final_text[0]) {
         append_text(m, final_text);
     }
+    img_from_text(nullptr);
 #if CONFIG_MUSE_TTS_PICO
     if (m.streaming) {
         m.streaming = false;
@@ -1695,12 +1726,33 @@ static void message_done(int i, const char *final_text)
 }
 
 #if CONFIG_MUSE_TTS_PICO
-/* Where text's last whole sentence ends: after . ! or ? and a space, or a line break. 0 if none yet. */
+/*
+ * Where text's last whole sentence ends: after . ! or ? and a space, or a
+ * line break. 0 if none yet. Never inside a Markdown link, `[text](url)`,
+ * whose text or URL can have a ". " in it, or before an image still arriving.
+ */
 static size_t sentence_end(const char *t)
 {
-    size_t end = 0;
-    for (size_t k = 0; t[k]; k++) {
+    size_t end = 0, stop = muse_chat_shown_len(t);
+    for (size_t k = 0; k < stop; k++) {
         char c = t[k];
+        if (c == '[') {
+            size_t close = k + 1;
+            while (close < stop && t[close] != ']' && t[close] != '\n') {
+                close++;
+            }
+            if (close == stop) {
+                break;   /* its text, still arriving */
+            }
+            if (t[close] == ']' && (close + 1 == stop || t[close + 1] == '(')) {
+                const char *paren = static_cast<const char *>(memchr(t + close, ')', stop - close));
+                if (!paren) {
+                    break;   /* its URL, still arriving */
+                }
+                k = paren - t;
+            }
+            continue;
+        }
         if (c == '\n' || ((c == '.' || c == '!' || c == '?') && (t[k + 1] == ' ' || t[k + 1] == '\n'))) {
             end = k + 1;
         }
@@ -1795,12 +1847,11 @@ static const char *img_file(cJSON *payload, cJSON *image)
         return file;
     }
     file = cJSON_GetStringValue(cJSON_GetObjectItem(image, "path"));
-    if (file && !strncmp(file, "sandbox://", 10) && file[10]) {
-        return file + 10;
+    if (file && !strncmp(file, "sandbox://", 10)) {
+        return muse_chat_image_file(file);
     }
-    const char *url = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(image, "variants"), "original"));
-    file = url ? strstr(url, "/media/raw/") : nullptr;
-    return file && file[11] ? file + 11 : nullptr;
+    cJSON *variants = cJSON_GetObjectItem(image, "variants");
+    return muse_chat_image_file(cJSON_GetStringValue(cJSON_GetObjectItem(variants, "original")));
 }
 
 static void img_present(cJSON *payload)
@@ -1835,6 +1886,9 @@ static void img_present(cJSON *payload)
         return;
     }
     strlcpy(s_img_last, id, sizeof(s_img_last));
+    if (s_turn.phase == P_WAIT_REPLY) {
+        s_turn.img_seen = true;   /* the reply's own Markdown image needn't be asked for too */
+    }
     cJSON *bytes = cJSON_GetObjectItem(image, "byte_len");
     unsigned byte_len = cJSON_IsNumber(bytes) && bytes->valuedouble > 0 ? (unsigned)bytes->valuedouble : 0;
     ESP_LOGI(TAG, "image \"%s\" (%u bytes): %s", label, byte_len, file);
