@@ -111,6 +111,10 @@ static const char *TAG = "imu";
 #define SHAKE_SAMPLES 8
 #define SHAKE_WINDOW_MS 1000
 #define SHAKE_COOLDOWN_MS 4000
+/* Being shaken (muse_imu_shaking): two jolts past SHAKE_G this close
+ * together, and it eases off over SHAKING_FALL_MS after the last. */
+#define SHAKING_GAP_MS 300
+#define SHAKING_FALL_MS 400
 
 #define STEPS_SAVE_MS (5 * 60 * 1000)
 
@@ -137,6 +141,7 @@ static int64_t s_slept_at;
 static bool s_was_asleep;
 static int64_t s_shake_start, s_shake_until;
 static int s_shake_count;
+static atomic_uint s_jolt_ms, s_jolt_prev_ms;   /* the last two jolts past SHAKE_G, ms since boot | 1 */
 
 static esp_err_t rd(uint8_t reg, uint8_t *out, size_t len)
 {
@@ -409,7 +414,14 @@ static void motion(const float a[3], bool asleep, int64_t now)
 #endif
 
     /* Shaking: only seen at the awake poll rate. */
-    if (asleep || now < s_shake_until) {
+    if (asleep) {
+        return;
+    }
+    if (jolt > SHAKE_G) {
+        atomic_store(&s_jolt_prev_ms, atomic_load(&s_jolt_ms));
+        atomic_store(&s_jolt_ms, (uint32_t)(now / 1000) | 1);
+    }
+    if (now < s_shake_until) {
         return;
     }
     if (jolt > SHAKE_G) {
@@ -443,6 +455,16 @@ int muse_imu_poll(void)
         motion(a, asleep, now);
     }
     return asleep ? POLL_ASLEEP_MS : POLL_AWAKE_MS;
+}
+
+float muse_imu_shaking(void)
+{
+    uint32_t last = atomic_load(&s_jolt_ms), prev = atomic_load(&s_jolt_prev_ms);
+    uint32_t age = (uint32_t)(esp_timer_get_time() / 1000) - last;
+    if (!last || !prev || last - prev > SHAKING_GAP_MS || age >= SHAKING_FALL_MS) {
+        return 0.0f;
+    }
+    return 1.0f - (float)age / SHAKING_FALL_MS;
 }
 
 void muse_imu_tick(void)
