@@ -27,7 +27,8 @@
 cJSON *gadget_show_text_command(const cJSON *params);
 
 // set_mode {mode: "desk" | "night" | "on_the_go"}: picks the gadget mode, as
-// the settings screen does (muse_gadget_mode.h).
+// the settings screen does (muse_gadget_mode.h). Nothing is sent: each chat
+// hears the mode with its next message.
 cJSON *gadget_set_mode_command(const cJSON *params);
 
 // set_chat {session_id? | name?}: picks the Muse chat turns go to. A name picks
@@ -35,9 +36,11 @@ cJSON *gadget_set_mode_command(const cJSON *params);
 // first if none has it (created: true). A session_id that's missing, empty or
 // "main" is the main chat, "gadget" this gadget's own side chat
 // (muse_settings_gadget_chat_sid), and a UUID that side chat. Returns
-// {chat: main | gadget | named | custom, session_id, name?, created?}.
+// {chat: main | gadget | named | new | custom, session_id, name?, told_mode,
+// created?}, told_mode being the mode that chat last heard, or null.
 cJSON *gadget_set_chat_command(const cJSON *params);
 
-// list_chats: the named chats kept on the device, [{name, session_id}], and
-// the current one as set_chat returns it. Muse itself can't list its chats.
+// list_chats: the named chats kept on the device, [{name, session_id,
+// told_mode}], and the current one as set_chat returns it. Muse itself can't
+// list its chats.
 cJSON *gadget_list_chats_command(const cJSON *params);

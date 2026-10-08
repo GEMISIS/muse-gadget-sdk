@@ -42,7 +42,9 @@
  * console as "@chat" lines instead of to the voice task.
  *
  * Turns go to the main chat, or to the side chat picked in the settings
- * (muse_settings_chat_sid) as their session_id.
+ * (muse_settings_chat_sid) as their session_id. A message to a chat that last
+ * heard another gadget mode carries the mode's contract after its words
+ * (muse_gadget_mode_context), and the chat counts as told once the Muse takes it.
  */
 
 #include <atomic>
@@ -132,6 +134,16 @@ static const char *TAG = "muse_chat_session";
 #define VOICE_NOTE 1
 #define NOTE_MAX_BYTES (MIC_RATE * 2 * 20) /* 20 s of 16 kHz PCM; Muse stops at 15 */
 #define NOTE_PART_BYTES (DICT_CHUNK_BYTES / 4 * 3)   /* staged PCM that base64s to one body chunk */
+/*
+ * The Muse titles a new chat by its first message, and a voice note's is an
+ * audio file ("Transcribe audio file"). So the first turn of a new chat
+ * (muse_settings_chat_untitled) is transcribed here first, on
+ * /api/voice/dictation, and the words go as a text message; the recording is
+ * kept, and goes as a voice note after all if dictation hears nothing. Set to
+ * 1 to do this for every voice turn.
+ */
+#define DICTATE_EVERY_TURN 0
+#define DICT_FINAL_WAIT_US (6 * 1000000LL) /* dictating: release -> transcript, before the note goes instead */
 
 #define MAX_MSGS 8
 
@@ -250,6 +262,12 @@ struct turn_t {
     size_t note_len;
     size_t pcm_bytes;        /* the note so far */
     size_t body_sent;
+    bool dictating;          /* transcribed here first (DICTATE_EVERY_TURN), the recording kept in rec */
+    bool dict_failed;        /* dictation heard nothing: rec goes as a voice note */
+    uint8_t *rec;            /* dictating: NOTE_MAX_BYTES of 16 kHz PCM */
+    size_t rec_pos;          /* how much of rec dictation has had */
+    char sid[MUSE_CHAT_SID_MAX + 1];   /* the chat the message went to */
+    int8_t tells;            /* the gadget mode the message tells that chat, or -1 */
     char *texts;             /* MAX_MSGS * TEXT_MAX: each message's text */
     uint32_t pcm_out;        /* reply audio frames handed to the voice task */
     char committed[512];     /* finals that arrived before the half-close */
@@ -1010,9 +1028,16 @@ static void turn_reset_streams(void)
     }
 }
 
+static void free_rec(void)
+{
+    heap_caps_free(s_turn.rec);
+    s_turn.rec = nullptr;
+}
+
 static void turn_finish(void)
 {
     turn_reset_streams();
+    free_rec();
     s_turn.phase = P_IDLE;
     s_turn.dict_id = s_turn.chat_id = 0;
     s_turn.tts_msg = -1;
@@ -1057,6 +1082,7 @@ static bool turn_start(uint32_t gen, bool text)
             turn_finish();
         }
     }
+    free_rec();
     uint8_t *chunk = s_turn.chunk, *mp3 = s_turn.mp3, *note = s_turn.note;
     char *texts = s_turn.texts;
     s_turn = turn_t{};
@@ -1067,6 +1093,7 @@ static bool turn_start(uint32_t gen, bool text)
     s_turn.gen = gen;
     s_turn.text = text;
     s_turn.tts_msg = -1;
+    s_turn.tells = -1;
     memset(s_marks, 0, sizeof(s_marks));
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
@@ -1081,12 +1108,38 @@ static bool turn_start(uint32_t gen, bool text)
     return true;
 }
 
+/* A dictated turn (DICTATE_EVERY_TURN): dictation open, and the room to keep the recording. */
+static bool dictate_begin(void)
+{
+    s_turn.rec = static_cast<uint8_t *>(psram_alloc(NOTE_MAX_BYTES));
+    if (!s_turn.rec) {
+        ESP_LOGW(TAG, "no room to keep the recording: sending a voice note");
+        return false;
+    }
+    char path[64];
+    snprintf(path, sizeof(path), "/api/voice/dictation?sample_rate_hz=%d", DICT_RATE);
+    s_turn.dict_id = open_stream(K_DICT, "POST", path, nullptr, "application/x-ndjson", nullptr, false);
+    if (!s_turn.dict_id) {
+        free_rec();
+        return false;
+    }
+    s_turn.dictating = true;
+    return true;
+}
+
 static void turn_begin(uint32_t gen)
 {
     if (!turn_start(gen, false)) {
         return;
     }
     if (VOICE_NOTE) {
+        char sid[MUSE_CHAT_SID_MAX + 1];
+        muse_settings_chat_sid(sid);
+        if ((DICTATE_EVERY_TURN || muse_settings_chat_untitled(sid)) && dictate_begin()) {
+            ESP_LOGI(TAG, "%s: transcribing it here, to send the words", DICTATE_EVERY_TURN ? "voice turn" : "a new chat's first turn");
+            s_turn.phase = P_LISTEN;
+            return;
+        }
         if (!open_note()) {
             disconnect("chat open failed");
             turn_fail("CAN'T REACH MUSE");
@@ -1106,6 +1159,19 @@ static void turn_begin(uint32_t gen)
     s_turn.phase = P_LISTEN;
 }
 
+/* Mic audio for dictation: from the recording kept (dictating), else as the voice task hands it over. */
+static size_t mic_take(int16_t *out, size_t frames)
+{
+    if (!s_turn.rec) {
+        return xStreamBufferReceive(s_in, out, frames * sizeof(int16_t), 0) / sizeof(int16_t);
+    }
+    size_t have = (s_turn.pcm_bytes - s_turn.rec_pos) / sizeof(int16_t);
+    size_t n = have < frames ? have : frames;
+    memcpy(out, s_turn.rec + s_turn.rec_pos, n * sizeof(int16_t));
+    s_turn.rec_pos += n * sizeof(int16_t);
+    return n;
+}
+
 /* Moves mic audio to the dictation stream, paced like a live mic. */
 static bool pump_mic(void)
 {
@@ -1118,7 +1184,7 @@ static bool pump_mic(void)
         if ((s_turn.sent24 + DICT_CHUNK_BYTES / 2) / (double)DICT_RATE > 1.0 + 1.5 * elapsed) {
             return did;
         }
-        size_t got = xStreamBufferReceive(s_in, in, sizeof(in), 0) / sizeof(int16_t);
+        size_t got = mic_take(in, sizeof(in) / sizeof(in[0]));
         if (!got) {
             break;
         }
@@ -1160,6 +1226,13 @@ static bool pump_mic(void)
 
 /* ---- Turn: voice note ---- */
 
+/* Where this turn's message goes, and the gadget mode it tells that chat (-1 none), for on_chat_ack. */
+static void message_to(const char *sid, int tells)
+{
+    strlcpy(s_turn.sid, sid, sizeof(s_turn.sid));
+    s_turn.tells = (int8_t)tells;
+}
+
 /* Base64-encodes the staged PCM into one body chunk; `last` pads and closes the request. */
 static bool send_note_part(bool last)
 {
@@ -1189,9 +1262,15 @@ static bool open_note(void)
     }
     char sid[MUSE_CHAT_SID_MAX + 1], head[MUSE_CHAT_NOTE_HEAD_MAX];
     muse_settings_chat_sid(sid);
-    size_t n = muse_chat_note_head(sid, head, sizeof(head));
-    if (sid[0]) {
-        ESP_LOGI(TAG, "voice note to chat %s", sid);
+    /* The mode goes as the text with the audio, but not to a chat the Muse
+     * hasn't titled yet: it would be titled by that. Its next message tells it. */
+    int mode = -1;
+    const char *ctx = muse_settings_chat_untitled(sid) ? nullptr : muse_gadget_mode_context(sid, &mode);
+    message_to(sid, ctx ? mode : -1);
+    size_t n = muse_chat_note_head(sid, ctx, head, sizeof(head));
+    if (sid[0] || ctx) {
+        ESP_LOGI(TAG, "voice note to chat %s%s%s", sid[0] ? sid : "main", ctx ? ", telling it: " : "",
+                 ctx ? muse_gadget_mode_name((muse_gadget_mode_t)mode) : "");
     }
     s_turn.body_sent = n;
     if (!n || !send_body(s_turn.chat_id, reinterpret_cast<const uint8_t *>(head), n, false)) {
@@ -1239,6 +1318,76 @@ static bool record_note(void)
     return true;
 }
 
+/* Dictation heard nothing: the recording kept goes as a voice note after all. */
+static bool send_rec_as_note(void)
+{
+    send_reset(s_turn.dict_id);
+    s_turn.dict_id = 0;
+    s_turn.dictating = false;
+    if (!open_note()) {
+        return false;
+    }
+    for (size_t off = 0; off < s_turn.pcm_bytes;) {
+        size_t take = NOTE_PART_BYTES - s_turn.note_len;
+        take = take < s_turn.pcm_bytes - off ? take : s_turn.pcm_bytes - off;
+        memcpy(s_turn.note + s_turn.note_len, s_turn.rec + off, take);
+        s_turn.note_len += take;
+        off += take;
+        if (s_turn.note_len == NOTE_PART_BYTES && !send_note_part(false)) {
+            return false;
+        }
+    }
+    if (!send_note_part(true)) {
+        return false;
+    }
+    ESP_LOGI(TAG, "voice note instead: %.2fs, %u byte request", (double)s_turn.pcm_bytes / (MIC_RATE * 2),
+             (unsigned)s_turn.body_sent);
+    free_rec();
+    mark(M_SENT);
+    s_turn.chat_posted = true;
+    s_turn.chat_us = s_turn.last_event_us = now_us();
+    s_turn.phase = P_WAIT_REPLY;
+    return true;
+}
+
+/*
+ * A dictated turn: keeps the whole recording, and streams it to dictation
+ * paced like a live mic (pump_mic). If dictation heard nothing, the
+ * recording goes as a voice note once it's all in.
+ */
+static bool record_dictated(void)
+{
+    if (s_turn.phase == P_LISTEN) {
+        for (;;) {
+            size_t room = (NOTE_MAX_BYTES - s_turn.pcm_bytes) & ~(size_t)1;
+            size_t got = room ? xStreamBufferReceive(s_in, s_turn.rec + s_turn.pcm_bytes, room, 0) : 0;
+            if (!got) {
+                break;
+            }
+            s_turn.pcm_bytes += got;
+        }
+        if (s_turn.pcm_bytes >= NOTE_MAX_BYTES) {
+            s_turn.end_requested = true;
+        }
+        if (s_turn.end_requested) {
+            mark(M_RELEASE);
+            if (s_turn.pcm_bytes < MIC_RATE * 2 * 3 / 10) {
+                turn_fail("DIDN'T CATCH THAT");
+                return true;
+            }
+        }
+        if (!s_turn.dict_failed) {
+            return pump_mic();   /* on to P_WAIT_FINAL once it has all gone */
+        }
+        if (!s_turn.end_requested) {
+            return true;
+        }
+    } else if (!s_turn.dict_failed) {
+        return true;   /* waiting for the transcript */
+    }
+    return send_rec_as_note();
+}
+
 /*
  * Posts `text` to the chat and waits for the reply. A long message goes up in
  * parts, since each frame has to fit SCRATCH.
@@ -1246,14 +1395,30 @@ static bool record_note(void)
 static void send_chat(const char *text, const char *modality)
 {
     s_turn.chat_posted = true;
-    cJSON *body = cJSON_CreateObject();
-    cJSON_AddStringToObject(body, "message", text);
-    cJSON_AddStringToObject(body, "output_modality", modality);
     char sid[MUSE_CHAT_SID_MAX + 1];
     muse_settings_chat_sid(sid);
+    /* The mode after the words, if this chat last heard another: the Muse titles a new chat by the words. */
+    int mode = -1;
+    const char *ctx = muse_gadget_mode_context(sid, &mode);
+    char *with = nullptr;
+    if (ctx) {
+        size_t n = strlen(text) + 2 + strlen(ctx) + 1;
+        with = static_cast<char *>(psram_alloc(n));
+        if (with) {
+            snprintf(with, n, "%s\n\n%s", text, ctx);
+        }
+    }
+    message_to(sid, with ? mode : -1);
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "message", with ? with : text);
+    heap_caps_free(with);
+    cJSON_AddStringToObject(body, "output_modality", modality);
     if (sid[0]) {
         cJSON_AddStringToObject(body, "session_id", sid);
-        ESP_LOGI(TAG, "message to chat %s", sid);
+    }
+    if (sid[0] || s_turn.tells >= 0) {
+        ESP_LOGI(TAG, "message to chat %s%s%s", sid[0] ? sid : "main", s_turn.tells >= 0 ? ", telling it: " : "",
+                 s_turn.tells >= 0 ? muse_gadget_mode_name((muse_gadget_mode_t)mode) : "");
     }
     char *json = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
@@ -1288,6 +1453,11 @@ static void post_chat(const char *text)
     while (*text == ' ') {
         text++;
     }
+    if (!*text && s_turn.dictating) {
+        ESP_LOGW(TAG, "dictation heard nothing: sending the recording as a voice note");
+        s_turn.dict_failed = true;   /* record_dictated sends it */
+        return;
+    }
     if (!*text) {
         turn_fail("DIDN'T CATCH THAT");
         return;
@@ -1295,6 +1465,10 @@ static void post_chat(const char *text)
     ESP_LOGI(TAG, "heard: \"%s\"", text);
     emit(MUSE_HATCH_EV_HEARD, text);
     send_chat(text, "text");
+    if (s_turn.phase == P_WAIT_REPLY) {
+        mark(M_SENT);
+        free_rec();   /* the words went: no voice note needed */
+    }
 }
 
 /* A typed turn: the text goes straight to the chat. */
@@ -1348,6 +1522,11 @@ static void on_dictation_end(bool ok)
 {
     s_turn.dict_id = 0;
     if (s_turn.chat_posted || s_turn.phase == P_IDLE) {
+        return;
+    }
+    if (!s_turn.end_sent && s_turn.dictating) {
+        ESP_LOGW(TAG, "dictation %s before the release: the recording goes as a voice note", ok ? "ended" : "failed");
+        s_turn.dict_failed = true;   /* record_dictated sends it on the release */
         return;
     }
     if (!s_turn.end_sent) {
@@ -1579,9 +1758,8 @@ static void on_event(cJSON *line)
         cJSON *session = cJSON_GetObjectItem(payload, "session");
         const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(session, "session_id"));
         const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(session, "title"));
-        bool started = false;
-        if (sid && title && title[0] && muse_settings_chat_retitle(sid, title, &started) && started) {
-            muse_gadget_mode_chat_started();   /* titled by the first message: now the mode */
+        if (sid && title && title[0]) {
+            muse_settings_chat_retitle(sid, title, nullptr);
         }
         return;
     }
@@ -1660,6 +1838,9 @@ static void on_chat_ack(stream_t *s)
     s_turn.acked = true;
     mark(M_ACK);
     ESP_LOGI(TAG, "chat/stream ack: user message %s", s_turn.user_ids[0]);
+    if (s_turn.tells >= 0) {
+        muse_gadget_mode_told(s_turn.sid, s_turn.tells);   /* the chat has the mode now */
+    }
     cJSON_Delete(root);
     emit(MUSE_HATCH_EV_SENT, nullptr);
 }
@@ -1878,7 +2059,7 @@ static void decode(void)
 static void check_turn(void)
 {
     int64_t t = now_us();
-    if (s_turn.phase == P_WAIT_FINAL && t - s_turn.end_sent_us > FINAL_TIMEOUT_US) {
+    if (s_turn.phase == P_WAIT_FINAL && t - s_turn.end_sent_us > (s_turn.dictating ? DICT_FINAL_WAIT_US : FINAL_TIMEOUT_US)) {
         on_dictation_end(true);
         return;
     }
@@ -2232,7 +2413,9 @@ static void hatch_task(void *arg)
             continue;
         }
         bool sent = true;
-        if (s_turn.phase == P_LISTEN) {
+        if (s_turn.dictating && (s_turn.phase == P_LISTEN || s_turn.phase == P_WAIT_FINAL)) {
+            sent = record_dictated();
+        } else if (s_turn.phase == P_LISTEN) {
             sent = VOICE_NOTE ? record_note() : pump_mic();
         }
         if (!sent) {

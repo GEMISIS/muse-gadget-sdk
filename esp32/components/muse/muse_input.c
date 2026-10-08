@@ -36,6 +36,7 @@
 #include "muse_board.h"
 #include "muse_chat.h"
 #include "muse_console.h"
+#include "muse_gadget_mode.h"
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
@@ -632,7 +633,18 @@ static void set_face(const char *name)
     fflush(stdout);
 }
 
-/* {"chat":"main|gadget|named|custom","session_id":ID[,"name":NAME]} for the chat picked now. */
+/* "told_mode": the gadget mode a chat last heard ("desk", "night", "on_the_go"), or null. */
+static void add_told_mode(cJSON *chat, int mode)
+{
+    const char *key = mode >= 0 ? muse_gadget_mode_key((muse_gadget_mode_t)mode) : NULL;
+    if (key) {
+        cJSON_AddStringToObject(chat, "told_mode", key);
+    } else {
+        cJSON_AddNullToObject(chat, "told_mode");
+    }
+}
+
+/* {"chat":"main|gadget|named|new|custom","session_id":ID[,"name":NAME],"told_mode":MODE} for the chat picked now. */
 static cJSON *chat_json(void)
 {
     char sid[MUSE_CHAT_SID_MAX + 1], gadget[MUSE_CHAT_SID_MAX + 1], name[MUSE_CHAT_NAME_MAX + 1];
@@ -647,6 +659,7 @@ static cJSON *chat_json(void)
     if (named) {
         cJSON_AddStringToObject(chat, "name", name);
     }
+    add_told_mode(chat, muse_settings_chat_told(sid));
     return chat;
 }
 
@@ -683,9 +696,11 @@ static void chat_error(const char *what, const char *why)
  *   "chat_sub=0" or "=1"  whether the reply subscription names it
  *                         (muse_chat_set_subscribe_session)
  * Each answers with
- *   @chat_sid {"chat":"main|gadget|named|custom","session_id":ID,"name":NAME,"subscribe_session":BOOL}
+ *   @chat_sid {"chat":"main|gadget|named|new|custom","session_id":ID,"name":NAME,"told_mode":MODE,
+ *              "subscribe_session":BOOL}
  * or "@chat_sid.error" {"input":...,"error":...}. "chats" lists the named ones:
- *   @chats {"current":{...},"chats":[{"name":NAME,"session_id":ID},...]}
+ *   @chats {"current":{...},"chats":[{"name":NAME,"session_id":ID,"told_mode":MODE},...]}
+ * MODE is the gadget mode that chat last heard ("desk", "night", "on_the_go"), or null.
  */
 static void chat_sid_command(const char *line)
 {
@@ -699,6 +714,7 @@ static void chat_sid_command(const char *line)
             cJSON *chat = cJSON_CreateObject();
             cJSON_AddStringToObject(chat, "name", chats[i].name);
             cJSON_AddStringToObject(chat, "session_id", chats[i].sid);
+            add_told_mode(chat, chats[i].told_mode);
             cJSON_AddItemToArray(list, chat);
         }
         print_json("chats", json);
