@@ -41,6 +41,11 @@ void muse_ui_quake(void);
  * within a moment, the screen waking meanwhile; otherwise it's dropped. */
 void muse_ui_plugged(void);
 
+/* From any task (bench, ">batt="): the face shows this battery level, 0..100,
+ * charging or not, in place of the board's reading; -1 goes back to it.
+ * Only the face: the settings, power saving and Muse see the real one. */
+void muse_ui_fake_battery(int pct, bool charging);
+
 /* The functions below run in the LVGL task (or with the display lock held). */
 
 /* Slide back to the face (e.g. when a talk starts). */
