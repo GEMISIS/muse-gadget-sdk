@@ -2266,6 +2266,13 @@ static float update_plugged(muse_mode_t mode, float now, bool face)
 #define TIRED_FULL_PCT 10
 #define BELLY_PAT_S 3.0f
 
+static volatile int s_fake_batt = -1;   /* ">batt=": 0..100, +0x100 charging; -1 for the real one */
+
+void muse_ui_fake_battery(int pct, bool charging)
+{
+    s_fake_batt = pct < 0 ? -1 : (pct > 100 ? 100 : pct) | (charging ? 0x100 : 0);
+}
+
 static void pose_battery(muse_pose_t *pose, float now)
 {
     static float patted_at = -100.0f;
@@ -2276,6 +2283,11 @@ static void pose_battery(muse_pose_t *pose, float now)
     }
     was_happy = happy;
     muse_power_t p = muse_state_power();
+    int fake = s_fake_batt;
+    if (fake >= 0) {
+        p.battery_pct = fake & 0xff;
+        p.charging = p.usb = fake & 0x100;
+    }
     if (p.battery_pct < 0) {
         return;   /* no battery, or no reading yet */
     }

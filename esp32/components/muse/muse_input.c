@@ -865,6 +865,22 @@ static bool console_command(char *line, bool whole)
         cheer_plugged("serial", true);   /* as plugging in would */
         return true;
     }
+    if (!strncmp(line, "batt=", 5)) {
+        /* The face as if the battery were at N% ("batt=15"), charging
+         * ("batt=15c"), or as it is again ("batt=off"). */
+        char *end;
+        long pct = strtol(line + 5, &end, 10);
+        bool off = !strcmp(line + 5, "off");
+        if (!off && (end == line + 5 || pct < 0 || pct > 100 || (*end && strcmp(end, "c") != 0))) {
+            printf("@batt.error \"%s\": batt=0..100, with c for charging, or batt=off\n", line + 5);
+        } else {
+            muse_ui_fake_battery(off ? -1 : (int)pct, !off && *end == 'c');
+            muse_state_poke();
+            printf("@batt %s\n", off ? "off" : line + 5);
+        }
+        fflush(stdout);
+        return true;
+    }
 #if CONFIG_MUSE_GADGET_UP_NEXT
     if (!strcmp(line, "brief")) {
         muse_up_next_refresh();
