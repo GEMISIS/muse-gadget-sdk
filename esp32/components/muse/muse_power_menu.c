@@ -27,6 +27,7 @@
 #include "muse_input.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#include "muse_voice.h"
 
 static const char *TAG = "muse_power_menu";
 
@@ -125,6 +126,7 @@ static void open_menu(float now)
     s_shown = true;
     s_open = true;
     s_idle_until = now + IDLE_CLOSE_S;
+    muse_voice_earcon(MUSE_EARCON_CLICK);
 }
 
 static void select_item(int item)
