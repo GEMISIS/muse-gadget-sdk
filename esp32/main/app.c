@@ -1917,7 +1917,8 @@ static cJSON *on_ws_command(
         const cJSON *data = cJSON_GetObjectItem(params, "data_b64");
         char *out = cJSON_PrintUnformatted(result);
         ESP_LOGI(TAG, "display.show_image: offset %d, %u base64 chars, final %d -> %s",
-                 (int)cJSON_GetNumberValue(cJSON_GetObjectItem(params, "offset")),
+                 cJSON_IsNumber(cJSON_GetObjectItem(params, "offset"))
+                     ? (int)cJSON_GetObjectItem(params, "offset")->valuedouble : 0,
                  (unsigned)(cJSON_IsString(data) ? strlen(data->valuestring) : 0),
                  cJSON_IsTrue(cJSON_GetObjectItem(params, "final")), out ? out : "?");
         cJSON_free(out);
