@@ -150,7 +150,7 @@ static const char *TAG = "muse_chat_session";
 #define PRESENT_LATE_US (30 * 1000000LL)   /* an image for the turn's chat may come this long after it */
 #define IMG_HOLD_CAP_US (120 * 1000000LL)  /* a reply's speech waits for its image this long at most */
 #define IMG_GRACE_US (700 * 1000LL)        /* a reply ready to speak: an image event may still be this close behind (seen ~150 ms) */
-#define IMG_RISE_US (1100 * 1000LL)        /* shown: out of the pocket and held up (muse_ui.c's PHOTO_REACH_S + PHOTO_RISE_S) */
+#define IMG_UP_CAP_US (15 * 1000000LL)     /* handed to the face: unboxed and held up (img_up) by then at the latest */
 #define IMG_CAPTION "GETTING THE IMAGE..."
 /* After the words of every message (and any mode contract): Muse forgets the contract's standing order. */
 #define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: a 96px baseline JPEG preview, then 240px.)"
@@ -258,6 +258,7 @@ struct stream_t {
 /* The last reply image's presentation id (img_present): a repeat isn't asked for again. */
 EXT_RAM_BSS_ATTR static char s_img_last[96];
 static uint32_t img_seq(void);         /* muse_present_seq: images handled */
+static uint32_t img_up(void);          /* muse_present_up_seq: images held up */
 static void img_wait(bool on);         /* muse_present_wait */
 static int img_progress(void);         /* muse_present_progress */
 static bool bg_chat(const char *sid);  /* the background request's chat (bg_t) */
@@ -317,6 +318,7 @@ struct turn_t {
     muse_chat_image_t md_img;   /* the first of those images, asked for once its message is done */
     bool img_seen;           /* a delta.presentation image came for this turn */
     uint32_t img_seq;        /* img_seq() as the turn started: a change is an image pushed meanwhile */
+    uint32_t img_up;         /* img_up() as the turn started: a change is one held up */
     bool img_hold;           /* the speech waits for an image on its way (speech_held) */
     bool img_held;           /* it has, this turn: once is enough */
     bool img_coming;         /* an image was named (an event, or Markdown) and asked for */
@@ -1159,6 +1161,7 @@ static bool turn_start(uint32_t gen, bool text)
     s_turn.tts_msg = -1;
     s_turn.tells = -1;
     s_turn.img_seq = img_seq();
+    s_turn.img_up = img_up();
     memset(s_marks, 0, sizeof(s_marks));
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
@@ -1910,7 +1913,7 @@ static void img_hold_start(const char *why)
 
 /*
  * Whether the speech still waits for the image. It goes on once the image
- * is up (shown, and IMG_RISE_US for Muse to take it out of his pocket), once
+ * is up (shown, unboxed and held up: img_up, IMG_UP_CAP_US at most), once
  * the reply's all in with no image after all (img_none), or after
  * IMG_HOLD_CAP_US; an image later than that still shows when it comes.
  */
@@ -1927,7 +1930,8 @@ static bool speech_held(void)
     }
     const char *why = nullptr;
     if (s_turn.img_shown_us) {
-        why = t - s_turn.img_shown_us >= IMG_RISE_US ? "the image is up" : nullptr;
+        why = img_up() != s_turn.img_up ? "the image is up"
+            : t - s_turn.img_shown_us >= IMG_UP_CAP_US ? "the image is slow to go up" : nullptr;
     } else if (s_turn.img_none) {
         why = "no image after all";
     } else if (t - s_turn.img_hold_us >= IMG_HOLD_CAP_US) {
@@ -2865,6 +2869,15 @@ static uint32_t img_seq(void)
 {
 #if CONFIG_MUSE_ENABLED
     return muse_present_seq();
+#else
+    return 0;
+#endif
+}
+
+static uint32_t img_up(void)
+{
+#if CONFIG_MUSE_ENABLED
+    return muse_present_up_seq();
 #else
     return 0;
 #endif

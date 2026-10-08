@@ -67,6 +67,11 @@ enum {
     C_BOXL,
     C_BOXD,
     C_TAPE,
+    C_PICSKY,    /* the picture he puts together (MUSE_ACT_ASSEMBLE): sky, */
+    C_PICSKYL,
+    C_PICSUN,    /* sun, */
+    C_PICHILL,   /* and hills */
+    C_PICHILLD,
     C_MUG,       /* pose->tea */
     C_MUGD,
     C_TEA,
@@ -140,6 +145,11 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_BOXL] = 0xe8bd85,
     [C_BOXD] = 0xa5703c,
     [C_TAPE] = 0xf3e2b8,
+    [C_PICSKY] = 0x6cb8ff,
+    [C_PICSKYL] = 0xb8e2ff,
+    [C_PICSUN] = 0xffd23f,
+    [C_PICHILL] = 0x5cc76a,
+    [C_PICHILLD] = 0x2f8f4e,
     [C_MUG] = 0xf7f4ee,
     [C_MUGD] = 0xc8c0b2,
     [C_TEA] = 0x9a5a32,
@@ -1495,14 +1505,16 @@ static void draw_box(int x, int y)
 #define CLOUD_W 18
 #define CLOUD_H 8
 
+#define PK_CATCH_UP 4.0f        /* behind (the bytes quicker than him): trips up to this much quicker */
+
 static struct {
-    float start;    /* act_t the box in the air set off, or -1 */
+    float u;        /* the box in the air, 0..1 through its trip, or -1 */
     float last;     /* act_t last frame */
     float poof;     /* act_t the full stack started going, or -1 */
     float rise;     /* 0..1, eased: up off the floor for the bar */
     int shown;      /* on the stack */
     bool landed;
-} s_pk = { .start = -1, .poof = -1 };
+} s_pk = { .u = -1, .poof = -1 };
 
 /* The top left of the stack's box n, from 0 at the bottom. */
 static void pk_slot(int n, float *x, float *y)
@@ -1512,28 +1524,41 @@ static void pk_slot(int n, float *x, float *y)
     *y = 58.0f - PK_RISE * s_pk.rise - BOX_H - n * (BOX_H - 1);
 }
 
-/* Steps the boxes on to act_t `at`; the one in the air is pk_u 0..1 through its trip, or -1. */
+/*
+ * Steps the boxes on to act_t `at`; the one in the air is pk_u 0..1 through
+ * its trip, or -1. Behind the bytes, each trip is quicker, so a stack the
+ * bytes fill in a second (all here at once) is full a second or so later.
+ */
 static float pk_update(float at, float progress, bool first)
 {
     if (first || at < s_pk.last) {
-        s_pk.start = -1;
+        s_pk.u = -1;
         s_pk.poof = -1;
         s_pk.shown = 0;
+        s_pk.last = at;
     }
+    float dt = clampf(at - s_pk.last, 0, 0.2f);
     s_pk.last = at;
     bool known = progress >= 0;
     int want = known ? 1 + (int)(clampf(progress, 0, 1) * (PK_MAX - 1) + 0.001f) : PK_MAX;
-    if (s_pk.start >= 0) {
-        float u = (at - s_pk.start) / PK_DUR;
-        if (u >= PK_LAND && !s_pk.landed) {
+    if (s_pk.u >= 0) {
+        int behind = want - s_pk.shown;
+        float speed = known ? clampf(1.0f + (behind - 1) * 1.5f, 1, PK_CATCH_UP) : 1.0f;
+        if (known && progress >= 1) {
+            speed = PK_CATCH_UP;   /* all here: the rest down quick */
+        }
+        s_pk.u += dt * speed / PK_DUR;
+        if (s_pk.u >= PK_LAND && !s_pk.landed) {
             s_pk.landed = true;
             s_pk.shown++;
         }
-        if (u >= 1) {
-            s_pk.start = -1;
+        if (s_pk.u >= 1) {
+            s_pk.u = -1;
         }
     }
-    if (!known && s_pk.start < 0 && s_pk.shown >= PK_MAX) {
+    if (known) {
+        s_pk.poof = -1;   /* knowing now: the stack stays */
+    } else if (s_pk.u < 0 && s_pk.shown >= PK_MAX) {
         if (s_pk.poof < 0) {
             s_pk.poof = at;
         } else if (at - s_pk.poof >= PK_POOF) {
@@ -1541,16 +1566,22 @@ static float pk_update(float at, float progress, bool first)
             s_pk.shown = 0;
         }
     }
-    if (s_pk.start < 0 && s_pk.poof < 0 && at > 0.15f && s_pk.shown < want) {
-        s_pk.start = at;
+    if (s_pk.u < 0 && s_pk.poof < 0 && at > 0.15f && s_pk.shown < want) {
+        s_pk.u = 0;
         s_pk.landed = false;
     }
-    return s_pk.start >= 0 ? (at - s_pk.start) / PK_DUR : -1.0f;
+    return s_pk.u;
 }
 
-/* The cloud the boxes come out of, and a bold down arrow through it, bobbing, in the accent colour. */
-static void draw_cloud(float t)
+/*
+ * The cloud the boxes come out of, and a bold down arrow through it, bobbing,
+ * in the accent colour; `gone` 0..1 floating up and away, thinning out.
+ */
+static void draw_cloud(float t, float gone)
 {
+    if (gone >= 1) {
+        return;
+    }
     static const char *const CLOUD[] = {
         "......######......",
         "....##wwwwww##....",
@@ -1561,8 +1592,21 @@ static void draw_cloud(float t)
         "#ssssssssssssssss#",
         ".################.",
     };
+    static const char KEYS[] = "#wos";
     const uint8_t cols[] = { C_BUBBLED, C_WHITE, C_BUBBLE, C_BUBBLED };
-    stamp_c(CLOUD, 8, CLOUD_X, CLOUD_Y, "#wos", cols);
+    int cx = CLOUD_X + iround(gone * 4.0f), cy = CLOUD_Y - iround(gone * gone * 12.0f);
+    if (gone > 0) {
+        for (int r = 0; r < CLOUD_H; r++) {
+            for (int c = 0; CLOUD[r][c]; c++) {
+                const char *k = strchr(KEYS, CLOUD[r][c]);
+                if (k && bayer(cx + c, cy + r) >= gone * 1.2f) {
+                    px(cx + c, cy + r, cols[k - KEYS]);
+                }
+            }
+        }
+        return;   /* the arrow's done */
+    }
+    stamp_c(CLOUD, 8, cx, cy, KEYS, cols);
     static const char *const ARROW[] = {
         "..###..",
         "..###..",
@@ -1615,6 +1659,136 @@ static void draw_progress(int x0, int x1, int y, float progress, float t)
         px(x, y + 1, x == glint || x == glint + 1 ? C_WHITE : C_G0);
         px(x, y + 2, C_ACC);
     }
+}
+
+/*
+ * All here: unboxing (MUSE_ACT_UNBOX) and putting the picture together
+ * (MUSE_ACT_ASSEMBLE). The stack's boxes open from the top, each in turn:
+ * the lid pops, the flaps fly open, a piece of the picture jumps out to
+ * hover by his head, and the empty box goes in a puff. Then the four pieces
+ * fly in front of him and snap together, a white frame pops round them, and
+ * he holds the little photo, then tucks it into his pocket.
+ */
+#define PIC 10                  /* the picture's side: four TILE x TILE pieces */
+#define TILE 5
+#define UB_FIRST 0.04f          /* UNBOX: the first box opens, */
+#define UB_EACH 0.17f           /* the next this much later, */
+#define UB_POP 0.07f            /* the lid popping, then open */
+#define UB_FLY 0.3f             /* its piece jumping out to hover */
+#define UB_GONE 0.2f            /* the empty box gone in a puff, from its opening */
+#define AS_EACH 0.07f           /* ASSEMBLE: each piece sets off this much after the last, */
+#define AS_FLY 0.34f            /* and flies this long */
+#define AS_FRAME 0.62f          /* the frame popping round them, */
+#define AS_FRAMED 0.8f          /* done */
+
+static const char *const PICTURE[PIC] = {
+    "SSSSSSSSSS",
+    "SwwSSSSuuS",
+    "wwwwSSuuuu",
+    "SSSSSSuuuu",
+    "sssssssuus",
+    "ssshhhssss",
+    "shhhhhhshh",
+    "hhhhhhhhhh",
+    "hhdhhhhhdh",
+    "dddddddddd",
+};
+static const char PIC_KEYS[] = "SwushdW";
+static const uint8_t PIC_COLS[] = { C_PICSKY, C_WHITE, C_PICSUN, C_PICSKYL, C_PICHILL, C_PICHILLD, C_WHITE };
+
+/* Where piece q (0 top left .. 3 bottom right) hovers, its outline's top left, once it's out. */
+static void piece_hover(int q, float t, float *x, float *y)
+{
+    static const int8_t AT[4][2] = { { 2, 17 }, { 5, 6 }, { 40, 3 }, { 47, 13 } };
+    *x = AT[q][0];
+    *y = AT[q][1] + (sinf(t * 3.0f + q * 1.7f) > 0.3f ? 1.0f : 0.0f);   /* bobbing */
+}
+
+/* Piece q of the picture with an outline round it, the outline's top left at (x, y). */
+static void draw_piece(int x, int y, int q)
+{
+    int r0 = (q >> 1) * TILE, c0 = (q & 1) * TILE;
+    for (int r = -1; r <= TILE; r++) {
+        for (int c = -1; c <= TILE; c++) {
+            if (r < 0 || c < 0 || r == TILE || c == TILE) {
+                if ((r < 0 || r == TILE) && (c < 0 || c == TILE)) {
+                    continue;   /* round corners */
+                }
+                px(x + 1 + c, y + 1 + r, C_OUT);
+            } else {
+                const char *k = strchr(PIC_KEYS, PICTURE[r0 + r][c0 + c]);
+                px(x + 1 + c, y + 1 + r, PIC_COLS[k - PIC_KEYS]);
+            }
+        }
+    }
+}
+
+/*
+ * The picture whole, its pieces' top left at (x, y): framed (0..1, the white
+ * frame popping round it), and a glint sweeping across it (glint >= 0, 0..1
+ * through the sweep).
+ */
+static void draw_picture(int x, int y, float framed, float glint)
+{
+    if (framed > 0) {
+        /* A thick white border, deeper at the bottom like an instant photo. */
+        int b = framed < 0.5f ? 1 : 2, bb = framed < 0.5f ? 1 : 3;
+        for (int r = -b - 1; r <= PIC + bb; r++) {
+            for (int c = -b - 1; c <= PIC + b; c++) {
+                bool edge = r == -b - 1 || r == PIC + bb || c == -b - 1 || c == PIC + b;
+                if (edge && (r == -b - 1 || r == PIC + bb) && (c == -b - 1 || c == PIC + b)) {
+                    continue;
+                }
+                px(x + c, y + r, edge ? C_OUT : r >= PIC ? C_MUG : C_WHITE);
+            }
+        }
+    } else {
+        for (int r = -1; r <= PIC; r++) {
+            for (int c = -1; c <= PIC; c++) {
+                px(x + c, y + r, C_OUT);
+            }
+        }
+    }
+    for (int r = 0; r < PIC; r++) {
+        for (int c = 0; c < PIC; c++) {
+            const char *k = strchr(PIC_KEYS, PICTURE[r][c]);
+            uint8_t col = PIC_COLS[k - PIC_KEYS];
+            int d = r + c - iround(glint * (2 * PIC + 6)) + 3;
+            if (glint >= 0 && (d == 0 || d == 1)) {
+                col = d ? C_PICSKYL : C_WHITE;   /* a diagonal glint */
+            }
+            px(x + c, y + r, col);
+        }
+    }
+}
+
+/* The picture small (on its way into the pocket), centred on (x, y). */
+static void draw_picture_small(int x, int y)
+{
+    static const char *const SMALL[] = { "######", "#SSSu#", "#sssS#", "#hhhh#", "#dddd#", "######" };
+    const uint8_t cols[] = { C_OUT, C_PICSKY, C_PICSUN, C_PICSKYL, C_PICHILL, C_PICHILLD };
+    stamp_c(SMALL, 6, x - 3, y - 3, "#Sushd", cols);
+}
+
+/*
+ * A box with its flaps open (MUSE_ACT_UNBOX), its top left where draw_box's
+ * is: the inside dark above the front, a flap up and out either side.
+ */
+static void draw_box_open(int x, int y)
+{
+    for (int r = 1; r < BOX_H; r++) {
+        for (int c = 0; c < BOX_W; c++) {
+            bool ex = c == 0 || c == BOX_W - 1, ey = r == 1 || r == BOX_H - 1;
+            uint8_t col = ex || ey || r == 3 ? C_OUT
+                        : r < 3 ? C_BOXD                 /* inside, at the back */
+                        : c == BOX_W - 2 || r == BOX_H - 2 ? C_BOXD : C_BOX;
+            px(x + c, y + r, col);
+        }
+    }
+    static const char *const FLAP[] = { "##..", "#o#.", ".#o#", "..##" };
+    static const char *const FLAP_R[] = { "..##", ".#o#", "#o#.", "##.." };
+    stamp(FLAP, 4, x - 3, y - 2, C_OUT, C_BOXL);
+    stamp(FLAP_R, 4, x + BOX_W - 1, y - 2, C_OUT, C_BOXL);
 }
 
 #define MUG_W 10
@@ -1838,6 +2012,9 @@ void muse_pixel_render(const muse_pose_t *p)
     float brace = can_busy && act == MUSE_ACT_NONE ? clampf(p->brace, 0, 1) : 0.0f;
     bool tea = can_busy && act == MUSE_ACT_NONE && brace < 0.05f && p->tea && mode == MUSE_MODE_IDLE;
     bool phone = act == MUSE_ACT_PHONE_TALK || act == MUSE_ACT_PHONE_LISTEN;
+    bool unbox = act == MUSE_ACT_UNBOX, assemble = act == MUSE_ACT_ASSEMBLE;
+    bool hauling = act == MUSE_ACT_PACKAGES || unbox;   /* at the stack, up over the bar */
+    float ap = clampf(p->act_progress, 0, 2);            /* UNBOX, ASSEMBLE: how far through */
     float pull = phone ? ease_pop(at / 0.3f) : 0.0f;   /* the phone out, and up */
 
     /* Talking into it: chatter in bursts, and now and then a laugh. */
@@ -1877,8 +2054,8 @@ void muse_pixel_render(const muse_pose_t *p)
     } else if (act == MUSE_ACT_PHONE_LISTEN) {
         s_look_x = typing ? 0.9f : mmhm > 0 ? 0.0f : lp < 3.8f ? -0.9f : 0.4f;
         s_look_y = typing ? -0.9f : mmhm > 0 ? 0.6f : lp < 3.8f ? 0.2f : -0.4f;
-    } else if (act == MUSE_ACT_PACKAGES) {
-        /* s_look_x, s_look_y: set last frame, on the box. */
+    } else if (act == MUSE_ACT_PACKAGES || unbox || assemble) {
+        /* s_look_x, s_look_y: set last frame, on the box or the picture. */
     } else if (brace > 0.3f) {
         s_look_x = 0;
         s_look_y = 0;
@@ -1967,7 +2144,7 @@ void muse_pixel_render(const muse_pose_t *p)
     } else if (act == MUSE_ACT_PHONE_LISTEN) {
         bob = sinf(t * 2.0f) * 0.5f;
         lean = 0.6f;   /* leaning into the phone */
-    } else if (act == MUSE_ACT_PACKAGES) {
+    } else if (act == MUSE_ACT_PACKAGES || unbox || assemble) {
         bob = sinf(t * 4.0f) * 0.5f;
         lean = 0;
     }
@@ -1983,7 +2160,7 @@ void muse_pixel_render(const muse_pose_t *p)
         hop -= sinf((pk_u - PK_CATCH) / (PK_HOLD - PK_CATCH) * 3.1416f) * 1.2f;   /* the catch, a dip */
     }
     /* Downloading: up off the floor for the bar, and over to the left of the stack. */
-    s_pk.rise += ((act == MUSE_ACT_PACKAGES ? 1.0f : 0.0f) - s_pk.rise) * (1.0f - expf(-dt * 8.0f));
+    s_pk.rise += ((hauling ? 1.0f : 0.0f) - s_pk.rise) * (1.0f - expf(-dt * 8.0f));
     float rise = PK_RISE * s_pk.rise;
 
     /* Boot: the avatar pops up from a squash, then opens their eyes. */
@@ -2109,6 +2286,10 @@ void muse_pixel_render(const muse_pose_t *p)
     float phone_x = 0, phone_y = 0;    /* its top left */
     float box_x = 0, box_y = 0;        /* the box in the air */
     bool box_air = false, box_held = false;
+    int ub_box = -1;                   /* UNBOX: the box being opened (from the top), */
+    float ub_k = 0;                    /* how far through opening it, */
+    bool ub_pop = false;               /* a piece just out */
+    float pic_x = 0, pic_y = 0;        /* ASSEMBLE: the picture's pieces' top left */
     float mug_x = 0, mug_y = 0;
     float grip_x = PHONE_W / 2.0f, grip_y = PHONE_H - 0.5f;   /* the paw on the phone, from its top left */
     if (phone) {
@@ -2155,6 +2336,53 @@ void muse_pixel_render(const muse_pose_t *p)
             s_look_x = 0.9f;   /* up at the cloud */
             s_look_y = -0.9f;
         }
+    } else if (unbox) {
+        /* A paw on the lid of the box he's opening, at the top of the stack;
+         * eyes on it, then on the piece jumping out. */
+        arms[0] = arm_to(slx, shy, j.cx - 16.0f, j.cy + 2.0f);
+        float now_k = (ap - UB_FIRST) / UB_EACH;
+        ub_box = now_k < 0 ? 0 : (int)now_k;
+        ub_k = now_k < 0 ? 0 : now_k - ub_box;
+        float sx, sy;
+        if (ub_box < PK_MAX) {
+            pk_slot(PK_MAX - 1 - ub_box, &sx, &sy);
+            float lid = ub_k * UB_EACH < UB_POP ? 1.0f : 0.0f;
+            arms[1] = arm_to(srx, shy, sx + 2.0f, sy - lid);
+            s_look_x = clampf((sx + BOX_W / 2.0f - j.fx) / 9.0f, -1, 1);
+            s_look_y = clampf((sy - j.fy) / 9.0f, -1, 1);
+        } else {
+            arms[1] = arm_to(srx, shy, j.cx + 16.0f, j.cy + 2.0f);
+        }
+        for (int q = 0; q < PK_MAX; q++) {
+            float k = (ap - UB_FIRST - q * UB_EACH - UB_POP) / UB_FLY;
+            if (k >= 0 && k < 1) {
+                float hx, hy;
+                piece_hover(q, t, &hx, &hy);
+                s_look_x = clampf((hx + 3.0f - j.fx) / 9.0f, -1, 1);   /* after the piece */
+                s_look_y = clampf((hy + 3.0f - j.fy) / 9.0f, -1, 1);
+                ub_pop = k < 0.4f;
+            }
+        }
+    } else if (assemble) {
+        /* The picture in front of him, his paws either side of it; then into the pocket. */
+        float tuck = clampf(ap - 1.0f, 0, 1);
+        pic_x = j.cx - PIC / 2.0f;
+        pic_y = j.cy + 1.0f;   /* under his chin */
+        float edge_y = pic_y + PIC / 2.0f;
+        limb_t hold_l = arm_to(slx, shy, pic_x - 2.0f, edge_y), hold_r = arm_to(srx, shy, pic_x + PIC + 1.0f, edge_y);
+        if (ap < AS_FRAME) {
+            /* Out in front, ready for the pieces. */
+            float k = clampf(ap / 0.2f, 0, 1);
+            arms[0] = limb_mix(arms[0], hold_l, k);
+            arms[1] = limb_mix(arms[1], hold_r, k);
+        } else {
+            arms[0] = limb_mix(hold_l, arm_to(slx, shy, j.cx - 16.0f, j.cy + 3.0f), tuck);
+            /* Right paw with it down into the pocket. */
+            float k = tuck * tuck * (3 - 2 * tuck);
+            arms[1] = limb_mix(hold_r, (limb_t){ j.cx + 11.0f, j.cy + 9.0f, -0.3f }, k);
+        }
+        s_look_x = 0;
+        s_look_y = 0.8f + 0.2f * tuck;   /* down at it */
     } else if (tea) {
         /* The mug by the handle, out at his side where the steam shows; up to his lips for a sip. */
         float rx = j.cx + 15.0f, ry = j.cy - 1.0f;
@@ -2175,7 +2403,7 @@ void muse_pixel_render(const muse_pose_t *p)
     if (p->pajamas) {
         draw_pajamas(&j);
     }
-    if (reach > 0 || p->holding) {
+    if (reach > 0 || p->holding || (assemble && ap > 1.0f)) {
         draw_pocket(iround(j.cx + 10.0f), iround(j.cy + 12.0f));
     } else if (p->battery && p->belly && !bed && s_size >= 2 * W) {
         /* The level on the belly (in bed, the quilt's over it); the digits
@@ -2259,6 +2487,24 @@ void muse_pixel_render(const muse_pose_t *p)
             style = EYES_HAPPY;   /* got it */
             mouth = MOUTH_GRIN;
         }
+    } else if (unbox) {
+        bool popping = ub_box < PK_MAX && ub_k * UB_EACH < UB_POP;
+        style = ub_pop ? EYES_HAPPY : popping ? EYES_WIDE : EYES_NORMAL;
+        mouth = ub_pop ? MOUTH_GRIN : popping ? MOUTH_O : MOUTH_SMILE;
+        open = 1.0f - blink;
+        brows = popping ? 2 : 0;
+    } else if (assemble) {
+        /* Delighted as each piece snaps in, and with it framed. */
+        bool snap = false;
+        for (int q = 0; q < PK_MAX; q++) {
+            float k = ap - q * AS_EACH - AS_FLY;
+            snap |= k >= 0 && k < 0.08f;
+        }
+        bool framed = ap >= AS_FRAME && ap < 1.0f;
+        style = snap || framed ? EYES_HAPPY : EYES_NORMAL;
+        mouth = snap || framed ? MOUTH_GRIN : MOUTH_SMILE;
+        open = 1.0f - blink;
+        brows = framed ? 2 : 0;
     } else if (tea) {
         if (sip > 0.6f) {
             open = 0;   /* a sip, eyes shut */
@@ -2364,8 +2610,103 @@ void muse_pixel_render(const muse_pose_t *p)
                 draw_paw(hx, hy);
             }
         }
-        draw_cloud(t);   /* over the box coming out of it */
+        draw_cloud(t, 0);   /* over the box coming out of it */
         draw_progress(9, 56, 59, p->act_progress, t);
+    }
+    if (unbox) {
+        /* The stack, opened from the top; each piece out to hover by his head. */
+        for (int b = 0; b < PK_MAX; b++) {
+            float sx, sy;
+            pk_slot(PK_MAX - 1 - b, &sx, &sy);
+            float k = ap - UB_FIRST - b * UB_EACH;
+            if (k < 0) {
+                draw_box(iround(sx), iround(sy));
+            } else if (k < UB_POP) {
+                draw_box(iround(sx), iround(sy) - 1);   /* the lid popping */
+            } else if (k < UB_GONE) {
+                draw_box_open(iround(sx), iround(sy));
+            } else if (k < UB_GONE + 0.12f) {
+                draw_sparkle(iround(sx + BOX_W / 2.0f), iround(sy + BOX_H / 2.0f), 1.0f - (k - UB_GONE) / 0.12f, true);
+            }
+        }
+        for (int q = 0; q < PK_MAX; q++) {
+            float k = (ap - UB_FIRST - q * UB_EACH - UB_POP) / UB_FLY;
+            if (k < 0) {
+                continue;
+            }
+            float sx, sy, hx, hy;
+            pk_slot(PK_MAX - 1 - q, &sx, &sy);
+            piece_hover(q, t, &hx, &hy);
+            k = clampf(k, 0, 1);
+            float e = k * k * (3 - 2 * k);
+            /* Up out of the box, and over in an arc. */
+            float x = sx + 2.0f + (hx - sx - 2.0f) * e;
+            float y = sy - 3.0f + (hy - sy + 3.0f) * e - sinf(k * 3.1416f) * 9.0f;
+            draw_piece(iround(x), iround(y), q);
+            if (k >= 1 && fracf(t * 0.7f + q * 0.31f) < 0.12f) {
+                draw_sparkle(iround(x + 6.0f), iround(y), 0.6f, true);   /* a twinkle on it */
+            }
+        }
+        /* The cloud off, and the bar shrinking away. */
+        draw_cloud(t, clampf(ap / 0.45f, 0, 1));
+        float bar = clampf((ap - 0.1f) / 0.3f, 0, 1);
+        if (bar < 1) {
+            draw_progress(9 + iround(bar * 23.0f), 56 - iround(bar * 23.0f), 59, 1.0f, t);
+        }
+    }
+    if (assemble) {
+        float tuck = clampf(ap - 1.0f, 0, 1);
+        int x0 = iround(pic_x), y0 = iround(pic_y);
+        if (ap < AS_FRAME) {
+            /* The pieces flying in from where they hovered, and snapping into place. */
+            for (int q = 0; q < PK_MAX; q++) {
+                float k = clampf((ap - q * AS_EACH) / AS_FLY, 0, 1);
+                float hx, hy;
+                piece_hover(q, t, &hx, &hy);
+                float tx = x0 + (q & 1) * TILE - 1.0f, ty = y0 + (q >> 1) * TILE - 1.0f;
+                float e = ease_pop(k);
+                float x = hx + (tx - hx) * e, y = hy + (ty - hy) * e - sinf(k * 3.1416f) * 4.0f;
+                draw_piece(iround(x), iround(y), q);
+            }
+            for (int q = 0; q < PK_MAX; q++) {
+                float k = ap - q * AS_EACH - AS_FLY;
+                if (k >= 0 && k < 0.1f) {
+                    /* Click: a spark where it went in. */
+                    draw_sparkle(x0 + (q & 1) * (PIC + 1) - 1, y0 + (q >> 1) * (PIC + 1) - 1, 1.0f - k * 5.0f, true);
+                }
+            }
+        } else if (tuck <= 0) {
+            float framed = clampf((ap - AS_FRAME) / (AS_FRAMED - AS_FRAME), 0, 1);
+            float glint = ap >= 1.0f ? fracf(t / 1.6f) * 1.6f : -1.0f;   /* waiting on the photo: now and then a glint */
+            draw_picture(x0, y0, framed, glint <= 1.0f ? glint : -1.0f);
+            if (framed < 1) {
+                for (int i = 0; i < 4; i++) {
+                    float a = i * 1.5708f + 0.785f;
+                    float r = 8.0f + framed * 6.0f;
+                    draw_sparkle(iround(x0 + PIC / 2.0f + cosf(a) * r), iround(y0 + PIC / 2.0f + sinf(a) * r),
+                                 1.0f - framed, true);
+                }
+            }
+        } else {
+            /* Into the pocket: whole, then small, then in. */
+            float k = tuck * tuck * (3 - 2 * tuck);
+            float cx = x0 + PIC / 2.0f + (j.cx + 10.0f - x0 - PIC / 2.0f) * k;
+            float cy = y0 + PIC / 2.0f + (j.cy + 12.0f - y0 - PIC / 2.0f) * k;
+            if (tuck < 0.35f) {
+                draw_picture(iround(cx - PIC / 2.0f), iround(cy - PIC / 2.0f), 1.0f, -1.0f);
+            } else if (tuck < 0.8f) {
+                draw_picture_small(iround(cx), iround(cy));
+            }
+            draw_pocket(iround(j.cx + 10.0f), iround(j.cy + 12.0f));   /* its mouth over it */
+        }
+        if (ap >= AS_FRAME && tuck < 0.6f) {
+            /* His paws on its sides. */
+            for (int a = 0; a < 2; a++) {
+                int hx, hy;
+                paw_of(&arms[a], a ? srx : slx, shy, &hx, &hy);
+                draw_paw(hx, hy);
+            }
+        }
     }
     if (tea) {
         draw_mug(iround(mug_x), iround(mug_y), sip < 0.5f);

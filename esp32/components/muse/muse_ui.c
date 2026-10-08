@@ -93,6 +93,8 @@ static const char *TAG = "muse_ui";
 #define PHOTO_RISE_S 0.6f       /* taking it out and holding it up, and back down */
 #define PHOTO_STOW_S 0.3f       /* his hand back out of the pocket */
 #define PHOTO_HOLD_S 20.0f      /* held up this long, once it's up and the reply's done */
+#define PHOTO_SHARPER_S 60.0f   /* and up to this long from going up, a sharper copy on its way (muse_present_sharper_pending) */
+#define PHOTO_KEEP_S 120.0f    /* put away: a pat takes it out again within this long, till the next talk */
 #define PHOTO_BOB_PX 2
 #define PAW_PX 20
 #define ARM_PX 12           /* about his own arms, at the photo layout's 2 px cells */
@@ -248,20 +250,26 @@ static int s_from_px, s_from_y, s_to_px, s_to_y;
  * it (PHOTO_RISE, PHOTO_HOLD), and later puts it back (PHOTO_LOWER, then his
  * hand out of the pocket, PHOTO_STOW). The photo is an LVGL card on the face,
  * his arms LVGL lines from his shoulders to its bottom corners; the renderer
- * draws the reach and the pocket (muse_pose_t). A tap shows it full size.
- * The compact layout skips all that and shows it full size straight away.
+ * draws the reach and the pocket (muse_pose_t). Put away, it stays in the
+ * pocket (kept) a while, for a pat to take it out again. The compact layout
+ * skips all that and shows it full size straight away.
  */
 typedef enum { PHOTO_NONE, PHOTO_REACH, PHOTO_RISE, PHOTO_HOLD, PHOTO_LOWER, PHOTO_STOW } photo_phase_t;
 
 typedef struct {
     uint16_t *full, *held;      /* RGB565, PSRAM: fitting the screen, and held up */
     int fw, fh, hw, hh;
+    bool quiet;                 /* a sharper copy for one put away: into the pocket, not out */
 } photo_px_t;
 
 EXT_RAM_BSS_ATTR static struct {
     photo_phase_t phase;
     float at;                   /* when the phase began */
     float held_at;              /* when it was held up, or came back from full size */
+    float up_at;                /* when it first went up */
+    bool upped;                 /* muse_present_up said for it */
+    bool kept;                  /* PHOTO_NONE: px is the one put away, */
+    float kept_at;              /* then */
     photo_px_t px;              /* shown */
     photo_px_t next;            /* from muse_ui_present, under s_image_mutex */
     lv_image_dsc_t full_dsc, held_dsc;
@@ -609,6 +617,7 @@ static void update_flip(float now)
  * tap and only wakes the screen.
  */
 static bool photo_shown(void);
+static bool photo_out_again(float now, const char *why);
 static void photo_put_away(float now, const char *why);
 
 static void on_canvas_clicked(lv_event_t *e)
@@ -618,6 +627,9 @@ static void on_canvas_clicked(lv_event_t *e)
         /* Holding a photo up: a tap on him puts it away. */
         photo_put_away((float)esp_timer_get_time() / 1e6f, "tapped Muse");
         return;
+    }
+    if (muse_state_mode(NULL) == MUSE_MODE_IDLE && photo_out_again((float)esp_timer_get_time() / 1e6f, "patted")) {
+        return;   /* the one he put away lately: out of the pocket again */
     }
     if (s_offline && muse_state_mode(NULL) == MUSE_MODE_IDLE) {
         /* No Wi-Fi (his badge says so): a tap tries again, turning it on if it was off. */
@@ -1556,10 +1568,25 @@ static void photo_full_show(void)
     muse_state_poke();
 }
 
+/* The photo's up (or never will be): a reply's speech held for it goes on. Once a photo. */
+static void photo_upped(void)
+{
+    if (!s_photo.upped) {
+        s_photo.upped = true;
+#if CONFIG_MUSE_HATCH
+        muse_present_up();
+#endif
+    }
+}
+
 /* All gone: the card, the arms, the full size view and the pixels. */
 static void photo_drop(void)
 {
+    if (s_photo.px.full) {
+        photo_upped();   /* dropped before it went up: nothing to wait for */
+    }
     s_photo.phase = PHOTO_NONE;
+    s_photo.kept = false;
     if (s_photo_card) {
         lv_obj_add_flag(s_photo_card, LV_OBJ_FLAG_HIDDEN);
         lv_image_set_src(s_photo_pic, NULL);
@@ -1726,6 +1753,184 @@ static void photo_place(float rise, float now)
     }
 }
 
+/* Takes the photo put away out of the pocket again (a pat, the bench); false if there's none. */
+static bool unbox_busy(void);
+
+static bool photo_out_again(float now, const char *why)
+{
+    if (!s_photo_card || s_photo.phase != PHOTO_NONE || !s_photo.kept || !s_photo.px.held || unbox_busy()) {
+        return false;
+    }
+    ESP_LOGI(TAG, "photo out again: %s", why);
+    s_photo.kept = false;
+    s_photo.phase = PHOTO_REACH;
+    s_photo.at = now;
+    s_photo.upped = true;   /* nothing waits for this one */
+    s_photo.up_at = now;
+    return true;
+}
+
+static volatile muse_ui_bench_t s_bench;   /* muse_ui_bench_pose */
+EXT_RAM_BSS_ATTR static volatile float s_bench_at;   /* when it was set */
+
+#if CORNERS && CONFIG_MUSE_HATCH
+/*
+ * A reply's image, acted out (with the photo layout): on the phone while it
+ * isn't coming yet (pose_act, muse_present_phase's WAITING), then hauling
+ * boxes as its bytes come (UNBOX_BOXES, the stack after them), opening them
+ * (UNBOX_OPEN), fitting the pieces into a little framed picture (UNBOX_FIT,
+ * held there till the photo's ready) and tucking it into his pocket as he
+ * comes back up (UNBOX_TUCK); only then does the photo come out of it
+ * (photo_tick leaves s_photo.next till then). Every stage plays, however
+ * quick the image, just quicker: the boxes at UNBOX_FILL_S, each other stage
+ * its own length.
+ */
+#define UNBOX_FILL_S 1.2f       /* the bar empty to full, at the quickest */
+#define UNBOX_LAND_S 0.7f       /* then the last box down on the stack */
+#define UNBOX_OPEN_S 1.0f       /* MUSE_ACT_UNBOX */
+#define UNBOX_FIT_S 0.9f        /* MUSE_ACT_ASSEMBLE, to framed */
+#define UNBOX_TUCK_S 0.35f      /* into the pocket, coming back up (ACT_DROP_S) */
+#define BENCH_WAIT_S 2.0f       /* ">face=download": on the phone, */
+#define BENCH_FETCH_S 3.0f      /* then the bytes coming, then never the photo */
+
+typedef enum { UNBOX_NONE, UNBOX_BOXES, UNBOX_OPEN, UNBOX_FIT, UNBOX_TUCK } unbox_stage_t;
+
+EXT_RAM_BSS_ATTR static struct {
+    unbox_stage_t stage;
+    float at;           /* when the stage began */
+    float fill;         /* UNBOX_BOXES: the bar, 0..1 */
+    bool unknown;       /* and not knowing how far the bytes are */
+    float full_at;      /* when it filled, or -1 */
+    float last;
+} s_unbox;
+
+static bool unbox_busy(void)
+{
+    return s_unbox.stage != UNBOX_NONE;
+}
+
+/* Where the image has got (muse_present_phase), or ">face=download"'s made-up one. */
+static muse_present_phase_t unbox_phase(float now, float *progress)
+{
+    if (s_bench != MUSE_UI_BENCH_DOWNLOAD) {
+        return muse_present_phase(progress);
+    }
+    float bt = now - s_bench_at;
+    *progress = bt < BENCH_WAIT_S ? -1.0f : fminf(1.0f, (bt - BENCH_WAIT_S) / BENCH_FETCH_S);
+    return bt < BENCH_WAIT_S ? MUSE_PRESENT_WAITING
+         : bt < BENCH_WAIT_S + BENCH_FETCH_S ? MUSE_PRESENT_FETCHING : MUSE_PRESENT_DECODING;
+}
+
+/* Each frame, before photo_tick: moves the stages on. */
+static void unbox_tick(muse_mode_t mode, float now)
+{
+    EXT_RAM_BSS_ATTR static float bench_at;
+    bool bench = s_bench == MUSE_UI_BENCH_DOWNLOAD;
+    if (s_bench_at != bench_at) {
+        bench_at = s_bench_at;
+        s_unbox.stage = UNBOX_NONE;   /* the bench starts it again */
+    }
+    float dt = now - s_unbox.last;
+    dt = dt < 0 || dt > 0.2f ? 0.05f : dt;
+    s_unbox.last = now;
+    /* The phase first: the photo's handed over before it lets go. */
+    float progress;
+    muse_present_phase_t phase = unbox_phase(now, &progress);
+    xSemaphoreTake(s_image_mutex, portMAX_DELAY);
+    bool coming = s_photo.next.full && !s_photo.next.quiet;
+    xSemaphoreGive(s_image_mutex);
+    /* Not coming after all (a web fetch failed over to Muse, a decode failed): back to waiting. */
+    bool gone = !coming && (phase == MUSE_PRESENT_WAITING || phase == MUSE_PRESENT_NONE);
+    unbox_stage_t was = s_unbox.stage;
+    if (!s_photo_card || mode == MUSE_MODE_LISTENING) {
+        s_unbox.stage = UNBOX_NONE;   /* a new turn, or no photo layout */
+    }
+    switch (s_unbox.stage) {
+    case UNBOX_NONE:
+        if (s_photo_card && mode != MUSE_MODE_LISTENING && s_photo.phase == PHOTO_NONE
+            && (coming || phase == MUSE_PRESENT_FETCHING || phase == MUSE_PRESENT_DECODING)) {
+            s_unbox.stage = UNBOX_BOXES;
+            s_unbox.fill = 0;
+            s_unbox.full_at = -1;
+        }
+        break;
+    case UNBOX_BOXES: {
+        if (gone) {
+            s_unbox.stage = UNBOX_NONE;
+            break;
+        }
+        float target = coming || phase == MUSE_PRESENT_DECODING ? 1.0f : progress;
+        s_unbox.unknown = target < 0;
+        if (target > s_unbox.fill) {
+            s_unbox.fill = fminf(target, s_unbox.fill + dt / UNBOX_FILL_S);
+        }
+        if (s_unbox.fill >= 1.0f && s_unbox.full_at < 0) {
+            s_unbox.full_at = now;
+        }
+        if (s_unbox.full_at >= 0 && now - s_unbox.full_at >= UNBOX_LAND_S) {
+            s_unbox.stage = UNBOX_OPEN;
+        }
+        break;
+    }
+    case UNBOX_OPEN:
+        if (gone) {
+            s_unbox.stage = UNBOX_NONE;
+        } else if (now - s_unbox.at >= UNBOX_OPEN_S) {
+            s_unbox.stage = UNBOX_FIT;
+        }
+        break;
+    case UNBOX_FIT:
+        if (gone) {
+            s_unbox.stage = UNBOX_NONE;
+        } else if (now - s_unbox.at >= UNBOX_FIT_S && (coming || (bench && s_photo.kept))) {
+            s_unbox.stage = UNBOX_TUCK;   /* the photo's here (on the bench, one from before) */
+        }
+        break;
+    case UNBOX_TUCK:
+        if (now - s_unbox.at >= UNBOX_TUCK_S) {
+            s_unbox.stage = UNBOX_NONE;
+            if (!coming && bench) {
+                photo_out_again(now, "the bench");
+            }
+        }
+        break;
+    }
+    if (s_unbox.stage != was) {
+        static const char *const NAMES[] = { "done", "boxes coming", "unboxing", "putting it together", "into the pocket" };
+        ESP_LOGI(TAG, "image: %s after %.1f s%s", NAMES[s_unbox.stage], (double)(now - s_unbox.at),
+                 s_unbox.stage == UNBOX_NONE && was != UNBOX_TUCK ? " (not coming after all)" : "");
+        s_unbox.at = now;
+    }
+}
+
+/* What Muse is doing for it, if anything (pose_act). */
+static muse_act_t unbox_act(float now, float *progress)
+{
+    float st = now - s_unbox.at;
+    switch (s_unbox.stage) {
+    case UNBOX_BOXES:
+        *progress = s_unbox.unknown && s_unbox.fill <= 0 ? -1.0f : s_unbox.fill;
+        return MUSE_ACT_PACKAGES;
+    case UNBOX_OPEN:
+        *progress = fminf(1.0f, st / UNBOX_OPEN_S);
+        return MUSE_ACT_UNBOX;
+    case UNBOX_FIT:
+        *progress = fminf(1.0f, st / UNBOX_FIT_S);
+        return MUSE_ACT_ASSEMBLE;
+    case UNBOX_TUCK:
+        *progress = 1.0f + fminf(1.0f, st / UNBOX_TUCK_S);
+        return MUSE_ACT_ASSEMBLE;
+    default:
+        return MUSE_ACT_NONE;
+    }
+}
+#else
+static bool unbox_busy(void)
+{
+    return false;
+}
+#endif
+
 /*
  * Each frame: takes a new image, moves the phases on, puts the photo away
  * when it's time, and places it. Returns how far Muse's hand is in his pocket
@@ -1744,10 +1949,25 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
             lv_obj_move_foreground(s_photo_dismiss);
         }
     }
+    /* A new one waits in s_photo.next while Muse unboxes it (unbox_tick). */
     xSemaphoreTake(s_image_mutex, portMAX_DELAY);
-    photo_px_t next = s_photo.next;
-    s_photo.next = (photo_px_t){ 0 };
+    photo_px_t next = { 0 };
+    if (s_photo.next.full && (s_photo.next.quiet || !unbox_busy())) {
+        next = s_photo.next;
+        s_photo.next = (photo_px_t){ 0 };
+    }
     xSemaphoreGive(s_image_mutex);
+    bool away = s_photo.phase == PHOTO_NONE || s_photo.phase == PHOTO_STOW;
+    if (next.quiet && (away || !s_photo_card)) {
+        /* The sharper copy of one put away: in the pocket in its place, for the next time it's out. */
+        ESP_LOGI(TAG, "sharper copy kept for the photo put away (%dx%d)", next.hw, next.hh);
+        photo_adopt(&next);
+        if (s_photo.phase == PHOTO_NONE && !s_photo.kept) {
+            s_photo.kept = true;
+            s_photo.kept_at = now;
+        }
+        next = (photo_px_t){ 0 };
+    }
     static bool waiting;
     if (next.full && mode == MUSE_MODE_LISTENING) {
         /* A new turn's begun: it waits for the press to end rather than going. */
@@ -1774,11 +1994,14 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
         if (!s_photo_card) {
             photo_drop();
             photo_adopt(&next);
+            s_photo.upped = false;
             photo_full_show();   /* compact: straight to full size */
+            photo_upped();
             muse_ui_show_face();
         } else if (s_photo.phase == PHOTO_NONE || s_photo.phase == PHOTO_STOW) {
             photo_drop();
             photo_adopt(&next);
+            s_photo.upped = false;
             s_photo.phase = PHOTO_REACH;
             s_photo.at = now;
             muse_menu_close();
@@ -1792,6 +2015,9 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
             }
         }
     }
+    if (s_photo.phase == PHOTO_NONE && s_photo.kept && (mode == MUSE_MODE_LISTENING || now - s_photo.kept_at > PHOTO_KEEP_S)) {
+        photo_drop();   /* out of the pocket for good */
+    }
     if (!s_photo_card || s_photo.phase == PHOTO_NONE) {
         return 0;
     }
@@ -1802,7 +2028,12 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
         photo_put_away(now, "a button");
     } else if (s_photo.phase == PHOTO_HOLD && mode == MUSE_MODE_IDLE && !photo_full_shown()) {
         float since = now - mode_t > s_photo.held_at ? now - mode_t : s_photo.held_at;
-        if (now - since > PHOTO_HOLD_S) {
+        bool sharper = false;
+#if CONFIG_MUSE_HATCH
+        /* Only the preview so far: held up for the sharp one, which takes its place in his hands. */
+        sharper = now - s_photo.up_at < PHOTO_SHARPER_S && muse_present_sharper_pending();
+#endif
+        if (now - since > PHOTO_HOLD_S && !sharper) {
             photo_put_away(now, "held long enough");
         }
     }
@@ -1818,6 +2049,10 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
         if (now - s_photo.at >= PHOTO_RISE_S) {
             s_photo.phase = PHOTO_HOLD;
             s_photo.held_at = now;
+            if (!s_photo.upped) {
+                s_photo.up_at = now;
+                photo_upped();
+            }
         }
         break;
     case PHOTO_LOWER:
@@ -1829,7 +2064,11 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
         break;
     case PHOTO_STOW:
         if (now - s_photo.at >= PHOTO_STOW_S) {
-            photo_drop();
+            /* In the pocket: kept a while, for a pat to take it out again. */
+            s_photo.phase = PHOTO_NONE;
+            s_photo.kept = true;
+            s_photo.kept_at = now;
+            photo_place(-1, now);
             return 0;
         }
         break;
@@ -2402,8 +2641,6 @@ static void update_night(void)
 static volatile bool s_quake_req;
 static float s_quake_at = -100.0f;
 static bool s_quaking;
-static volatile muse_ui_bench_t s_bench;   /* muse_ui_bench_pose */
-
 void muse_ui_quake(void)
 {
     s_quake_req = true;
@@ -2411,6 +2648,7 @@ void muse_ui_quake(void)
 
 void muse_ui_bench_pose(muse_ui_bench_t what)
 {
+    s_bench_at = (float)esp_timer_get_time() / 1e6f;
     s_bench = what;
 }
 
@@ -2558,15 +2796,17 @@ static void pose_battery(muse_pose_t *pose, float now)
  * What Muse is busy with in a turn (muse_pose_t.act), with the face's
  * readouts, in place of the captions that said it (status_caption): talking
  * into his phone while the note goes up (PHONE_TALK_S at least, to read),
- * then the phone to his ear till the answer's words come (muse_state_turn),
- * and hauling boxes while an image the reply waits for comes down.
+ * then the phone to his ear till the answer's words come (muse_state_turn)
+ * or, for an image, till its bytes do; then the image's unboxing (unbox_act).
  */
 #define PHONE_TALK_S 1.2f
 #define BENCH_BOXES_S 6.0f      /* ">face=packages": the boxes' count goes round this often */
+#define BENCH_UNBOX_AT 0.6f     /* ">face=unbox": held this far through */
 
 /* The download (MUSE_ACT_PACKAGES) wants the room above him for its cloud,
  * and has the empty space under him to spare: he eases down ACT_DROP_PX for
- * it, and back up before reaching for the photo. */
+ * it, stays down to unbox it and put it together, and comes back up as he
+ * tucks it into his pocket, before reaching for the photo. */
 #define ACT_DROP_PX 48
 #define ACT_DROP_S 0.35f
 
@@ -2577,7 +2817,9 @@ static void act_drop(const muse_pose_t *pose, float now)
     float dt = now - last;
     last = now;
     dt = dt < 0 || dt > 0.2f ? 0.05f : dt;
-    bool want = CORNERS && pose->act == MUSE_ACT_PACKAGES && pose->reach <= 0.0f && !pose->holding;
+    bool act = pose->act == MUSE_ACT_PACKAGES || pose->act == MUSE_ACT_UNBOX
+               || (pose->act == MUSE_ACT_ASSEMBLE && pose->act_progress <= 1.0f);
+    bool want = CORNERS && act && pose->reach <= 0.0f && !pose->holding;
     drop += want ? dt / ACT_DROP_S : -dt / ACT_DROP_S;
     drop = drop < 0 ? 0 : drop > 1 ? 1 : drop;
     int px = (int)lroundf(ease_in_out(drop) * ACT_DROP_PX);
@@ -2595,22 +2837,27 @@ static void pose_act(muse_pose_t *pose, muse_mode_t mode, float mode_t, float no
     muse_ui_bench_t bench = s_bench;
     muse_act_t want = MUSE_ACT_NONE;
     float progress = -1.0f;
-    if (mode == MUSE_MODE_THINKING && pose->reach <= 0.0f && !pose->holding) {
-        int image = -1;
+    bool waiting = false;   /* for an image none of which is here yet */
 #if CONFIG_MUSE_HATCH
-        image = muse_present_progress();
+    want = unbox_act(now, &progress);   /* its bytes coming, or here: whatever the mode */
+    float image;
+    waiting = unbox_phase(now, &image) == MUSE_PRESENT_WAITING;
 #endif
+    if (want == MUSE_ACT_NONE && mode == MUSE_MODE_THINKING && pose->reach <= 0.0f && !pose->holding) {
         muse_turn_t turn = muse_state_turn();
         if (bench == MUSE_UI_BENCH_PACKAGES) {
             want = MUSE_ACT_PACKAGES;
             progress = fmodf(now / BENCH_BOXES_S, 1.0f);
+        } else if (bench == MUSE_UI_BENCH_UNBOX) {
+            want = MUSE_ACT_UNBOX;
+            progress = BENCH_UNBOX_AT;
+        } else if (bench == MUSE_UI_BENCH_ASSEMBLE) {
+            want = MUSE_ACT_ASSEMBLE;
+            progress = 1.0f;
         } else if (bench == MUSE_UI_BENCH_PHONE) {
             want = MUSE_ACT_PHONE_TALK;
-        } else if (bench == MUSE_UI_BENCH_LISTEN_PHONE) {
-            want = MUSE_ACT_PHONE_LISTEN;
-        } else if (image >= 0 && image < 100) {
-            want = MUSE_ACT_PACKAGES;
-            progress = image / 100.0f;
+        } else if (bench == MUSE_UI_BENCH_LISTEN_PHONE || waiting) {
+            want = MUSE_ACT_PHONE_LISTEN;   /* Muse finding or making it, or writing it out */
         } else if (turn == MUSE_TURN_SENDING || (turn == MUSE_TURN_SENT && mode_t < PHONE_TALK_S)) {
             want = MUSE_ACT_PHONE_TALK;
         } else if (turn == MUSE_TURN_SENT) {
@@ -2759,6 +3006,9 @@ static void frame_tick(lv_timer_t *timer)
         return;   /* the menu covers the face */
     }
     bool holding;
+#if CORNERS && CONFIG_MUSE_HATCH
+    unbox_tick(mode, now);
+#endif
     float reach = photo_tick(mode, mode_t, now, &holding);
     if (s_image_dsc.data || photo_full_shown()) {
         return;   /* the image covers the face */
@@ -2965,16 +3215,16 @@ bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int
     if (!s_ready || !full || fw <= 0 || fh <= 0 || fw > s_w || fh > s_h || (s_photo_px && !held)) {
         return false;
     }
-    if (sharper && !s_photo_out) {
-        ESP_LOGI(TAG, "sharper copy dropped: the photo's been put away");
-        heap_caps_free(full);
-        heap_caps_free(held);
-        return true;
-    }
     xSemaphoreTake(s_image_mutex, portMAX_DELAY);
+    /* A sharper copy of one put away goes in the pocket in its place; of one
+     * still to come out (being unboxed), it comes out in its place. */
+    bool quiet = sharper && !s_photo_out && !s_photo.next.full;
     photo_px_free(&s_photo.next);   /* one not taken yet: this is newer */
-    s_photo.next = (photo_px_t){ full, held, fw, fh, hw, hh };
+    s_photo.next = (photo_px_t){ full, held, fw, fh, hw, hh, quiet };
     xSemaphoreGive(s_image_mutex);
+    if (quiet) {
+        return true;   /* nothing to wake for */
+    }
     muse_state_set_asleep(false);   /* to be seen */
     muse_state_poke();
     return true;
