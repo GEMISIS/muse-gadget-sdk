@@ -55,6 +55,7 @@ enum {
     C_BOLTL,
     C_BOLTD,
     C_BATT,      /* the battery (pose->battery): its badge, or the bolt on the belly; set per frame */
+    C_OFFLINE,   /* no Wi-Fi (pose->offline): its badge */
     C_COUNT,
 };
 
@@ -110,6 +111,7 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_BOLT] = 0xffd23f,
     [C_BOLTL] = 0xfff6b8,
     [C_BOLTD] = 0x9a6410,
+    [C_OFFLINE] = 0xff8a5c,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -1006,6 +1008,33 @@ static void draw_low_badge(int x, int y, int pct, float t)
     }
 }
 
+/*
+ * No Wi-Fi (pose->offline): the signal's arcs with a slash through them,
+ * standing on the floor at Muse's right; x its left column, y its bottom
+ * row. It breathes a little, so it reads as a state rather than a mark.
+ */
+static void draw_offline_badge(int x, int y, float t)
+{
+    static const char *const WIFI[] = {
+        "..#####.#",
+        ".#.....#.",
+        "#..###.#.",
+        "..#...#..",
+        "....##...",
+        "...#.#...",
+        "..#......",
+    };
+    int y0 = y - 6;
+    float vis = 0.75f + 0.25f * sinf(t * 2.0f);
+    for (int r = 0; r < 7; r++) {
+        for (int c = 0; WIFI[r][c]; c++) {
+            if (WIFI[r][c] == '#' && bayer(x + c, y0 + r) < vis * 1.15f) {
+                px(x + c, y0 + r, C_OFFLINE);
+            }
+        }
+    }
+}
+
 /* 3x5 digits, then %: an octal digit a row, from the top, its 4 bit the left. */
 static const uint16_t GLYPHS[11] = {
     075557, 026227, 071747, 071317, 055711, 074717, 074757, 071122, 075757, 075717,
@@ -1606,5 +1635,8 @@ void muse_pixel_render(const muse_pose_t *p)
     }
     if (p->battery && !p->charging && p->battery_pct <= BATT_LOW) {
         draw_low_badge(7, 57, p->battery_pct, t);   /* on the floor at his left */
+    }
+    if (p->offline) {
+        draw_offline_badge(48, 57, t);   /* on the floor at his right */
     }
 }

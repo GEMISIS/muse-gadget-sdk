@@ -147,6 +147,7 @@ static lv_obj_t *s_chats;        /* the Chats screen, left of Muse (CONFIG_MUSE_
 #define PAGE_COUNT (FACE_COL + 2)
 static lv_obj_t *s_dots[PAGE_COUNT];
 static lv_obj_t *s_wifi_icon;
+static bool s_offline;   /* no Wi-Fi: Muse shows it (muse_pose_t.offline); update_chrome() */
 static lv_obj_t *s_ble_icon;
 static lv_obj_t *s_cover;
 static lv_obj_t *s_pair;
@@ -591,9 +592,17 @@ static void update_flip(float now)
  * (shown again, if replies aren't spoken now). Asleep, the cover takes the
  * tap and only wakes the screen.
  */
+static bool photo_shown(void);
+static void photo_put_away(float now, const char *why);
+
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
+    if (photo_shown()) {
+        /* Holding a photo up: a tap on him puts it away (a tap on it shows it full size). */
+        photo_put_away((float)esp_timer_get_time() / 1e6f, "tapped Muse");
+        return;
+    }
     muse_state_make_happy();
 #if CONFIG_MUSE_TTS_PICO
     if (muse_state_mode(NULL) == MUSE_MODE_IDLE && !muse_hatch_turn_busy()) {
@@ -1921,6 +1930,11 @@ static void update_chrome(float now)
     muse_wifi_status(&w);
     bool joining = w.state == MUSE_WIFI_CONNECTING || w.state == MUSE_WIFI_FAILED;
     const char *wifi = w.state == MUSE_WIFI_CONNECTED || (joining && (int)(now * 2) % 2 == 0) ? LV_SYMBOL_WIFI : "";
+#if CONFIG_MUSE_GADGET_HOME_EXTRAS
+    /* No icon in the corner: Muse shows when there's no Wi-Fi himself. */
+    wifi = "";
+    s_offline = w.state != MUSE_WIFI_CONNECTED;
+#endif
     if (strcmp(wifi, lv_label_get_text(s_wifi_icon)) != 0) {
         lv_label_set_text(s_wifi_icon, wifi);
     }
@@ -2404,6 +2418,7 @@ static void frame_tick(lv_timer_t *timer)
         .plugged = update_plugged(mode, now, !photo_shown()),
     };
     pose_battery(&pose, now);
+    pose.offline = s_offline;
     /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
      * (or an earthquake, or being plugged in). */
     pose.sleepy = pose.bed && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f
