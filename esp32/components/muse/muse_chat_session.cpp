@@ -160,7 +160,7 @@ static const char *TAG = "muse_chat_session";
 #define IMG_CAPTION "GETTING THE IMAGE..."
 /* After the words of every message (and any mode contract): Muse forgets the contract's standing order. */
 /* And what its widgets can be here (muse_widget_ui.h): an HTML one is read for a few simple controls (muse_widget_html.c). */
-#define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: one 240px baseline JPEG under 14 KB. This gadget shows options, lists, maps and shopping natively, and an HTML widget only as its question with text fields, checkboxes, radios or a select, and a button: keep forms that simple.)"
+#define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: one 240px baseline JPEG under 14 KB. Show web images by a ~600px JPEG URL, not the original. This gadget shows options, lists, maps and shopping natively, and an HTML widget only as its question with text fields, checkboxes, radios or a select, and a button: keep forms that simple.)"
 /*
  * The VM's streaming dictation has no ASR behind it right now, so each press
  * goes to the chat as a voice note, the way the phone app sends them, and the
@@ -2348,7 +2348,12 @@ static void on_event(cJSON *line)
             mark(M_TEXT);
             append_text(m, text);
             if (s_turn.md_img.path[0] && !s_turn.img_seen && !img_pushed()) {
-                img_hold_start("in the text");   /* asked for once its message is done (img_from_text) */
+                if (!strncmp(s_turn.md_img.path, "https://", 8) || !strncmp(s_turn.md_img.path, "http://", 7)) {
+                    /* A web image, whole in the text: fetched from now, beside the rest of the reply. */
+                    img_from_text(nullptr);
+                } else {
+                    img_hold_start("in the text");   /* asked for once its message is done (img_from_text) */
+                }
             }
             show_reply_start(m);   /* ignored once the speech starts */
 #if CONFIG_MUSE_TTS_PICO

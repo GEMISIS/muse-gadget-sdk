@@ -104,3 +104,10 @@ CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+
+# A web image's host keeps its TLS session a minute (muse_present.c): the
+# next fetch from it (the original after its smaller copy, a redirect, the
+# next image from the same CDN) resumes in one round trip instead of a full
+# handshake (certificate chain and ECDHE: 1-4 s here). mbedtls already has
+# client session tickets (CONFIG_MBEDTLS_CLIENT_SSL_SESSION_TICKETS).
+CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS=y
