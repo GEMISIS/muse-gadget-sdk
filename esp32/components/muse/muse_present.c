@@ -691,9 +691,9 @@ static void ask_tick(void)
     /* A file in Muse's workspace (generated), or an image on the web it fetches first. */
     bool web = !strncmp(path, "http://", 7) || !strncmp(path, "https://", 8);
     snprintf(msg + n, sizeof(msg) - n,
-             "%s the image at \"%s\" (\"%s\") %sto this gadget with display.show_image, twice, each in one "
-             "chunk (offset 0, final=true): first a preview scaled to 96x96 (fit inside) as a baseline JPEG "
-             "at 50%% quality, about 1.5 KB, then a 240x240 one at 70%% quality, under 14 KB. Make the base64 "
+             "%s the image at \"%s\" (\"%s\") %sto this gadget with display.show_image, once, in one "
+             "chunk (offset 0, final=true): scaled to 240x240 (fit inside) as a baseline JPEG at 70%% "
+             "quality, under 14 KB. Make the base64 "
              "with code and paste its output exactly; if the gadget says it arrived damaged, encode it again. "
              "No test images. Don't create links. Reply with just: sent.",
              web ? "Download" : "Send", path, label, web ? "and send it " : "");
@@ -1234,10 +1234,10 @@ bool muse_present_pushing(void)
 
 bool muse_present_sharper_pending(void)
 {
-    portENTER_CRITICAL(&s_ask_lock);
-    bool pending = s_guard && s_guard_shown && !s_sharper_got;
-    portEXIT_CRITICAL(&s_ask_lock);
-    return pending;
+    /* One push is asked for now, sharp straight away (a preview first saved
+     * little): none to hold the photo up waiting for. A bigger one that comes
+     * all the same still takes its place (late_sharper, job->sharper). */
+    return false;
 }
 
 void muse_present_up(void)
