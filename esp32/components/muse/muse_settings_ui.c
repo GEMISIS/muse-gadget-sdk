@@ -212,6 +212,10 @@ static lv_obj_t *back_button(lv_obj_t *p)
     lv_obj_add_event_cb(b, on_back, LV_EVENT_CLICKED, NULL);
     lv_obj_t *arrow = label(b, &lv_font_montserrat_20, MUSE_COLOR_ACCENT, LV_SYMBOL_LEFT);
     lv_obj_center(arrow);
+    lv_obj_set_style_radius(b, MUSE_ROW_RADIUS, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(MUSE_COLOR_CARD_PRESSED), 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, LV_STATE_PRESSED);   /* a pad under the arrow, only pressed */
+    muse_style_pressable(b, MUSE_PRESS_BUTTON, false);
     return b;
 }
 
@@ -294,6 +298,7 @@ static lv_obj_t *switch_row(lv_obj_t *list, const char *text, bool on, lv_event_
     if (on) {
         lv_obj_add_state(sw, LV_STATE_CHECKED);
     }
+    muse_style_pressable(sw, MUSE_PRESS_BUTTON, false);
     lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, NULL);
     return sw;
 }
@@ -348,6 +353,14 @@ static lv_obj_t *slider(lv_obj_t *list, const char *text, int lo, int hi, int va
     lv_obj_set_style_bg_color(s, lv_color_hex(MUSE_COLOR_ACCENT), LV_PART_INDICATOR);
     lv_obj_set_style_bg_color(s, lv_color_hex(MUSE_COLOR_TEXT), LV_PART_KNOB);
     lv_obj_set_style_pad_all(s, 6, LV_PART_KNOB);
+    /* Held, the knob swells under the finger, and settles when let go. */
+    static const lv_style_prop_t KNOB[] = { LV_STYLE_PAD_TOP, LV_STYLE_PAD_BOTTOM, LV_STYLE_PAD_LEFT, LV_STYLE_PAD_RIGHT,
+                                            0 };
+    static const lv_style_transition_dsc_t KNOB_IN = { KNOB, NULL, lv_anim_path_ease_out, 90, 0 };
+    static const lv_style_transition_dsc_t KNOB_OUT = { KNOB, NULL, lv_anim_path_overshoot, 200, 0 };
+    lv_obj_set_style_pad_all(s, 10, LV_PART_KNOB | LV_STATE_PRESSED);
+    lv_obj_set_style_transition(s, &KNOB_IN, LV_PART_KNOB | LV_STATE_PRESSED);
+    lv_obj_set_style_transition(s, &KNOB_OUT, LV_PART_KNOB);
     lv_obj_set_ext_click_area(s, 18);   /* 48 px to hit */
     lv_obj_add_event_cb(s, cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_event_cb(s, cb, LV_EVENT_RELEASED, NULL);
@@ -530,8 +543,10 @@ static void build_keyboard(void)
     lv_obj_set_style_radius(s_text_show, 14, 0);
     lv_obj_set_style_bg_opa(s_text_show, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(s_text_show, lv_color_hex(MUSE_COLOR_CARD), 0);
+    lv_obj_set_style_bg_color(s_text_show, lv_color_hex(MUSE_COLOR_CARD_PRESSED), LV_STATE_PRESSED);
     lv_obj_add_event_cb(s_text_show, on_text_show, LV_EVENT_CLICKED, NULL);
     lv_obj_center(label(s_text_show, &lv_font_montserrat_16, MUSE_COLOR_TEXT, "Show"));
+    muse_style_pressable(s_text_show, MUSE_PRESS_BUTTON, false);
 
     /* Inside the circle, or across the rest of the screen. */
     s_text_kb = lv_keyboard_create(s_text);
@@ -549,9 +564,16 @@ static void build_keyboard(void)
     lv_obj_set_style_pad_gap(s_text_kb, 4, 0);
     lv_obj_set_style_text_font(s_text_kb, &lv_font_montserrat_20, LV_PART_ITEMS);
     lv_obj_set_style_bg_color(s_text_kb, lv_color_hex(MUSE_COLOR_CARD), LV_PART_ITEMS);
+    lv_obj_set_style_bg_color(s_text_kb, lv_color_hex(MUSE_COLOR_CARD_PRESSED), LV_PART_ITEMS | LV_STATE_CHECKED);
     lv_obj_set_style_text_color(s_text_kb, lv_color_hex(MUSE_COLOR_TEXT), LV_PART_ITEMS);
     lv_obj_set_style_radius(s_text_kb, 8, LV_PART_ITEMS);
     lv_obj_set_style_border_width(s_text_kb, 0, LV_PART_ITEMS);
+    /* A letter pressed rises over the finger, bigger, as a phone's does; the keys light and click. */
+    lv_keyboard_set_popovers(s_text_kb, true);
+#if LV_FONT_MONTSERRAT_24
+    lv_obj_set_style_text_font(s_text_kb, &lv_font_montserrat_24, LV_PART_ITEMS | LV_STATE_PRESSED);   /* "ABC" still fits */
+#endif
+    muse_style_pressable_keys(s_text_kb);
     lv_obj_remove_flag(s_text_kb, LV_OBJ_FLAG_GESTURE_BUBBLE);   /* a sloppy swipe mustn't lose the text */
     lv_keyboard_set_textarea(s_text_kb, s_text_ta);
     lv_obj_add_event_cb(s_text_kb, on_text_ready, LV_EVENT_READY, NULL);
@@ -1027,6 +1049,15 @@ static void on_speaker_sw(lv_event_t *e)
     muse_settings_set_speaker_on(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+static void on_touch_sounds_sw(lv_event_t *e)
+{
+    bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+    muse_settings_set_touch_sounds(on);
+    if (on) {
+        muse_style_click(false);   /* what's turned on: the touch was silent */
+    }
+}
+
 static void on_volume(lv_event_t *e)
 {
     int v = lv_slider_get_value(s_vol_sl);
@@ -1055,6 +1086,7 @@ static void build_sound_page(lv_obj_t *tile)
     lv_obj_t *list;
     s_sound = page(tile, "SOUND", &list);
     s_spk_sw = switch_row(list, "Speaker", muse_settings_speaker_on(), on_speaker_sw);
+    switch_row(list, "Touch sounds", muse_settings_touch_sounds(), on_touch_sounds_sw);
     s_vol_sl = slider(list, "Volume", 0, 100, muse_settings_volume(), &s_vol_val, on_volume);
     s_gain_sl = slider(list, "Mic gain", 0, MUSE_MIC_GAIN_MAX / 3, muse_settings_mic_gain() / 3, &s_gain_val, on_gain);
 

@@ -498,6 +498,7 @@ void muse_gadget_mode_build_toast(lv_obj_t *layer, int w)
     lv_obj_set_style_pad_row(s_toast, 4, 0);
     lv_obj_set_style_bg_color(s_toast, lv_color_hex(MUSE_COLOR_CARD_PRESSED), LV_STATE_PRESSED);
     lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+    muse_style_pressable(s_toast, MUSE_PRESS_ROW, false);   /* a card as wide as a row */
     lv_obj_add_event_cb(s_toast, on_toast, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t *l = lv_label_create(s_toast);

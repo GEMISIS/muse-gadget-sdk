@@ -89,7 +89,6 @@ EXT_RAM_BSS_ATTR static struct {
     bool warned;                /* the final round's warning, shown */
     bool erasing;
     uint32_t shown_left_s;
-    lv_style_transition_dsc_t press_tr;
     muse_lock_ui_done_t done;
 } u;
 
@@ -162,10 +161,11 @@ static void show_view(view_t v)
     lv_obj_t *box = lv_obj_get_parent(u.keys[0]);
     lv_obj_set_flag(box, LV_OBJ_FLAG_HIDDEN, v == VIEW_ERASE);
     lv_obj_set_style_opa(box, keys ? LV_OPA_COVER : LV_OPA_30, 0);
-    for (int i = 0; i < KEY_COUNT; i++) {
-        lv_obj_set_state(u.keys[i], LV_STATE_DISABLED, !keys);
-    }
     bool unlocking = u.purpose == DO_UNLOCK;
+    for (int i = 0; i < KEY_COUNT; i++) {
+        /* Unlocking, the bottom left's empty: nothing there to press. */
+        lv_obj_set_state(u.keys[i], LV_STATE_DISABLED, !keys || (i == KEY_SLOT && unlocking));
+    }
     lv_obj_add_flag(u.avatar, LV_OBJ_FLAG_HIDDEN);   /* the keypad's plain: Muse waits on the face */
     lv_obj_set_flag(u.cancel, LV_OBJ_FLAG_HIDDEN, unlocking);
     if (v == VIEW_ERASE) {
@@ -503,7 +503,12 @@ static void on_gesture(lv_event_t *e)
     }
 }
 
-/* A round key, the widget sheet's round button's look; pressed, it lights and gives a little. */
+/*
+ * A round key, the widget sheet's round button's look. Pressed, it's a key
+ * (MUSE_PRESS_KEY): it gives, lights up, and a ring round it widens and fades
+ * as it's let go, so the one pressed is plain to see. Every digit looks and
+ * clicks the same: nothing tells one from another but where it is.
+ */
 static lv_obj_t *key(lv_obj_t *box, int k, int col, int row)
 {
     lv_obj_t *b = lv_button_create(box);
@@ -513,18 +518,14 @@ static lv_obj_t *key(lv_obj_t *box, int k, int col, int row)
     lv_obj_set_pos(b, col * (d + px(KEY_GAP_X)), row * (d + px(KEY_GAP_Y)));
     lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(b, on_key, LV_EVENT_CLICKED, (void *)(intptr_t)k);
-    lv_obj_set_style_transform_width(b, -px(5), LV_STATE_PRESSED);
-    lv_obj_set_style_transform_height(b, -px(5), LV_STATE_PRESSED);
-    lv_obj_set_style_transition(b, &u.press_tr, 0);
-    lv_obj_set_style_transition(b, &u.press_tr, LV_STATE_PRESSED);
+    lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
     if (k <= 9) {
-        lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(b, lv_color_hex(MUSE_COLOR_CARD_PRESSED), 0);
-        lv_obj_set_style_bg_color(b, lv_color_hex(MUSE_COLOR_RAISED_PRESSED), LV_STATE_PRESSED);
         char t[2] = { (char)('0' + k), 0 };
         lv_obj_center(muse_style_label(b, u.scale >= 900 ? FONT_DIGIT : &lv_font_montserrat_28, MUSE_COLOR_TEXT, t));
     }
+    muse_style_pressable(b, MUSE_PRESS_KEY, false);
     return b;
 }
 
@@ -536,6 +537,7 @@ static void build_keys(lv_obj_t *sheet)
     lv_obj_set_size(box, 3 * d + 2 * px(KEY_GAP_X), 4 * d + 3 * px(KEY_GAP_Y));
     lv_obj_align(box, LV_ALIGN_BOTTOM_MID, 0, -px(KEYS_BOTTOM));
     lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(box, LV_OBJ_FLAG_OVERFLOW_VISIBLE);   /* an outside key's ring, past the box */
     for (int k = 1; k <= 9; k++) {
         u.keys[k] = key(box, k, (k - 1) % 3, (k - 1) / 3);
     }
@@ -568,8 +570,6 @@ void muse_lock_ui_build(lv_obj_t *layer, int w, int h)
         u.scale = u.scale * 82 / 100;   /* the corners' keys inside the circle */
     }
     u.scale = u.scale > 1000 ? 1000 : u.scale;
-    static const lv_style_prop_t PROPS[] = { LV_STYLE_TRANSFORM_WIDTH, LV_STYLE_TRANSFORM_HEIGHT, LV_STYLE_BG_COLOR, 0 };
-    lv_style_transition_dsc_init(&u.press_tr, PROPS, lv_anim_path_ease_out, 120, 0, NULL);
 
     u.sheet = lv_obj_create(layer);
     lv_obj_remove_style_all(u.sheet);

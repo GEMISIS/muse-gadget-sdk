@@ -103,6 +103,8 @@ void muse_home_extras_build(lv_obj_t *face)
     lv_obj_set_flex_flow(s_up, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(s_up, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_opa(s_up, LV_OPA_TRANSP, 0);   /* shown once there's a line (up_show) */
+    lv_obj_set_style_bg_color(s_up, lv_color_hex(MUSE_COLOR_CARD_PRESSED), LV_STATE_PRESSED);
+    muse_style_pressable(s_up, MUSE_PRESS_BUTTON, false);   /* no click while it's faded out */
     s_up_lbl = lv_label_create(s_up);
     lv_obj_set_style_text_font(s_up_lbl, FONT_UP, 0);
     lv_obj_set_style_text_color(s_up_lbl, lv_color_hex(COLOR_UP_TEXT), 0);

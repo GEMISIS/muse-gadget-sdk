@@ -59,6 +59,7 @@ void muse_settings_set_listener(muse_setting_cb_t cb);
 
 int muse_settings_volume(void);         /* 0..100 */
 bool muse_settings_speaker_on(void);    /* off: replies are shown, not played */
+bool muse_settings_touch_sounds(void);  /* a click as the screen's touched (muse_style_click) */
 int muse_settings_mic_gain(void);       /* dB, 0..MUSE_MIC_GAIN_MAX */
 int muse_settings_brightness(void);     /* 10..100 */
 int muse_settings_sleep_s(void);        /* 0 = never */
@@ -196,6 +197,7 @@ uint32_t muse_settings_chats_gen(void);
 
 void muse_settings_set_volume(int pct);
 void muse_settings_set_speaker_on(bool on);
+void muse_settings_set_touch_sounds(bool on);
 void muse_settings_set_mic_gain(int db);
 void muse_settings_set_brightness(int pct);
 void muse_settings_set_sleep_s(int secs);

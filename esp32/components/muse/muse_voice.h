@@ -40,12 +40,14 @@ void muse_voice_request_chirp(void);
 
 /*
  * Earcons: short, quiet sounds (80 ms at most, but for the charge jingle)
- * that say a key, or the charger, did something.
- * None with the speaker off, and at half the level in Night mode. The talk
+ * that say a key, the screen, or the charger, did something.
+ * None with the speaker off (the taps none with Touch sounds off either), and
+ * at half the level in Night mode. The talk
  * key's pair (listening starts, and stops) the voice task plays itself; the
  * rest are asked for here, from any task, and play once it's idle, the
- * newest replacing one not yet played. One asked for while a turn is under
- * way is dropped rather than played late.
+ * newest replacing one not yet played (but a tap never one that isn't a
+ * tap). One asked for while a turn is under way is dropped rather than played
+ * late: no tick over Muse listening or speaking.
  */
 typedef enum {
     MUSE_EARCON_TICK,     /* a volume step, at the new volume */
@@ -53,6 +55,8 @@ typedef enum {
     MUSE_EARCON_STOP,     /* listening stops: a lower, falling one */
     MUSE_EARCON_CLICK,    /* the power menu opens */
     MUSE_EARCON_CHARGE,   /* plugged in to charge: a little rising arpeggio, half a second */
+    MUSE_EARCON_TAP,      /* the screen touched (muse_style_click): a soft tick, 10 ms */
+    MUSE_EARCON_TAP_PRIMARY,   /* the same for Send, Done, OK: a lower, rounder tock */
 } muse_earcon_t;
 
 void muse_voice_earcon(muse_earcon_t which);

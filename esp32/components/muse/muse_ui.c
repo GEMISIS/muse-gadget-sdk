@@ -640,6 +640,7 @@ void muse_ui_lock_prompt(void)
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
+    muse_style_click(false);   /* a pat, or a tap beside him: either answers */
     if (muse_lock_locked()) {
         /* His box is most of the screen: a tap on Muse himself is a pat (a hop,
          * and his battery), anywhere else in it the keypad, as off it. */
@@ -701,6 +702,7 @@ static void on_canvas_held(lv_event_t *e)
 {
     (void)e;
     if (muse_state_mode(NULL) == MUSE_MODE_IDLE && !muse_lock_locked()) {
+        muse_style_click(false);   /* held long enough: the tap a hold makes */
         muse_mode_dialog_open();
     }
 }
@@ -842,6 +844,7 @@ static void on_speaker_event(lv_event_t *e)
     switch (lv_event_get_code(e)) {
     case LV_EVENT_PRESSED:
         speaker_grow(true);
+        muse_style_click(false);
         break;
     case LV_EVENT_LONG_PRESSED:
         muse_settings_set_speaker_on(!on);
@@ -1254,20 +1257,40 @@ static void photo_full_show(void);
 
 /* While he holds a photo, a tap on it shows it full size, and a tap anywhere
  * else on the face puts it away. */
-static void on_photo_clicked(lv_event_t *e)
+/* Whether the touch is on the photo's card, a fingertip's slack round it. */
+static bool on_photo_card(void)
 {
-    (void)e;
     lv_point_t pt;
     lv_area_t card;
     lv_indev_t *indev = lv_indev_active();
-    if (indev && s_photo_card && !lv_obj_has_flag(s_photo_card, LV_OBJ_FLAG_HIDDEN)) {
-        lv_indev_get_point(indev, &pt);
-        lv_obj_get_coords(s_photo_card, &card);
-        lv_area_increase(&card, 12, 12);   /* a fingertip's slack */
-        if (lv_area_is_point_on(&card, &pt, 0)) {
-            photo_full_show();
-            return;
+    if (!indev || !s_photo_card || lv_obj_has_flag(s_photo_card, LV_OBJ_FLAG_HIDDEN)) {
+        return false;
+    }
+    lv_indev_get_point(indev, &pt);
+    lv_obj_get_coords(s_photo_card, &card);
+    lv_area_increase(&card, 12, 12);
+    return lv_area_is_point_on(&card, &pt, 0);
+}
+
+static void on_photo_clicked(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    /* Over the card, the cover takes the touch: the card's pressed by hand. */
+    if (code == LV_EVENT_PRESSED) {
+        if (on_photo_card()) {
+            lv_obj_add_state(s_photo_card, LV_STATE_PRESSED);
         }
+        muse_style_click(false);
+        return;
+    }
+    if (code != LV_EVENT_CLICKED) {
+        lv_obj_remove_state(s_photo_card, LV_STATE_PRESSED);   /* let go, or slid away */
+        return;
+    }
+    lv_obj_remove_state(s_photo_card, LV_STATE_PRESSED);
+    if (on_photo_card()) {
+        photo_full_show();
+        return;
     }
     photo_put_away((float)esp_timer_get_time() / 1e6f, "tapped");
 }
@@ -1291,6 +1314,7 @@ static void build_photo(lv_obj_t *face)
     lv_obj_set_style_shadow_opa(s_photo_card, LV_OPA_40, 0);
     lv_obj_remove_flag(s_photo_card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_photo_card, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+    muse_style_pressable(s_photo_card, MUSE_PRESS_BUTTON, false);
     lv_obj_add_event_cb(s_photo_card, on_photo_clicked, LV_EVENT_CLICKED, NULL);
     /* Over the whole face while a photo's out (photo_tick): any tap puts it away. */
     s_photo_dismiss = lv_obj_create(face);
@@ -1298,7 +1322,10 @@ static void build_photo(lv_obj_t *face)
     lv_obj_set_size(s_photo_dismiss, lv_pct(100), lv_pct(100));
     lv_obj_remove_flag(s_photo_dismiss, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_photo_dismiss, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_event_cb(s_photo_dismiss, on_photo_clicked, LV_EVENT_CLICKED, NULL);
+    static const lv_event_code_t TAP[] = { LV_EVENT_PRESSED, LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST, LV_EVENT_CLICKED };
+    for (size_t i = 0; i < sizeof(TAP) / sizeof(TAP[0]); i++) {
+        lv_obj_add_event_cb(s_photo_dismiss, on_photo_clicked, TAP[i], NULL);
+    }
     s_photo_pic = lv_image_create(s_photo_card);
     lv_image_set_inner_align(s_photo_pic, LV_IMAGE_ALIGN_STRETCH);   /* sized as the card grows */
     lv_obj_remove_flag(s_photo_pic, LV_OBJ_FLAG_CLICKABLE);
@@ -1596,6 +1623,7 @@ static void image_sync(void)
 static void on_image_clicked(lv_event_t *e)
 {
     (void)e;
+    muse_style_click(false);
 #if CONFIG_MUSE_WATCHER_CAMERA
     if (watcher_camera_preview_active()) {
         watcher_camera_preview_toggle();
@@ -1741,6 +1769,7 @@ static void photo_full_hide(float now)
 static void on_photo_full_clicked(lv_event_t *e)
 {
     (void)e;
+    muse_style_click(false);
     photo_full_hide((float)esp_timer_get_time() / 1e6f);
 }
 
@@ -2309,6 +2338,9 @@ static void on_veil(lv_event_t *e)
     if (lv_event_get_code(e) == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_active()) != LV_DIR_TOP) {
         return;
     }
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        muse_style_click(false);
+    }
     muse_lock_ui_open(true);
 }
 
@@ -2361,6 +2393,7 @@ static void build_overlays(void)
     lv_obj_t *hint_text = lv_label_create(s_camera_hint);
     lv_label_set_text(hint_text, "TAP TO TAKE PHOTO");
     lv_obj_center(hint_text);
+    muse_style_pressable(s_camera_hint, MUSE_PRESS_BUTTON, false);
     lv_obj_add_event_cb(s_camera_hint, on_camera_hint_clicked, LV_EVENT_CLICKED, NULL);
 #endif
 

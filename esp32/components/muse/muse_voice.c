@@ -229,6 +229,10 @@ static bool earcon_play(muse_earcon_t which)
         [MUSE_EARCON_STOP] = { 70, 740, 440 },
         [MUSE_EARCON_CLICK] = { 15, 2400, 1600 },
         [MUSE_EARCON_CHARGE] = { 0, 0, 0 },   /* CHARGE, below */
+        /* A tap: high and gone at once, under the others' level, as a
+         * keyboard's is; the primary one lower and a little longer. */
+        [MUSE_EARCON_TAP] = { 10, 2100, 1700 },
+        [MUSE_EARCON_TAP_PRIMARY] = { 16, 1400, 1050 },
     };
     /* Plugged in: E5 G#5 B5 plucked, up to an E6 that rings on, 0.5 s in all. */
     static const struct {
@@ -245,6 +249,9 @@ static bool earcon_play(muse_earcon_t which)
             earcon_note(CHARGE[k].f, CHARGE[k].f * 1.01f, CHARGE[k].ms, level * 0.8f);
         }
         return true;
+    }
+    if (which == MUSE_EARCON_TAP || which == MUSE_EARCON_TAP_PRIMARY) {
+        level *= which == MUSE_EARCON_TAP ? 0.5f : 0.65f;
     }
     earcon_note(SHAPES[which].f0, SHAPES[which].f1, SHAPES[which].ms, level);
     return true;
@@ -1246,7 +1253,17 @@ void muse_voice_earcon(muse_earcon_t which)
     if (muse_state_mode(NULL) != MUSE_MODE_IDLE || !muse_settings_speaker_on()) {
         return;
     }
-    s_earcon_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    bool tap = which == MUSE_EARCON_TAP || which == MUSE_EARCON_TAP_PRIMARY;
+    if (tap) {
+        int waiting = s_earcon;
+        if (!muse_settings_touch_sounds()
+            || (waiting >= 0 && waiting != MUSE_EARCON_TAP && waiting != MUSE_EARCON_TAP_PRIMARY
+                && now - s_earcon_ms < EARCON_STALE_MS)) {
+            return;   /* a volume step's or the charger's comes first */
+        }
+    }
+    s_earcon_ms = now;
     s_earcon = which;
     muse_state_nudge();
 }
