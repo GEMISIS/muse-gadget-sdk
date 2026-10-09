@@ -39,6 +39,7 @@
 #include "muse_console.h"
 #include "muse_gadget_mode.h"
 #include "muse_link.h"
+#include "muse_lock.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
 #include "muse_power_menu.h"
@@ -73,6 +74,8 @@ static const char *TAG = "muse_input";
 #define SLEEP_CHECK_MS 100
 #define VOLUME_STEP 5          /* per volume key press */
 #define MUTE_TAP_US (350 * 1000)   /* volume down twice within this mutes or unmutes */
+#define TALK_TAP_US (250 * 1000)   /* with a passcode: a talk press let go sooner is a tap */
+#define LOCK_TAP_US (350 * 1000)   /* ... and a second within this of the first locks (muse_lock.h) */
 #define VOLUME_DELAY_TICKS 50  /* 500 ms: holding volume down starts repeating */
 #define VOLUME_REPEAT_TICKS 30 /* ... every 300 ms */
 
@@ -216,9 +219,40 @@ static void aux_key(bool pressed, bool edge)
     }
 }
 
+/*
+ * Two taps of the talk button lock it, when there's a passcode. To tell, a
+ * press waits TALK_TAP_US before it's posted: held that long, it's posted
+ * then (the voice's pre-roll has what was said meanwhile); let go sooner,
+ * it's a tap, posted as one (down and up) if no second comes within
+ * LOCK_TAP_US. So a tap is what it always was, and the first of two neither
+ * starts a turn nor says to hold longer. Input task only.
+ */
+EXT_RAM_BSS_ATTR static struct {
+    bool waiting;           /* pressed, not posted yet */
+    int64_t down_us;
+    int64_t tapped_us;      /* a tap, waiting to see if another follows */
+} s_tap;
+
+static void talk_tick(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (s_tap.waiting && now - s_tap.down_us >= TALK_TAP_US) {
+        s_tap.waiting = false;
+        post(MUSE_PTT_DOWN, false);   /* held: talking */
+        s_talk_down = true;
+    }
+    if (s_tap.tapped_us && now - s_tap.tapped_us >= LOCK_TAP_US) {
+        s_tap.tapped_us = 0;
+        if (!muse_lock_locked()) {
+            post(MUSE_PTT_DOWN, false);   /* the one tap, as ever */
+            post(MUSE_PTT_UP, false);
+        }
+    }
+}
+
 /* Talk button: push-to-talk, or Select while the menu is open. Asleep, the
  * press wakes and is posted as a waking one: muse_voice records only if it's
- * still held once awake. */
+ * still held once awake. Locked, it only wakes the screen. */
 static void talk_button(unsigned ev)
 {
     bool talk_down = s_talk_down;
@@ -242,6 +276,11 @@ static void talk_button(unsigned ev)
 #if CONFIG_MUSE_WATCHER_CAMERA
     bool saw_release = released;
 #endif
+    if (s_tap.waiting && released) {
+        s_tap.waiting = false;
+        s_tap.tapped_us = esp_timer_get_time();   /* a tap: one more locks */
+        released = false;
+    }
     if ((talk_down || swallow) && released) {
         if (talk_down) {
             post(MUSE_PTT_UP, false);
@@ -249,9 +288,15 @@ static void talk_button(unsigned ev)
         talk_down = swallow = false;
         released = false;
     }
-    if (!talk_down && !swallow && (ev & MUSE_BTN_TALK_PRESS)) {
+    if (!talk_down && !swallow && !s_tap.waiting && (ev & MUSE_BTN_TALK_PRESS)) {
         if (muse_link_talk_press()) {
             /* Confirmed a Muse app pairing (Link's setup button). */
+            muse_state_poke();
+            swallow = true;
+        } else if (muse_lock_locked()) {
+            if (muse_state_asleep()) {
+                set_asleep(false, muse_board->talk_button);   /* to the locked face */
+            }
             muse_state_poke();
             swallow = true;
         } else if (muse_state_asleep()) {
@@ -266,10 +311,26 @@ static void talk_button(unsigned ev)
             muse_state_poke();
             muse_power_menu_key(MUSE_POWER_MENU_SELECT);
             swallow = true;
+        } else if (muse_lock_has_pin()) {
+            int64_t now = esp_timer_get_time();
+            muse_state_poke();
+            if (s_tap.tapped_us && now - s_tap.tapped_us < LOCK_TAP_US) {
+                s_tap.tapped_us = 0;   /* the second tap */
+                muse_lock_now("talk button, twice");
+                swallow = true;
+            } else {
+                s_tap.waiting = true;   /* a tap or talking: talk_tick() tells */
+                s_tap.down_us = now;
+            }
         } else {
             post(MUSE_PTT_DOWN, false);
             talk_down = true;
         }
+    }
+    if (s_tap.waiting && released) {
+        s_tap.waiting = false;
+        s_tap.tapped_us = esp_timer_get_time();
+        released = false;
     }
     if ((talk_down || swallow) && released) {
         if (talk_down) {
@@ -547,6 +608,7 @@ static void input_task(void *arg)
                      ev & MUSE_BTN_TALK_RELEASE ? " release" : "");
             talk_button(ev);
         }
+        talk_tick();
         keyboard_buttons(ev);
         volume_keys(ev);
         /* A latched key (the 1.75's PMU) can report press and release in the
@@ -894,12 +956,51 @@ static void chat_sid_command(const char *line)
     print_json("chat_sid", json);
 }
 
+/* Locked: a command that would show or change the owner's things, refused. */
+static void refuse_locked(const char *line)
+{
+    char name[24];
+    size_t n = 0;
+    for (; line[n] && line[n] != '=' && n < sizeof(name) - 1; n++) {
+        char c = line[n];
+        name[n] = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ? c : '?';
+    }
+    name[n] = '\0';
+    printf("@locked {\"command\":\"%s\"}\n", name);
+    fflush(stdout);
+}
+
 /*
  * Console-only commands; false for setup commands. Their buffers are taken
  * per command: without PSRAM, static ones would hold internal RAM for good.
  */
 static bool console_command(char *line, bool whole)
 {
+    /* The passcode's (muse_lock.h): ">lock" locks, ">lockstate" says how it
+     * stands, and ">pin=" is an attempt, counted as the keypad's are. */
+    if (!strcmp(line, "lock")) {
+        muse_lock_now("serial");
+        muse_lock_print();
+        return true;
+    }
+    if (!strcmp(line, "lockstate")) {
+        muse_lock_print();
+        return true;
+    }
+    if (!strncmp(line, "pin=", 4)) {
+        muse_lock_bench_pin(line + 4);
+        memset(line + 4, 0, strlen(line + 4));
+        return true;
+    }
+    if (muse_lock_locked() && muse_lock_policy_blocks_console(line)) {
+        refuse_locked(line);
+        return true;   /* not on to muse_ble_command either */
+    }
+    if (!strcmp(line, "status") && muse_lock_locked()) {
+        printf("@status {\"board\":\"%s\",\"locked\":true}\n", muse_board->name);
+        fflush(stdout);
+        return true;
+    }
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
         char *json = heap_caps_malloc(cap, MUSE_BIG_CAPS);
@@ -1085,6 +1186,10 @@ static bool console_command(char *line, bool whole)
  * browser at work ("browser"), "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and "chat_sid=", "chat_new=" and "chats" pick
  * the chat it goes to and list the named ones (see chat_sid_command).
+ * The passcode's (muse_lock.h): "lock" locks now, "lockstate" prints
+ * "@lock {...}", and "pin=NNNNNN" is an attempt, checked and counted as the
+ * keypad's are ("@pin {...}"). Locked, the rest that would show or change
+ * the owner's things (and the talk and menu keys) get "@locked" instead.
  */
 static void serial_task(void *arg)
 {
@@ -1098,6 +1203,8 @@ static void serial_task(void *arg)
         }
         if (c == 'm') {
             muse_voice_request_mp3test();
+        } else if ((c == 'a' || c == 's' || c == 'd' || c == 'u') && muse_lock_locked()) {
+            refuse_locked(c == 'a' || c == 's' ? "menu" : "talk");
         } else if (c == 'a' || c == 's') {
             muse_state_poke();
             muse_menu_key(c == 'a' ? MUSE_MENU_DOWN : MUSE_MENU_SELECT);

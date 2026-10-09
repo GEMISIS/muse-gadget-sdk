@@ -22,6 +22,7 @@
  */
 #include "muse_sd.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
@@ -43,6 +44,7 @@
 #include "muse_extras.h"
 #include "muse_mem.h"
 #include "muse_state.h"
+#include "muse_watchdog.h"
 
 static const char *TAG = "sd";
 
@@ -330,6 +332,56 @@ void muse_sd_image_write(void)
     muse_sd_tee_write(t, data, len);
     muse_sd_tee_end(t, true, ext, 0, 0);
     heap_caps_free(data);
+}
+
+/* ---- Erasing it all (muse_lock.h) ----------------------------------------- */
+
+#define WIPE_DEPTH 6
+
+/* Deletes what's in `path` (its buffer, `cap` long), and the folders in it. */
+static void wipe_dir(char *path, size_t cap, int depth)
+{
+    DIR *d = opendir(path);
+    if (!d) {
+        return;
+    }
+    size_t n = strlen(path);
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")
+            || snprintf(path + n, cap - n, "/%s", e->d_name) >= (int)(cap - n)) {
+            continue;
+        }
+        muse_watchdog_beat();   /* the LVGL task's, and a full card takes a while */
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) {
+            if (depth < WIPE_DEPTH) {
+                wipe_dir(path, cap, depth + 1);
+            }
+            rmdir(path);
+        } else if (unlink(path) != 0) {
+            ESP_LOGW(TAG, "couldn't delete %s: %s", path, strerror(errno));
+        }
+        path[n] = '\0';
+    }
+    closedir(d);
+}
+
+void muse_sd_wipe(void)
+{
+    if (!s_ready) {
+        return;
+    }
+    s_ready = false;   /* nothing more written; the restart follows */
+    char *path = heap_caps_malloc(256, MUSE_BIG_CAPS);
+    if (!path) {
+        return;
+    }
+    strlcpy(path, MUSE_SD_DIR, 256);
+    wipe_dir(path, 256, 0);
+    rmdir(MUSE_SD_DIR);
+    heap_caps_free(path);
+    ESP_LOGW(TAG, "erased " MUSE_SD_DIR);
 }
 
 /* ---- Caption log ---------------------------------------------------------- */

@@ -42,7 +42,7 @@
 #include "muse_chat.h"
 #include "muse_extras.h"
 #include "muse_gadget_mode.h"
-#include "muse_present.h"
+#include "muse_lock.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_text.h"
@@ -56,8 +56,7 @@ static const char *TAG = "up_next";
 #define KEEP " Right now I show: \"%s\". If that's still right, reply with just the word SAME instead."
 #define SAME "SAME"
 /* Ahead of PROMPT when an earlier ask's chat is still on the Muse. */
-#define DELETE_FIRST "First, quietly delete the chats with session ids %s (earlier background questions from this gadget); don't mention it. Then: "
-#define DELETE_IDS (5 * (MUSE_CHAT_SID_MAX + 2))   /* its own last one, and the image requests' (muse_present_stale_take) */
+#define DELETE_FIRST "First, quietly delete the chat with session id %s (an earlier one of these questions); don't mention it. Then: "
 #define NVS_NS "gadget"
 #define UP_NEXT_MAX 72
 #define EVERY_US (3600LL * 1000000)            /* asked at most this often, failures included */
@@ -248,7 +247,7 @@ void muse_up_next_tick(void)
     }
     /* In reach, between turns, and not asleep on battery, when Wi-Fi rests:
      * waking makes up for it, as it's due by then. */
-    if (!muse_hatch_ready() || muse_hatch_turn_busy() || muse_state_mode(NULL) != MUSE_MODE_IDLE
+    if (!muse_hatch_ready() || muse_hatch_turn_busy() || muse_state_mode(NULL) != MUSE_MODE_IDLE || muse_lock_locked()
         || (!awake && muse_state_on_battery())) {
         return;
     }
@@ -274,18 +273,10 @@ void muse_up_next_tick(void)
         load();   /* no clock yet: the line can't be dated, but the chat to delete is known */
     }
     new_chat_sid(s_sid);
-    static char ask[sizeof(DELETE_FIRST) + DELETE_IDS + sizeof(PROMPT) + sizeof(KEEP) + UP_NEXT_MAX];
-    EXT_RAM_BSS_ATTR static char ids[DELETE_IDS];
+    static char ask[sizeof(DELETE_FIRST) + MUSE_CHAT_SID_MAX + sizeof(PROMPT) + sizeof(KEEP) + UP_NEXT_MAX];
     char shown[UP_NEXT_MAX];
     muse_up_next_line(shown, sizeof(shown));
-    size_t k = snprintf(ids, sizeof(ids), "%s", s_prev);
-    if (k < sizeof(ids) - 4) {
-        size_t more = muse_present_stale_take(ids + k + (k ? 2 : 0), sizeof(ids) - k - 2);
-        if (more && k) {
-            memcpy(ids + k, ", ", 2);   /* joined to its own */
-        }
-    }
-    int n = ids[0] ? snprintf(ask, sizeof(ask), DELETE_FIRST "%s", ids, PROMPT) : snprintf(ask, sizeof(ask), "%s", PROMPT);
+    int n = s_prev[0] ? snprintf(ask, sizeof(ask), DELETE_FIRST "%s", s_prev, PROMPT) : snprintf(ask, sizeof(ask), "%s", PROMPT);
     if (shown[0] && n > 0 && (size_t)n < sizeof(ask)) {
         snprintf(ask + n, sizeof(ask) - n, KEEP, shown);
     }

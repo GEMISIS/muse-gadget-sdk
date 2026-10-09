@@ -47,6 +47,9 @@
 #include "config_store.h"
 #include "link_pairing.h"
 #include "factory_test.h"
+#if CONFIG_MUSE_ENABLED
+#include "muse_lock.h"
+#endif
 
 static const char *TAG = "link.ble";
 
@@ -272,6 +275,18 @@ static bool is_sensitive_setup_action(const char *act) {
            || strcmp(act, "set_auth") == 0;
 }
 
+// Locked with a passcode (muse_lock.h), a set-up gadget answers none of
+// these: its Wi-Fi, pairing and updates wait till it's unlocked on the gadget.
+static bool locked_for(const char *act) {
+#if CONFIG_MUSE_ENABLED
+    return muse_lock_locked() && config_setup_complete()
+           && (is_sensitive_setup_action(act) || strcmp(act, "get_device_info") == 0);
+#else
+    (void)act;
+    return false;
+#endif
+}
+
 static bool is_exact_client_finished(cJSON *root) {
     cJSON *only = cJSON_IsObject(root) ? root->child : NULL;
     return only && !only->next
@@ -315,7 +330,9 @@ static void dispatch_command_ex(const uint8_t *data, size_t len, bool decrypted)
     const char *act = (cJSON_IsString(action) && action->valuestring) ? action->valuestring : "";
     ESP_LOGI(TAG, "RX action: %s", act);
 
-    if (!decrypted && strcmp(act, "pairing_client_hello") == 0 && config_setup_complete()) {
+    if (locked_for(act)) {
+        ble_server_send_status("error_locked");
+    } else if (!decrypted && strcmp(act, "pairing_client_hello") == 0 && config_setup_complete()) {
         // BLE outlives setup only for a companion service (Muse phone setup).
         // Re-pairing goes through unpair/reset, never a new session here.
         ble_server_send_status("error_pairing_unavailable");

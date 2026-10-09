@@ -130,6 +130,10 @@ lv_obj_t *muse_style_button(lv_obj_t *parent, const char *text, muse_button_kind
  * same wherever it is. The caller places it and handles its click. */
 lv_obj_t *muse_style_help_button(lv_obj_t *parent);
 
+/* A padlock `size` px square in `color`, drawn (the symbol font has none):
+ * the passcode's icon, in a row as an LV_SYMBOL_* label would be. */
+lv_obj_t *muse_style_padlock(lv_obj_t *parent, int size, uint32_t color);
+
 /*
  * The whole of `parent` (or the top layer, if NULL) dimmed, taking every tap
  * and holding drags from the screens either side, and a card on it, centred,

@@ -30,6 +30,7 @@
 
 #include "muse_chat.h"
 #include "muse_dialog.h"
+#include "muse_lock.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_style.h"
@@ -230,6 +231,7 @@ static void apply(muse_gadget_mode_t mode, const char *why)
     }
     ESP_LOGI(TAG, "%s mode (%s): each chat hears it with its next message", NAMES[mode], why);
     muse_settings_set_gadget_mode(mode);
+    muse_lock_mode_entered(mode);   /* a mode that asks for the passcode */
     muse_state_set_caption("%s MODE", mode == MUSE_GADGET_DESK ? "DESK" : mode == MUSE_GADGET_NIGHT ? "NIGHT" : "ON-THE-GO");
 }
 
@@ -539,6 +541,13 @@ void muse_gadget_mode_ui_tick(float now)
     }
     if (!lv_obj_has_flag(s_toast, LV_OBJ_FLAG_HIDDEN)
         && (now > s_toast_until || mode == MUSE_GADGET_ON_THE_GO)) {
+        lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void muse_gadget_mode_hide_toast(void)
+{
+    if (s_toast) {
         lv_obj_add_flag(s_toast, LV_OBJ_FLAG_HIDDEN);
     }
 }

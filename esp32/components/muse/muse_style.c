@@ -111,6 +111,30 @@ lv_obj_t *muse_style_help_button(lv_obj_t *parent)
     return b;
 }
 
+lv_obj_t *muse_style_padlock(lv_obj_t *parent, int size, uint32_t color)
+{
+    lv_obj_t *box = lv_obj_create(parent);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_size(box, size, size);
+    lv_obj_remove_flag(box, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    int line = size >= 20 ? 3 : 2;
+    lv_obj_t *shackle = lv_obj_create(box);
+    lv_obj_remove_style_all(shackle);
+    lv_obj_set_size(shackle, size * 9 / 16, size * 5 / 8);
+    lv_obj_align(shackle, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_radius(shackle, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(shackle, line, 0);
+    lv_obj_set_style_border_color(shackle, lv_color_hex(color), 0);
+    lv_obj_t *body = lv_obj_create(box);
+    lv_obj_remove_style_all(body);
+    lv_obj_set_size(body, size * 13 / 16, size * 9 / 16);
+    lv_obj_align(body, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_radius(body, size / 6, 0);
+    lv_obj_set_style_bg_opa(body, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(body, lv_color_hex(color), 0);
+    return box;
+}
+
 void muse_style_card(lv_obj_t *card)
 {
     lv_obj_set_style_radius(card, MUSE_CARD_RADIUS, 0);
