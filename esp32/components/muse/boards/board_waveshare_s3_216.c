@@ -42,6 +42,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "muse_board.h"
+#include "muse_watchdog.h"
 #include "muse_lcd_bands.h"
 #include "muse_mem.h"
 #include "muse_pmu.h"
@@ -229,6 +230,7 @@ static void panel_sleep(bool sleep)
  */
 static void display_pause(bool pause)
 {
+    muse_watchdog_screen(true);   /* a sleep or wake that never ends is a freeze */
     if (pause) {
         esp_lv_adapter_pause(-1);
         esp_lcd_panel_io_tx_param(s_tp->io, 0xD1, (uint8_t[]){ 0x05 }, 1);
@@ -239,6 +241,7 @@ static void display_pause(bool pause)
         vTaskDelay(pdMS_TO_TICKS(50)); /* as the driver waits after its reset */
         esp_lv_adapter_resume();
     }
+    muse_watchdog_screen(false);
 }
 
 static esp_err_t audio_init(esp_codec_dev_handle_t *spk, esp_codec_dev_handle_t *mic)

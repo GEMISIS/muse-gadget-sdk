@@ -58,6 +58,7 @@
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
 #include "muse_state.h"
+#include "muse_watchdog.h"
 #include "muse_style.h"
 #include "muse_text.h"
 #if CONFIG_MUSE_TTS_PICO
@@ -125,6 +126,7 @@ static const char *TAG = "muse_ui";
  */
 #if CONFIG_MUSE_GADGET_HOME_EXTRAS
 #define CORNERS 1
+#define MUSE_DOWN_PX 20     /* Muse a little lower than the stock layout: the big clock's room */
 #define STATE_Y 68          /* just under the clock (muse_home_extras.c's CLOCK_Y, FONT_CLOCK) */
 #define NAME_Y 92
 #else
@@ -887,6 +889,38 @@ static void move_muse(int px, int y)
 }
 
 /* Switches to answer layout `which`, or back to the usual one for -1. */
+#if CORNERS
+/*
+ * Over the widget sheet: Muse and his two lines of reply in the middle of the
+ * room the sheet leaves (a short sheet leaves more), easing there as it
+ * grows or shrinks. The layout's own place is the highest he goes.
+ */
+static void widget_place(bool on)
+{
+    static int shown = 0;
+    if (!on) {
+        shown = 0;
+        return;
+    }
+    const answer_layout_t *l = &s_answers[ANSWER_WIDGET];
+    int top = muse_widget_ui_sheet_top();
+    if (top < 0) {
+        return;
+    }
+    int art_top = s_h / 2 + l->y - l->px / 2 + PHOTO_HEAD_ROW * MINI_CELL_PX;   /* his head, roughly */
+    int block_bottom = s_h / 2 + l->top + l->h;
+    int dy = (top - block_bottom - art_top) / 2;   /* as much room over his head as under the lines */
+    dy = dy > 0 ? dy : 0;
+    if (abs(dy - shown) < 3) {
+        return;
+    }
+    shown = dy;
+    move_muse(l->px, l->y + dy);
+    lv_obj_align(s_reply_lbl, LV_ALIGN_CENTER, 0, l->top + dy + l->h / 2);
+}
+
+#endif
+
 static void set_answer(int which)
 {
     const answer_layout_t *was = s_answer >= 0 ? &s_answers[s_answer] : NULL;
@@ -1350,6 +1384,9 @@ static void build_screen(void)
     int cap_top = cap_bottom - cap_h;
     int meter_y = cap_top - 6 - METER_SEG_PX / 2;
     int art_bottom = meter_y - METER_SEG_PX / 2 - 4;
+    if (CORNERS) {
+        art_bottom += MUSE_DOWN_PX;   /* clear of the big clock, a nightcap or a cloud included */
+    }
     s_big_y = s_small ? 0 : art_bottom - (s_canvas_px / 2 - ART_BLANK_ROWS * (s_canvas_px / MUSE_PX_W));
     /* In bed, its foot on the same line. */
     s_night_y = art_bottom - (MUSE_PX_W * NIGHT_CELL_PX / 2 - ART_BLANK_ROWS * NIGHT_CELL_PX);
@@ -2712,6 +2749,9 @@ static void update_status(muse_mode_t mode, float now)
         set_answer(answer);
         fresh = true;   /* the caption moves between labels */
     }
+#if CORNERS
+    widget_place(answer == ANSWER_WIDGET);
+#endif
     if (fresh) {
         lv_obj_t *lbl = answer >= 0 ? s_reply_lbl : s_caption_lbl;
 #if CONFIG_MUSE_CJK_FONT
@@ -2959,7 +2999,7 @@ static void pose_battery(muse_pose_t *pose, float now)
  * it (from tossing the canvas up into it, painted, and waiting on it), stays
  * down to unbox it and put it together, and comes back up as he tucks it
  * into his pocket, before reaching for the photo. */
-#define ACT_DROP_PX 48
+#define ACT_DROP_PX 28   /* on top of MUSE_DOWN_PX */
 #define ACT_DROP_S 0.35f
 
 static void act_drop(const muse_pose_t *pose, float now)
@@ -3158,6 +3198,7 @@ void muse_ui_request_snapshot(void)
 
 static void frame_tick(lv_timer_t *timer)
 {
+    muse_watchdog_beat();
     if (s_snapshot) {
         s_snapshot = false;
         send_snapshot();
@@ -3309,6 +3350,7 @@ esp_err_t muse_ui_start(void)
     }
     build_overlays();
     lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
+    muse_watchdog_start();
     s_ready = true;
     muse_board->display_unlock();
 

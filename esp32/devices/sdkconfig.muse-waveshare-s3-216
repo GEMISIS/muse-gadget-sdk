@@ -97,3 +97,10 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_muse_tts.csv"
 CONFIG_LV_FONT_MONTSERRAT_48=y
 # Settings and Chats rows in bigger type (muse_settings_ui.c, muse_chats_ui.c).
 CONFIG_LV_FONT_MONTSERRAT_24=y
+
+# A crash, or a freeze the face's watchdog (muse_watchdog.c) turns into one,
+# leaves every task's backtrace in flash ("coredump" in partitions_muse_tts.csv):
+# idf.py -B <build> coredump-info reads it.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
