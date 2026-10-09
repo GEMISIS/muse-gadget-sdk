@@ -275,7 +275,7 @@ void muse_up_next_tick(void)
         load();   /* no clock yet: the line can't be dated, but the chat to delete is known */
     }
     new_chat_sid(s_sid);
-    static char ask[sizeof(DELETE_FIRST) + DELETE_IDS + sizeof(PROMPT) + sizeof(KEEP) + UP_NEXT_MAX];
+    EXT_RAM_BSS_ATTR static char ask[sizeof(DELETE_FIRST) + DELETE_IDS + sizeof(PROMPT) + sizeof(KEEP) + UP_NEXT_MAX];
     EXT_RAM_BSS_ATTR static char ids[DELETE_IDS];
     char shown[UP_NEXT_MAX];
     muse_up_next_line(shown, sizeof(shown));

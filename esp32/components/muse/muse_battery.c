@@ -65,7 +65,7 @@ typedef struct {
 } lock_delta_t;
 
 static char *s_dump;
-static lock_delta_t s_deltas[MAX_LOCKS];
+EXT_RAM_BSS_ATTR static lock_delta_t s_deltas[MAX_LOCKS];
 #endif
 
 /* The counters at one moment; a measurement is the difference of two. */

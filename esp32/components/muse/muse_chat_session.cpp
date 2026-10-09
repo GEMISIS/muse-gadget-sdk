@@ -273,7 +273,7 @@ static bool bg_chat(const char *sid);  /* the background request's chat (bg_t) *
 static void bg_yield(void);            /* a turn starts: a request not yet posted waits for it (bg_t) */
 
 #define MAX_STREAMS 6
-static stream_t s_streams[MAX_STREAMS];
+EXT_RAM_BSS_ATTR static stream_t s_streams[MAX_STREAMS];
 
 static void bg_dropped(void);   /* background requests (bg_t), below */
 
@@ -1275,8 +1275,8 @@ static size_t mic_take(int16_t *out, size_t frames)
 /* Moves mic audio to the dictation stream, paced like a live mic. */
 static bool pump_mic(void)
 {
-    static int16_t in[MIC_RATE / 50];
-    static int16_t up[MIC_RATE / 50 * DICT_RATE / MIC_RATE + 4];
+    EXT_RAM_BSS_ATTR static int16_t in[MIC_RATE / 50];   /* PSRAM: internal RAM is the DMA heap's */
+    EXT_RAM_BSS_ATTR static int16_t up[MIC_RATE / 50 * DICT_RATE / MIC_RATE + 4];
     bool did = false;
     for (;;) {
         /* Never run more than a second ahead of real time: the ASR upstream drops floods. */
@@ -3483,7 +3483,7 @@ static void post(cmd_type_t type, uint32_t gen)
 
 static void drain_out(void)
 {
-    static int16_t junk[256];
+    EXT_RAM_BSS_ATTR static int16_t junk[256];
     while (xStreamBufferReceive(s_out, junk, sizeof(junk), 0)) {
     }
 }

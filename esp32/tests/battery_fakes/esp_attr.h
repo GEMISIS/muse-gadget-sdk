@@ -18,3 +18,4 @@
 
 #define IRAM_ATTR
 #define RTC_NOINIT_ATTR   // the harness saves and loads it across its runs, as across a reset
+#define EXT_RAM_BSS_ATTR

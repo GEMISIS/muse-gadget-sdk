@@ -1004,8 +1004,18 @@ static int fetch_vms_with_refresh_with_gate_held(vm_info_t *vms, int max) {
 static portMUX_TYPE s_vm_seen_lock = portMUX_INITIALIZER_UNLOCKED;
 static char *s_vm_seen_id, *s_vm_seen_name, *s_vm_seen_token;
 
+// A copy in PSRAM (free() takes it): the token's most of a KB, which
+// strdup() would keep in internal RAM, the DMA heap's.
+static char *vm_seen_dup(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *d = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!d) d = malloc(n);
+    if (d) memcpy(d, s, n);
+    return d;
+}
+
 static void remember_vm(const char *vm_id, const char *vm_name, const char *token) {
-    char *id = strdup(vm_id), *name = strdup(vm_name ? vm_name : ""), *tok = strdup(token);
+    char *id = vm_seen_dup(vm_id), *name = vm_seen_dup(vm_name ? vm_name : ""), *tok = vm_seen_dup(token);
     portENTER_CRITICAL(&s_vm_seen_lock);
     char *old[3] = { s_vm_seen_id, s_vm_seen_name, s_vm_seen_token };
     s_vm_seen_id = id;
@@ -2389,7 +2399,7 @@ bool app_hatch_vm_credentials(const char *want_vm, char *vm_id, size_t id_cap,
                      && (!want_vm || !want_vm[0] || strcmp(want_vm, s_vm_seen_id) == 0);
         size_t tok_len = match ? strlen(s_vm_seen_token) : 0;
         portEXIT_CRITICAL(&s_vm_seen_lock);
-        char *tok = match ? malloc(tok_len + 1) : NULL;
+        char *tok = match ? heap_caps_malloc(tok_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
         if (tok) {
             portENTER_CRITICAL(&s_vm_seen_lock);
             if (s_vm_seen_token && strlen(s_vm_seen_token) == tok_len) {

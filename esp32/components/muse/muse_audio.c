@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_codec_dev.h"
 #include "esp_heap_caps.h"
@@ -38,8 +39,10 @@ static const char *TAG = "muse_audio";
 static esp_codec_dev_handle_t s_spk;
 static esp_codec_dev_handle_t s_mic;
 static bool s_open;
-static int16_t s_in_stereo[MUSE_AUDIO_CHUNK * CHANNELS];
-static int16_t s_out_stereo[MUSE_AUDIO_CHUNK * CHANNELS];
+/* In PSRAM, as the chirp's: I2S copies to and from its own DMA buffers, and
+ * internal RAM is the DMA heap's (the Noise channel's floor). */
+EXT_RAM_BSS_ATTR static int16_t s_in_stereo[MUSE_AUDIO_CHUNK * CHANNELS];
+EXT_RAM_BSS_ATTR static int16_t s_out_stereo[MUSE_AUDIO_CHUNK * CHANNELS];
 
 /* One-pole high-pass on the mixed mic signal. */
 static float s_hpf_a;
@@ -311,7 +314,7 @@ float muse_audio_level(const int16_t *mono, size_t frames)
 void muse_audio_chirp(int rising)
 {
     enum { MS = 90, N = MUSE_AUDIO_RATE * MS / 1000 };
-    static int16_t buf[N];
+    EXT_RAM_BSS_ATTR static int16_t buf[N];
     float f0 = rising ? 620.0f : 980.0f;
     float f1 = rising ? 1180.0f : 560.0f;
     float phase = 0;

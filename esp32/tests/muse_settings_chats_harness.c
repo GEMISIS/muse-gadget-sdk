@@ -48,6 +48,7 @@ typedef int esp_err_t;
 #define ESP_LOGI(tag, fmt, ...) fprintf(stderr, "%s: " fmt "\n", tag, ##__VA_ARGS__)
 
 #define CONFIG_MUSE_DEFAULT_VOLUME 70
+#define EXT_RAM_BSS_ATTR
 
 typedef int SemaphoreHandle_t;
 #define portMAX_DELAY 0

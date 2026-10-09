@@ -117,7 +117,7 @@ static size_t s_pre_next, s_pre_fill;
 #if MUSE_LOW_MEM
 static muse_adpcm_t s_pre_enc;
 #endif
-static int16_t s_chunk[MUSE_AUDIO_CHUNK];
+EXT_RAM_BSS_ATTR static int16_t s_chunk[MUSE_AUDIO_CHUNK];   /* PSRAM: internal RAM is the DMA heap's */
 static int s_settle;
 
 /*
@@ -470,10 +470,10 @@ static bool hatch_reply(bool *delivered)
 {
     muse_state_set_mode(MUSE_MODE_THINKING);
     muse_state_set_caption("SENDING VOICE NOTE");   /* until there's a transcript or reply */
-    static int16_t buf[MUSE_AUDIO_CHUNK];
+    EXT_RAM_BSS_ATTR static int16_t buf[MUSE_AUDIO_CHUNK];
     static const int16_t silence[MUSE_AUDIO_CHUNK];
     char text[96];
-    static char page[MUSE_CAPTION_MAX];
+    EXT_RAM_BSS_ATTR static char page[MUSE_CAPTION_MAX];
     bool done = false, speaking = false, replied = false;
     size_t played = 0;
     int64_t t0 = esp_timer_get_time();
