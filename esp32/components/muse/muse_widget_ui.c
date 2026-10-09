@@ -45,6 +45,7 @@
  * ("What Muse did") is the same sheet and the same chip.
  */
 #include "muse_widget_ui.h"
+#include "muse_where.h"
 
 #if MUSE_WIDGET_UI
 
@@ -1894,6 +1895,17 @@ void muse_widget_ui_tick(muse_mode_t mode, float now, bool may_open)
         s_view = VIEW_WIDGETS;
         s_detail = NONE;
         open_sheet(true, 0);
+    }
+    /* A map drawn before the user was located: again, now there's a "you" to place. */
+    static int where_was = -1;
+    muse_where_t f;
+    int where = muse_where_get(&f) ? f.source : MUSE_WHERE_NONE;
+    if (where != where_was) {
+        if (where_was >= 0 && s_sheet && s_state == ST_OPEN && s_view == VIEW_WIDGETS && s_detail == NONE
+            && !muse_widget_keys_up()) {
+            open_sheet(false, 0);
+        }
+        where_was = where;
     }
     muse_widget_map_tick();
     pic_tick();
