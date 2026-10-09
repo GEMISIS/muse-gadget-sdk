@@ -29,7 +29,9 @@
  * two-button menu instead (muse_menu.h), where talk selects. Either button
  * wakes from sleep; the talk button's press is also posted, marked `wake`, so
  * holding it on through waking records a note. Waking also retries Wi-Fi at
- * once if it's down. Also runs auto-sleep and refreshes battery status into
+ * once if it's down. Boards with volume keys in place of aux (MUSE_BTN_VOL_*)
+ * step the volume with them and open the power menu with a long press
+ * (muse_power_menu.h). Also runs auto-sleep and refreshes battery status into
  * muse_state.
  */
 

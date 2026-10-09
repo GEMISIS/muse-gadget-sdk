@@ -34,9 +34,14 @@
 #include "muse_chat.h"
 #include "muse_input.h"
 #include "muse_mem.h"
+#include "muse_sd.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_wifi.h"
+#if CONFIG_MUSE_TTS_PICO
+#include "esp_attr.h"
+#include "muse_tts.h"
+#endif
 
 static const char *TAG = "muse_voice";
 
@@ -359,6 +364,7 @@ static bool hatch_reply(bool *delivered)
     for (;;) {
         muse_hatch_ev_t ev;
         while ((ev = muse_hatch_turn_event(text, sizeof(text))) != MUSE_HATCH_EV_NONE) {
+            muse_sd_caption_event(ev, text);   /* the SD card's caption log, if any */
             switch (ev) {
             case MUSE_HATCH_EV_HEARD:
                 if (!speaking && !replied) {
@@ -417,8 +423,10 @@ static bool hatch_reply(bool *delivered)
         /* The page being said, or before the speech the reply's opening page. */
         if ((speaking || replied) && muse_hatch_turn_caption(played, page, sizeof(page))) {
             muse_state_set_caption("%s", page);
+            muse_sd_caption_page(page);
         }
     }
+    muse_sd_caption_flush();
     muse_state_set_level(0);
     ESP_LOGI(TAG, "muse reply: %.2fs of audio, %.2fs total", (double)played / MUSE_AUDIO_RATE,
              (esp_timer_get_time() - t0) / 1e6);
@@ -435,6 +443,61 @@ static void go_idle(const char *caption)
     muse_state_set_mode(MUSE_MODE_IDLE);
     muse_state_set_caption("%s", caption);
 }
+
+#if CONFIG_MUSE_TTS_PICO
+/*
+ * Says the last reply again (muse_tts_replay_last), captions following. Any
+ * press stops it and stays queued for the loop, so talking cuts it short.
+ */
+static void replay_reply(void)
+{
+    if (!muse_tts_wanted()) {
+        return;
+    }
+    char *text = heap_caps_malloc(MUSE_TTS_TEXT_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!text || !muse_tts_last(text, MUSE_TTS_TEXT_MAX) || !muse_tts_say(text)) {
+        free(text);
+        return;
+    }
+    EXT_RAM_BSS_ATTR static int16_t buf[MUSE_AUDIO_CHUNK];
+    static const int16_t silence[MUSE_AUDIO_CHUNK];
+    EXT_RAM_BSS_ATTR static char page[MUSE_CAPTION_MAX];
+    size_t played = 0;
+    int64_t t0 = esp_timer_get_time();
+    muse_state_set_mode(MUSE_MODE_SPEAKING);
+    for (;;) {
+        muse_input_event_t ev;
+        if (xQueuePeek(s_queue, &ev, 0) == pdTRUE) {
+            break;
+        }
+        /* Half a second ahead before the first word, as in a turn. */
+        size_t n = 0;
+        if (played || muse_tts_status() != MUSE_TTS_SPEAKING || muse_tts_buffered() >= MUSE_AUDIO_RATE / 2) {
+            n = muse_tts_read(buf, MUSE_AUDIO_CHUNK);
+        }
+        if (n) {
+            muse_state_set_level(muse_audio_level(buf, n));
+            muse_audio_write(buf, n);
+            played += n;
+        } else if (muse_tts_status() != MUSE_TTS_SPEAKING || esp_timer_get_time() - t0 > 10 * 1000000LL + played * 1000000LL / MUSE_AUDIO_RATE) {
+            break;   /* done, failed, or stuck */
+        } else if (played) {
+            muse_state_set_level(0);
+            muse_audio_write(silence, MUSE_AUDIO_CHUNK);   /* keep the speaker fed */
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(10));   /* the engine loading */
+        }
+        if (muse_tts_caption(text, played, page, sizeof(page))) {
+            muse_state_set_caption("%s", page);
+        }
+    }
+    muse_tts_stop();
+    free(text);
+    muse_state_set_level(0);
+    ESP_LOGI(TAG, "replayed %.2fs of the last reply", (double)played / MUSE_AUDIO_RATE);
+    go_idle("");
+}
+#endif
 
 /* Why a press can't go to Hatch; voice notes only go there. */
 static const char *not_ready_reason(void)
@@ -843,6 +906,12 @@ static void voice_task(void *arg)
                 muse_audio_loopback_test(muse_settings_volume());
                 pre_reset();
             }
+#if CONFIG_MUSE_TTS_PICO
+            if (muse_tts_replay_take()) {
+                replay_reply();
+                pre_reset();
+            }
+#endif
             /* The 20 ms read paces this loop. */
             idle_capture();
             if (xQueueReceive(s_queue, &ev, 0) != pdTRUE) {

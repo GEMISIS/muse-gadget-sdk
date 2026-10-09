@@ -40,6 +40,8 @@ API (muse_pixel.h, unchanged; implement exactly these)
       float mode_t;   // seconds in the current mode
       float level;    // 0..1 live audio level (mic when listening, voice when speaking)
       float happy;    // 0..1 pet reaction; rises to 1, eases out over ~1.6 s
+      bool bed;       // optional: the Night face, tucked up in bed
+      bool sleepy;    // optional: asleep in it (eyes shut, slow breaths); false sits up
   } muse_pose_t;
   uint32_t muse_pixel_accent(muse_mode_t mode);    // 0xRRGGBB accent for the UI around the avatar
   void muse_pixel_render(const muse_pose_t *pose); // draw one frame into the 64x64 grid
@@ -51,10 +53,11 @@ API (muse_pixel.h, unchanged; implement exactly these)
 KEEP FROM THE ORIGINAL (reuse its code verbatim where it fits)
 - Framebuffer: uint8_t palette indices, 64x64, black background (index 0 is
   0x000000; the round screen's bezel is black).
-- Palette: an enum of colour roles, at most 32 entries (the default has 29, the
+- Palette: an enum of colour roles, at most 40 entries (the default has 36, the
   background included): outline, dark/mid/light/highlight body tones, face
   tones, eye, shine, blush, mouth, tongue, a 4-step per-mode glow ramp,
-  aura x2, sparkle, accent, shadow, heart, white. Fixed avatar colours go in
+  aura x2, sparkle, accent, shadow, heart, white, and the bed's pillow x2,
+  quilt x3 and wood x2. Fixed avatar colours go in
   one table. A per-mode scheme table (glow ramp and accent) blends toward
   the current mode with 1 - expf(-dt * 7). Precompute RGB565 and a 0.72x
   "dim" copy of every entry once per frame.
@@ -109,6 +112,11 @@ ANIMATION BEATS (every one of these, adapted to your body)
 - happy > 0 (petted, in any mode but ERROR): hops, arms up and wiggling,
   happy ^^ eyes, big grin, two hearts floating up. It must read as joy at
   64 px.
+- bed (optional, the original's Night face): a headboard and pillow behind,
+  a quilt over the lower body to a rail across the bottom rows above the
+  blank ones. With sleepy: lying back with eyes shut, a flat mouth, slow
+  breaths, no sparkles and z's drifting up; without it, sat up out of the
+  quilt, easing between the two over ~0.5 s.
 - Keep it readable at 64x64: expressions come from 2-5 px shapes, so
   exaggerate. The face needs strong contrast against the body.
 

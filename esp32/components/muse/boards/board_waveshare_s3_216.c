@@ -17,10 +17,16 @@
 /*
  * Waveshare ESP32-S3-Touch-AMOLED-2.16: 480x480 CO5300 AMOLED with CST9220
  * touch, ES8311 speaker + ES7210 dual mic, AXP2101 PMU, PCF85063 RTC.
- * KEY3 (GPIO18, active low, board pull-up) is talk; BOOT (GPIO0) is aux.
- * PWR reaches only the PMU, so its key edges are latched over I2C and mapped
- * to talk as well. Schematic-checked: the PMU IRQ line is not wired to the
- * ESP32 (I2C polling still works), DCDC1=VCC3V3, ALDO1=A3V3 (codecs).
+ * Schematic-checked: the PMU IRQ line is not wired to the ESP32 (I2C polling
+ * still works), DCDC1=VCC3V3, ALDO1=A3V3 (codecs).
+ *
+ * Keys along the top edge, left to right: BOOT (GPIO0), PWR, KEY3 (GPIO18,
+ * active low, board pull-up). KEY3 talks. BOOT and PWR set the volume in
+ * place of an aux button: BOOT turns it down (repeating while held), a PWR
+ * click turns it up, and holding PWR 1.5 s opens the power menu
+ * (muse_power_menu.h), where BOOT, PWR and KEY3 are up, down and select.
+ * Sleep is in that menu. PWR reaches only the PMU, so its click and long
+ * press are latched there and read over I2C.
  */
 
 #include "esp_err.h" /* this BSP's display.h uses esp_err_t without including it */
@@ -47,7 +53,9 @@ static const char *TAG = "board";
 
 #define KEY_GPIO GPIO_NUM_18 /* KEY3, active low with the board's pull-up */
 #define PMU_KEY_EVERY 2      /* poll the PMU over I2C every 20 ms */
+#define PWR_LONG_MS 1500     /* the power menu; the hardware cuts power at 10 s */
 
+static esp_lcd_panel_handle_t s_panel;
 static esp_lcd_panel_io_handle_t s_io;
 static esp_lcd_touch_handle_t s_tp;
 static muse_gpio_button_t s_key, s_boot;
@@ -73,6 +81,10 @@ static esp_err_t init(void)
     err = muse_pmu_keep_rails(BIT(0), BIT(0));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "unused rails left on (%s)", esp_err_to_name(err));
+    }
+    err = muse_pmu_set_long_press_ms(PWR_LONG_MS);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "PWR long press left at the PMU's default (%s)", esp_err_to_name(err));
     }
     return ESP_OK;
 }
@@ -102,16 +114,15 @@ static lv_display_t *display_start(lv_indev_t **touch)
         return NULL;
     }
 
-    esp_lcd_panel_handle_t panel;
     const bsp_display_config_t panel_cfg = {
         .max_transfer_sz = LCD_CHUNK_BYTES,
     };
-    if (bsp_display_new(&panel_cfg, &panel, &s_io) != ESP_OK) {
+    if (bsp_display_new(&panel_cfg, &s_panel, &s_io) != ESP_OK) {
         return NULL;
     }
 
     const esp_lv_adapter_display_config_t disp_cfg = {
-        .panel = panel,
+        .panel = s_panel,
         .panel_io = s_io,
         .profile = {
             .interface = ESP_LV_ADAPTER_PANEL_IF_OTHER,
@@ -165,6 +176,27 @@ static void send_sleep(void *sleep)
     esp_lcd_panel_io_tx_param(s_io, (0x02 << 24) | ((*(bool *)sleep ? 0x10 : 0x11) << 8), NULL, 0);
 }
 
+static void send_flip(void *flipped)
+{
+    /* The BSP's init leaves MADCTL at 0xA0 (MY | MV), which the driver keeps;
+     * MX in place of MY is the same picture turned 180 degrees (0x60). */
+    bool f = *(bool *)flipped;
+    esp_lcd_panel_mirror(s_panel, f, !f);
+}
+
+/*
+ * Touch is mirrored in software (esp_lcd_touch.c: mirror x, then y, then
+ * swap). Upright that's mirror y and swap: the screen's (x, y) is
+ * (H - ty, tx). Turned it's (W - x, H - y) = (ty, W - tx), which is mirror x
+ * and swap, the panel being square.
+ */
+static void set_flip(bool flipped)
+{
+    muse_lcd_bands_run(send_flip, &flipped);
+    esp_lcd_touch_set_mirror_x(s_tp, flipped);
+    esp_lcd_touch_set_mirror_y(s_tp, !flipped);
+}
+
 /* Plain SLPIN/SLPOUT over the QSPI command path. The driver's own sleep also
  * enters deep standby, whose wake pulses the reset line; panel (GPIO39) and
  * touch (GPIO40) resets are separate lines here. */
@@ -208,43 +240,43 @@ static void set_mic_gain(esp_codec_dev_handle_t mic, int db)
     esp_codec_dev_set_in_gain(mic, db == 33 ? 34.5f : (float)db);
 }
 
-/* KEY3 and PWR both talk: the turn runs while either is held. */
+/*
+ * KEY3 talks. BOOT's edges are volume down's (muse_gpio_button_poll reports
+ * them as the talk bits; muse_input repeats while it's held). PWR is the
+ * PMU's own click and long press: a long press once it's held past
+ * PWR_LONG_MS, a click on the release of a shorter one. Should both come in
+ * for one press, the long press wins. A click is a whole press by itself, so
+ * one that went by unpolled while wait_buttons slept still counts; nothing
+ * here acts on PWR's bare press and release edges.
+ */
 static unsigned poll_buttons(void)
 {
     static unsigned tick;
-    static bool key_held, pwr_held;
-    bool was_held = key_held || pwr_held;
-    unsigned key = muse_gpio_button_poll(&s_key);
-    unsigned edges = muse_gpio_button_poll(&s_boot) << 2; /* BOOT is aux */
-    if (key & MUSE_BTN_TALK_PRESS)
-        key_held = true;
-    if (key & MUSE_BTN_TALK_RELEASE)
-        key_held = false;
-    /* PWR only reaches the PMU, as on the 1.75. */
+    static bool long_pressed;
+    unsigned boot = muse_gpio_button_poll(&s_boot);
+    unsigned ev = muse_gpio_button_poll(&s_key) |
+                  (boot & MUSE_BTN_TALK_PRESS ? MUSE_BTN_VOL_DOWN_PRESS : 0) |
+                  (boot & MUSE_BTN_TALK_RELEASE ? MUSE_BTN_VOL_DOWN_RELEASE : 0);
     if (tick++ % PMU_KEY_EVERY == 0) {
         unsigned pmu = muse_pmu_poll_key();
-        /* Both edges in one read means the whole press went by unpolled, while
-         * wait_buttons slept on KEY3 and BOOT: drop it rather than send a
-         * zero-length turn. */
-        if ((pmu & (MUSE_PMU_KEY_PRESS | MUSE_PMU_KEY_RELEASE)) != (MUSE_PMU_KEY_PRESS | MUSE_PMU_KEY_RELEASE)) {
-            if (pmu & MUSE_PMU_KEY_PRESS)
-                pwr_held = true;
-            if (pmu & MUSE_PMU_KEY_RELEASE)
-                pwr_held = false;
+        if (pmu & MUSE_PMU_KEY_PRESS) {
+            long_pressed = false;
+        }
+        if (pmu & MUSE_PMU_KEY_LONG) {
+            long_pressed = true;
+            ev |= MUSE_BTN_POWER_MENU;
+        } else if ((pmu & MUSE_PMU_KEY_CLICK) && !long_pressed) {
+            ev |= MUSE_BTN_VOL_UP;
         }
     }
-    bool held = key_held || pwr_held;
-    if (held && !was_held)
-        edges |= MUSE_BTN_TALK_PRESS;
-    if (!held && was_held)
-        edges |= MUSE_BTN_TALK_RELEASE;
-    return edges;
+    return ev;
 }
 
 static void wait_buttons(int timeout_ms)
 {
     /* The PMU's IRQ line isn't wired to the ESP32, so PWR can't wake the chip
-     * from light sleep; the PMU handles power on/off itself. */
+     * from light sleep; its latched click or long press is read on the next
+     * poll, within wait_buttons' timeout. The PMU handles power off at 10 s. */
     muse_gpio_buttons_wait((muse_gpio_button_t *const[]){ &s_key, &s_boot }, 2, timeout_ms);
 }
 
@@ -253,9 +285,10 @@ static const muse_board_t s_board = {
     .width = BSP_LCD_H_RES, .height = BSP_LCD_V_RES, .round = false, .touch = true, .diagonal_in = 2.16f,
     .talk_button = "key", .aux_button = "boot",
     /* The buttons are on the top edge: BOOT, PWR, KEY3 from the left, seen from
-     * the front. Icons sit between the edge and the ring, under KEY3 and BOOT. */
+     * the front. The talk icon sits between the edge and the ring, under KEY3.
+     * No aux_hint: the volume keys don't sleep or power off, so there's no
+     * power icon to show. */
     .talk_hint = { LV_ALIGN_TOP_MID, 113, 6 },
-    .aux_hint = { LV_ALIGN_TOP_MID, -113, 6 },
     .frame_ms = 40,
     .init = init,
     .display_start = display_start,
@@ -264,6 +297,7 @@ static const muse_board_t s_board = {
     .set_brightness = set_brightness,
     .panel_sleep = panel_sleep,
     .display_pause = display_pause,
+    .set_flip = set_flip,
     .audio_init = audio_init,
     .mic_slot = -1,
     .set_mic_gain = set_mic_gain,

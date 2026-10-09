@@ -33,6 +33,8 @@ if(CONFIG_MUSE_ENABLED)
         "muse_pmu.c"
         "muse_input.c"
         "muse_menu.c"
+        "muse_power_menu.c"
+        "muse_gadget_mode.c"
         "muse_voice.c"
         "muse_adpcm.c"
         "muse_settings.c"
@@ -45,6 +47,9 @@ if(CONFIG_MUSE_ENABLED)
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
         list(APPEND embed "test_reply.mp3")   # muse_hatch_mp3_selftest
+        if(CONFIG_MUSE_TTS_PICO)
+            list(APPEND srcs "muse_tts.c" "muse_tts_text.c")   # replies spoken on the device
+        endif()
     else()
         list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
     endif()
@@ -67,6 +72,17 @@ if(CONFIG_MUSE_ENABLED)
         list(APPEND srcs "boards/board_waveshare_s3_175c.c" "boards/muse_lcd_bands.c")
     elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_216)
         list(APPEND srcs "boards/board_waveshare_s3_216.c" "boards/muse_lcd_bands.c")
+        if(CONFIG_MUSE_GADGET_EXTRAS)
+            # microSD, RTC, IMU and the face's corner readouts (Kconfig.gadget)
+            list(APPEND srcs "muse_extras.c" "muse_sd.c" "muse_rtc.c" "muse_imu.c"
+                             "muse_home_extras.c")
+            if(CONFIG_MUSE_GADGET_AUTO_FLIP)
+                list(APPEND srcs "muse_orient.c")   # upside down at night
+            endif()
+        endif()
+        if(CONFIG_MUSE_GADGET_CHATS)
+            list(APPEND srcs "muse_chats_ui.c")   # the Chats screen, left of Muse
+        endif()
     elseif(CONFIG_MUSE_BOARD_AIPI)
         list(APPEND srcs "boards/board_aipi.c")
     elseif(CONFIG_MUSE_BOARD_ESPRESSIF_BOX_3)
@@ -113,9 +129,10 @@ endif()
 set(muse_priv_requires
     esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash
     bt esp-tls mbedtls esp_app_format esp_http_client
-    noise_core minimp3
+    noise_core minimp3 picotts
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
-    esp_driver_pcnt)
+    esp_driver_pcnt
+    fatfs sdmmc esp_driver_sdmmc esp_netif lwip)   # the 2.16's extras: microSD, SNTP
 list(APPEND muse_priv_requires camera)
 
 idf_component_register(

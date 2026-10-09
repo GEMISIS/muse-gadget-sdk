@@ -75,6 +75,7 @@
 #include "boards/watcher_camera.h"
 #endif
 #if CONFIG_MUSE_ENABLED
+#include "gadget_commands.h"
 #include "muse_glue.h"
 // Muse joins Wi-Fi from its own settings, before or without pairing.
 #define WIFI_WITHOUT_PAIRING 1
@@ -1893,6 +1894,20 @@ static cJSON *on_ws_command(
         cJSON *async = cJSON_CreateObject();
         cJSON_AddBoolToObject(async, "_async", true);
         return async;
+    }
+#endif
+#if CONFIG_MUSE_ENABLED
+    if (strcmp(command, "show_text") == 0) {
+        return gadget_show_text_command(params);
+    }
+    if (strcmp(command, "set_mode") == 0) {
+        return gadget_set_mode_command(params);
+    }
+    if (strcmp(command, "set_chat") == 0) {
+        return gadget_set_chat_command(params);
+    }
+    if (strcmp(command, "list_chats") == 0) {
+        return gadget_list_chats_command(params);
     }
 #endif
 #if CONFIG_HOMEHUB_VOICE

@@ -35,10 +35,17 @@
 #include "muse_board.h"
 #include "muse_chat.h"
 #include "muse_console.h"
+#include "muse_gadget_mode.h"
+#include "muse_home_extras.h"
+#if CONFIG_MUSE_GADGET_CHATS
+#include "muse_chats_ui.h"
+#endif
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
+#include "muse_orient.h"
 #include "muse_pixel.h"
+#include "muse_power_menu.h"
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
 #include "muse_state.h"
@@ -62,6 +69,7 @@ static const char *TAG = "muse_ui";
 #define SPEAKER_PX 64
 #define SPEAKER_GROW_PX 8       /* how much the speaker button swells while held */
 #define SPEAKER_HOLD_MS 400     /* LVGL's long press */
+#define NIGHT_CELL_PX 3         /* Muse's grid cells in bed on the Night face */
 
 #define COLOR_DIM 0x8b84a8
 #define COLOR_CAPTION 0xd8d2ff
@@ -93,7 +101,15 @@ static lv_indev_t *s_indev;
 static lv_obj_t *s_tv;
 static lv_obj_t *s_face;
 static lv_obj_t *s_settings;
-static lv_obj_t *s_dots[2];
+static lv_obj_t *s_chats;        /* the Chats screen, left of Muse (CONFIG_MUSE_GADGET_CHATS) */
+/* Screens left to right: Chats (if built), Muse, settings. */
+#if CONFIG_MUSE_GADGET_CHATS
+#define FACE_COL 1
+#else
+#define FACE_COL 0
+#endif
+#define PAGE_COUNT (FACE_COL + 2)
+static lv_obj_t *s_dots[PAGE_COUNT];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
 static lv_obj_t *s_cover;
@@ -144,6 +160,7 @@ static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
 static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
+static bool s_flipped;      /* the screen turned 180 degrees (muse_board_t.set_flip) */
 
 /*
  * While Muse is thinking or speaking it shrinks to make room for the reply:
@@ -155,7 +172,7 @@ typedef struct {
     int cols, lines;          /* the reply's page */
     int w, h, top;            /* and where it goes */
     lv_text_align_t align;
-    lv_obj_t *hides[4];       /* what it covers */
+    lv_obj_t *hides[5];       /* what it covers */
 } answer_layout_t;
 
 enum { ANSWER_HEARD, ANSWER_READ };
@@ -164,6 +181,10 @@ static int s_answer = -1;       /* the layout showing, or -1 */
 static int s_page_for = -1;     /* the layout the reply's page is sized for */
 static int s_big_y;             /* Muse's centre at full size */
 static int s_muse_y;            /* and now */
+/* The Night face (CONFIG_MUSE_GADGET_NIGHT_FACE): Muse smaller and lower, in
+ * bed, under a big clock. Its reply heard stays there if it clears the page. */
+static bool s_night;
+static int s_night_y, s_night_heard_y;
 static int s_from_px, s_from_y, s_to_px, s_to_y;
 
 static const char *const MODE_NAMES[MUSE_MODE_COUNT] = {
@@ -419,12 +440,38 @@ static void set_mic_color(uint32_t color)
     }
 }
 
+/* An alignment seen from the other side of the centre, as on a turned screen. */
+static lv_align_t turn_align(lv_align_t a)
+{
+    switch (a) {
+    case LV_ALIGN_TOP_LEFT: return LV_ALIGN_BOTTOM_RIGHT;
+    case LV_ALIGN_TOP_MID: return LV_ALIGN_BOTTOM_MID;
+    case LV_ALIGN_TOP_RIGHT: return LV_ALIGN_BOTTOM_LEFT;
+    case LV_ALIGN_BOTTOM_LEFT: return LV_ALIGN_TOP_RIGHT;
+    case LV_ALIGN_BOTTOM_MID: return LV_ALIGN_TOP_MID;
+    case LV_ALIGN_BOTTOM_RIGHT: return LV_ALIGN_TOP_LEFT;
+    case LV_ALIGN_LEFT_MID: return LV_ALIGN_RIGHT_MID;
+    case LV_ALIGN_RIGHT_MID: return LV_ALIGN_LEFT_MID;
+    default: return a;
+    }
+}
+
+/* Beside its button, which is across the screen while it's turned. */
+static void place_hint(lv_obj_t *icon, const muse_button_hint_t *h)
+{
+    if (s_flipped) {
+        lv_obj_align(icon, turn_align(h->align), -h->x, -h->y);
+    } else {
+        lv_obj_align(icon, h->align, h->x, h->y);
+    }
+}
+
 /* Icons beside the physical buttons, in place of an instruction caption. */
 static void build_button_icons(lv_obj_t *face)
 {
     const muse_button_hint_t *t = &muse_board->talk_hint, *a = &muse_board->aux_hint;
     s_mic_icon = make_mic(face, s_tall ? 24 : s_small ? 12 : 26);
-    lv_obj_align(s_mic_icon, t->align, t->x, t->y);
+    place_hint(s_mic_icon, t);
     set_mic_color(COLOR_DIM);
 
     /* Without touch the aux button opens the menu rather than sleeping. A board
@@ -434,7 +481,31 @@ static void build_button_icons(lv_obj_t *face)
     }
     s_aux_icon = make_label(face, s_small ? &lv_font_montserrat_14 : &lv_font_montserrat_28, COLOR_DIM);
     lv_label_set_text(s_aux_icon, muse_board->touch ? LV_SYMBOL_POWER : LV_SYMBOL_LIST);
-    lv_obj_align(s_aux_icon, a->align, a->x, a->y);
+    place_hint(s_aux_icon, a);
+}
+
+/*
+ * Turns the screen over when the board is (muse_orient.h): the panel and
+ * touch on the board's side, then everything redrawn the new way round.
+ * LVGL draws as ever; only the icons beside the keys move, the keys now
+ * being along the bottom. Their spot was checked against the reply pages
+ * the right way up (add_hides); turned, the 2.16's talk icon goes to the
+ * bottom left corner, clear of the pages and the captions.
+ */
+static void update_flip(float now)
+{
+    bool flip = muse_board->set_flip && muse_orient_flipped(now);
+    if (flip == s_flipped) {
+        return;
+    }
+    s_flipped = flip;
+    muse_board->set_flip(flip);
+    place_hint(s_mic_icon, &muse_board->talk_hint);
+    if (s_aux_icon) {
+        place_hint(s_aux_icon, &muse_board->aux_hint);
+    }
+    muse_power_menu_set_flipped(flip);
+    lv_obj_invalidate(lv_screen_active());   /* with the layers over it */
 }
 
 static void on_canvas_clicked(lv_event_t *e)
@@ -617,7 +688,13 @@ static void set_answer(int which)
         lv_obj_align(s_reply_lbl, LV_ALIGN_CENTER, 0, l->top + l->h / 2);
         lv_obj_set_style_text_align(s_reply_lbl, l->align, 0);
     }
-    move_muse(l ? l->px : s_canvas_px, l ? l->y : s_big_y);
+    int px = l ? l->px : s_canvas_px, y = l ? l->y : s_big_y;
+    if (s_night && which != ANSWER_READ) {
+        /* In bed it sits up where it is (muse_pixel.c) rather than growing. */
+        px = MUSE_PX_W * NIGHT_CELL_PX;
+        y = l ? s_night_heard_y : s_night_y;
+    }
+    move_muse(px, y);
 }
 
 /* Whether a reply `w` px wide fits across the screen `y` px from the centre. */
@@ -709,6 +786,8 @@ static void build_answer(lv_obj_t *face, int ring_in)
     if (l->top < art_bottom + 6) {
         l->y -= art_bottom + 6 - l->top;   /* no room under Muse: it moves up */
     }
+    int night_bottom = s_night_y + MUSE_PX_W * NIGHT_CELL_PX / 2 - ART_BLANK_ROWS * NIGHT_CELL_PX;
+    s_night_heard_y = s_night_y - (night_bottom + 6 > l->top ? night_bottom + 6 - l->top : 0);
 
     l = &s_answers[ANSWER_READ];
     int status_bottom = 20 + s_dy + 16 - s_h / 2;
@@ -747,7 +826,8 @@ static void build_answer(lv_obj_t *face, int ring_in)
     lv_obj_update_layout(face);
     s_answers[ANSWER_READ].hides[0] = s_state_lbl;
     s_answers[ANSWER_READ].hides[1] = s_name_lbl;   /* the reply takes the top too */
-    add_hides(&s_answers[ANSWER_READ], 2);
+    s_answers[ANSWER_READ].hides[2] = muse_home_extras_clock();   /* in the name's row; NULL without it */
+    add_hides(&s_answers[ANSWER_READ], s_answers[ANSWER_READ].hides[2] ? 3 : 2);
     add_hides(&s_answers[ANSWER_HEARD], 0);
 }
 
@@ -798,12 +878,15 @@ static void build_screen(void)
 
     lv_obj_t *face = scr;
     if (muse_board->touch) {
-        /* Swipe left from Muse for settings. */
+        /* Swipe left from Muse for settings, and right for the chats. */
         s_tv = lv_tileview_create(scr);
         lv_obj_set_style_bg_color(s_tv, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_tv, LV_OPA_COVER, 0);
         lv_obj_set_scrollbar_mode(s_tv, LV_SCROLLBAR_MODE_OFF);
-        s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+#if CONFIG_MUSE_GADGET_CHATS
+        s_chats = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+#endif
+        s_face = lv_tileview_add_tile(s_tv, FACE_COL, 0, FACE_COL ? LV_DIR_HOR : LV_DIR_RIGHT);
         /* It never scrolls, but LVGL would size its scrollbars from all its
          * children every time it draws any part of it. */
         lv_obj_set_scrollbar_mode(s_face, LV_SCROLLBAR_MODE_OFF);
@@ -811,7 +894,8 @@ static void build_screen(void)
          * shows as a different-coloured square around the character. */
         lv_obj_set_style_bg_color(s_face, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_face, LV_OPA_COVER, 0);
-        s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);
+        s_settings = lv_tileview_add_tile(s_tv, FACE_COL + 1, 0, LV_DIR_LEFT);
+        lv_tileview_set_tile(s_tv, s_face, LV_ANIM_OFF);   /* start on Muse */
         face = s_face;
     }
 
@@ -849,6 +933,8 @@ static void build_screen(void)
     int meter_y = cap_top - 6 - METER_SEG_PX / 2;
     int art_bottom = meter_y - METER_SEG_PX / 2 - 4;
     s_big_y = s_small ? 0 : art_bottom - (s_canvas_px / 2 - ART_BLANK_ROWS * (s_canvas_px / MUSE_PX_W));
+    /* In bed, its foot on the same line. */
+    s_night_y = art_bottom - (MUSE_PX_W * NIGHT_CELL_PX / 2 - ART_BLANK_ROWS * NIGHT_CELL_PX);
 
     /* The character. */
     muse_image_init();
@@ -863,6 +949,7 @@ static void build_screen(void)
         lv_obj_move_foreground(s_ring);
     }
     build_button_icons(face);
+    muse_home_extras_build(face);
 
     /* Status line: connectivity icons + power. */
     lv_obj_t *status = lv_obj_create(face);
@@ -876,6 +963,9 @@ static void build_screen(void)
     s_wifi_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
     s_ble_icon = make_label(status, &lv_font_montserrat_14, COLOR_DIM);
     s_power_lbl = make_label(status, &lv_font_unscii_8, COLOR_DIM);
+    if (!s_small) {
+        muse_gadget_mode_build_chip(status);
+    }
 
     /* The compact layout leaves the state to the avatar and the caption,
      * unless the screen is tall enough to fit it in small type above Muse. */
@@ -1025,7 +1115,7 @@ static void build_overlays(void)
     lv_obj_t *scr = lv_screen_active();
 
     /* Page dots. */
-    for (int i = 0; i < 2 && s_tv; i++) {
+    for (int i = 0; i < PAGE_COUNT && s_tv; i++) {
         lv_obj_t *d = lv_obj_create(scr);
         lv_obj_remove_style_all(d);
         lv_obj_set_size(d, 8, 8);
@@ -1033,7 +1123,7 @@ static void build_overlays(void)
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(COLOR_DOT_OFF), 0);
         lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, i ? 8 : -8, -14);
+        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, (2 * i - (PAGE_COUNT - 1)) * 8, -14);
         s_dots[i] = d;
     }
 
@@ -1058,6 +1148,11 @@ static void build_overlays(void)
     lv_obj_center(hint_text);
     lv_obj_add_event_cb(s_camera_hint, on_camera_hint_clicked, LV_EVENT_CLICKED, NULL);
 #endif
+
+    /* Volume bar, power menu and the mode suggestion: under the pairing code
+     * and the sleep cover. */
+    muse_power_menu_build(lv_layer_top(), s_w, s_h);
+    muse_gadget_mode_build_toast(lv_layer_top(), s_w);
 
     /* BLE pairing code, or the Muse app's ask for the talk button: a centred
      * column in one typeface, the code large. The small card grows with the hint. */
@@ -1147,7 +1242,9 @@ static bool update_sleep(void)
                 target = s_preview_brightness;
             }
         }
-        apply_brightness(target);
+        /* The slider's preview shows as set; otherwise the gadget mode may
+         * dim or brighten it. */
+        apply_brightness(s_preview_brightness >= 0 ? target : muse_gadget_mode_brightness(target));
     }
     return s_dark;
 }
@@ -1179,21 +1276,29 @@ static void update_chrome(float now)
     s_next_settings_tick = now + SETTINGS_TICK_S;
 
     if (s_tv) {
-        int page = lv_tileview_get_tile_active(s_tv) == s_settings;
+        lv_obj_t *active = lv_tileview_get_tile_active(s_tv);
+        int dot = active == s_settings ? FACE_COL + 1 : active == s_chats ? 0 : FACE_COL;
+        int page = active == s_settings;
         bool subpage = muse_settings_ui_in_subpage();
-        bool swipe = !page || !subpage;
+#if CONFIG_MUSE_GADGET_CHATS
+        subpage |= active == s_chats && muse_chats_ui_typing();   /* the keyboard is up */
+#endif
+        bool swipe = !subpage || (!page && active != s_chats);
         if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE)) {
             lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, swipe);
         }
-        int shown = page * 2 + subpage;
+        int shown = dot * 2 + subpage;
         if (shown != s_shown_page) {
-            for (int i = 0; i < 2; i++) {
-                lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == page ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
-                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, page && subpage);
+            for (int i = 0; i < PAGE_COUNT; i++) {
+                lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == dot ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
+                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, subpage && dot != FACE_COL);
             }
             s_shown_page = shown;
         }
-        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > 0);
+        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > FACE_COL * s_w);
+#if CONFIG_MUSE_GADGET_CHATS
+        muse_chats_ui_tick(lv_obj_get_scroll_x(s_tv) < FACE_COL * s_w);
+#endif
     }
 
     /* Joining, the icon blinks: the compact layout has no state label. */
@@ -1260,6 +1365,7 @@ static void update_chrome(float now)
         }
     }
     lv_obj_set_flag(s_pair, LV_OBJ_FLAG_HIDDEN, !b.passkey && !confirm);
+    muse_gadget_mode_ui_tick(now);
 
     bool speaker = muse_settings_speaker_on();   /* also set from settings, the phone and serial */
     if (s_speaker && (int)speaker != s_shown_speaker) {
@@ -1432,6 +1538,24 @@ static void update_status(muse_mode_t mode, float now)
     update_power(now);
 }
 
+/*
+ * The Night face, in the full layout of a board that has it: on the way in
+ * and out, the clock changes size and Muse moves to or from its bed (or, in
+ * the middle of a reply, to where that reply's layout has it at night).
+ */
+static void update_night(void)
+{
+#if CONFIG_MUSE_GADGET_NIGHT_FACE
+    bool night = !s_small && muse_gadget_mode() == MUSE_GADGET_NIGHT;
+    if (night == s_night) {
+        return;
+    }
+    s_night = night;
+    muse_home_extras_set_night(night);
+    set_answer(s_answer);
+#endif
+}
+
 static volatile bool s_snapshot;
 
 /* Streams the screen over the USB cable as base64 RGB565 (bench testing; needs
@@ -1491,10 +1615,13 @@ static void frame_tick(lv_timer_t *timer)
         }
         s_last_mode = mode;
     }
+    muse_power_menu_tick(now);
+    update_flip(now);   /* asleep too, so it wakes the right way up */
     if (update_sleep()) {
         return;
     }
     update_chrome(now);
+    muse_home_extras_tick(now);
     if (muse_menu_tick(now)) {
         image_hide_locked();
         return;   /* the menu covers the face */
@@ -1502,7 +1629,7 @@ static void frame_tick(lv_timer_t *timer)
     if (s_image_dsc.data) {
         return;   /* the image covers the face */
     }
-    if (s_tv && lv_obj_get_scroll_x(s_tv) != 0) {
+    if (s_tv && lv_obj_get_scroll_x(s_tv) != FACE_COL * s_w) {
         /* Off screen, or sliding to or from settings: hold still so the
          * slide gets the whole frame time. */
         return;
@@ -1512,13 +1639,17 @@ static void frame_tick(lv_timer_t *timer)
     float level = muse_state_level();
     s_level += (level - s_level) * (level > s_level ? 0.6f : 0.2f);
 
+    update_night();
     muse_pose_t pose = {
         .mode = mode,
         .t = now,
         .mode_t = mode_t,
         .level = s_level,
         .happy = muse_state_happiness(),
+        .bed = s_night,
     };
+    /* Asleep in bed while idle; it sits up to listen and answer, or to a pat. */
+    pose.sleepy = s_night && mode == MUSE_MODE_IDLE && pose.happy < 0.05f;
     muse_pixel_render(&pose);
     invalidate_muse();
 
@@ -1566,6 +1697,11 @@ esp_err_t muse_ui_start(void)
     s_image_mutex = xSemaphoreCreateMutex();
     muse_board->display_lock(-1);
     build_screen();
+#if CONFIG_MUSE_GADGET_CHATS
+    if (s_chats) {
+        muse_chats_ui_build(s_chats);
+    }
+#endif
     if (s_settings) {
         muse_settings_ui_build(s_settings);
     } else {

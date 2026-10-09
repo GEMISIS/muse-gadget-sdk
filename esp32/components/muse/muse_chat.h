@@ -69,6 +69,19 @@ void muse_hatch_status(muse_hatch_status_t *out);
 void muse_hatch_test(void);
 /* Call when host/VM/token change: forgets the last result and the connection. */
 void muse_hatch_config_changed(void);
+/*
+ * Call when the chat changes (muse_settings_set_chat_sid): turns from now on go
+ * to it, and the reply subscription is opened again for it once no turn is
+ * running.
+ */
+void muse_chat_changed(void);
+/*
+ * Whether POST /chat/subscribe names the chosen chat ({"session_id":...}) or
+ * is opened with {} (CONFIG_MUSE_HATCH only; starts as
+ * CONFIG_MUSE_CHAT_SUBSCRIBE_SESSION and isn't saved). Changing it reconnects.
+ */
+void muse_chat_set_subscribe_session(bool on);
+bool muse_chat_subscribe_session(void);
 const char *muse_hatch_state_name(muse_hatch_state_t state);
 /* Screen off, voice idle: check the connection less often. */
 void muse_hatch_set_resting(bool resting);

@@ -83,3 +83,10 @@ CONFIG_PM_PROFILING=y
 # NOTE vs the 1.75C overlay: no CONFIG_ESPTOOLPY_FLASHSIZE override. The 1.75C
 # board carries 32 MB flash; this one carries 16 MB, which is the muse default
 # (partitions_muse.csv needs 16 MB or more).
+
+# Personal additions (gadget build).
+# Replies are spoken on the device (CONFIG_MUSE_TTS_PICO, on by default for
+# this board): partitions_muse.csv plus partitions for SVOX Pico's voice.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_muse_tts.csv"
+# The Night face's big clock (CONFIG_MUSE_GADGET_NIGHT_FACE).
+CONFIG_LV_FONT_MONTSERRAT_48=y
