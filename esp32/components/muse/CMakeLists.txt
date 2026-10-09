@@ -29,6 +29,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_state.c"
         "muse_battery.c"
         "muse_ui.c"
+        "muse_lyrics_ui.c"   # a reply's captions as lyrics
         "muse_audio.c"
         "muse_pmu.c"
         "muse_input.c"

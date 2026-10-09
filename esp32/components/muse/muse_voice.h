@@ -67,6 +67,14 @@ void muse_voice_request_loopback(void);
 /* Bench test: decodes and plays a built-in MP3 reply. */
 void muse_voice_request_mp3test(void);
 
+/*
+ * Bench test: `text` (NULL for a sample) as a reply's captions, without
+ * asking Muse: said over `secs` (0: at speech pace), Muse's mouth moving
+ * and the lyrics following, or `muted`, shown to be read at the face's own
+ * pace. Silent either way. A press stops it, as it would a reply.
+ */
+void muse_voice_bench_caption(const char *text, float secs, bool muted);
+
 /* Asleep with nothing to play: codecs off, Wi-Fi dozing. */
 bool muse_voice_resting(void);
 

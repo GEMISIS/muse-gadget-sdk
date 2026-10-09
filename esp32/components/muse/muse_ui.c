@@ -50,6 +50,7 @@
 #include "muse_link.h"
 #include "muse_lock.h"
 #include "muse_lock_ui.h"
+#include "muse_lyrics_ui.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
 #include "muse_orient.h"
@@ -245,6 +246,7 @@ EXT_RAM_BSS_ATTR static answer_layout_t s_answers[ANSWER_COUNT];   /* in PSRAM: 
 static int s_answer = -1;       /* the layout showing, or -1 */
 EXT_RAM_BSS_ATTR static int s_widget_top;   /* the widget sheet's highest top (ANSWER_WIDGET) */
 static int s_page_for = -1;     /* the layout the reply's page is sized for */
+EXT_RAM_BSS_ATTR static bool s_lyrics_shown;   /* the reply's up as lyrics (muse_lyrics_ui.h), not in s_reply_lbl */
 static int s_big_y;             /* Muse's centre at full size */
 static int s_muse_y;            /* and now */
 /* The Night face (CONFIG_MUSE_GADGET_NIGHT_FACE): Muse smaller and lower, in
@@ -954,6 +956,7 @@ static void widget_place(bool on)
     shown = dy;
     move_muse(l->px, l->y + dy);
     lv_obj_align(s_reply_lbl, LV_ALIGN_CENTER, 0, l->top + dy + l->h / 2);
+    muse_lyrics_ui_place(l->w, l->top + dy, l->cols, l->lines, l->align);
 }
 
 #endif
@@ -981,6 +984,7 @@ static void set_answer(int which)
         lv_obj_set_size(s_reply_lbl, l->w, l->h);
         lv_obj_align(s_reply_lbl, LV_ALIGN_CENTER, 0, l->top + l->h / 2);
         lv_obj_set_style_text_align(s_reply_lbl, l->align, 0);
+        muse_lyrics_ui_place(l->w, l->top, l->cols, l->lines, l->align);
     }
     int px = l ? l->px : s_canvas_px, y = l ? l->y : s_big_y;
     if (s_night && which != ANSWER_PHOTO && which != ANSWER_WIDGET && (CORNERS || which != ANSWER_READ)) {
@@ -1212,6 +1216,8 @@ static void build_answer(lv_obj_t *face, int ring_in)
     lv_label_set_long_mode(s_reply_lbl, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_remove_flag(s_reply_lbl, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
+    /* Where there's PSRAM, a reply's captions go as lyrics instead (muse_lyrics_ui.h). */
+    muse_lyrics_ui_build(face, font, CAPTION_LINE_SPACE, s_w, s_h);
 
 #if !CONFIG_MUSE_BOARD_WAVESHARE_S3_216
     if (muse_board->touch) {
@@ -2838,7 +2844,7 @@ static void update_status(muse_mode_t mode, float now)
             s_page_for = layout;
         }
         if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING || layout == ANSWER_PHOTO
-            || layout == ANSWER_WIDGET) {
+            || layout == ANSWER_WIDGET || muse_lyrics_ui_holding()) {
             answer = layout;
         }
     }
@@ -2849,19 +2855,26 @@ static void update_status(muse_mode_t mode, float now)
 #if CORNERS
     widget_place(answer == ANSWER_WIDGET);
 #endif
+    /* The reply as lyrics, where there's room for it: then the labels stand aside. */
+    bool lyrics = muse_lyrics_ui_tick(now, answer >= 0 && mode != MUSE_MODE_LISTENING);
+    if (lyrics != s_lyrics_shown) {
+        s_lyrics_shown = lyrics;
+        fresh = true;
+    }
     if (fresh) {
         lv_obj_t *lbl = answer >= 0 ? s_reply_lbl : s_caption_lbl;
+        const char *shown = lyrics ? "" : caption;
 #if CONFIG_MUSE_CJK_FONT
         if (s_small) {
             lv_obj_set_style_text_font(s_caption_lbl, muse_text_has_cjk(caption) ? caption_font() : &lv_font_unscii_8, 0);
         }
 #endif
 #if CORNERS
-        caption_fade(lbl, status_caption(caption) ? "" : caption);
+        caption_fade(lbl, status_caption(caption) ? "" : shown);
         caption_fade(answer >= 0 ? s_caption_lbl : s_reply_lbl, "");
 #else
-        lv_label_set_text(lbl, caption);
-        lv_obj_set_flag(lbl, LV_OBJ_FLAG_HIDDEN, !caption[0]);
+        lv_label_set_text(lbl, shown);
+        lv_obj_set_flag(lbl, LV_OBJ_FLAG_HIDDEN, !shown[0]);
         if (s_reply_lbl) {
             lv_obj_add_flag(answer >= 0 ? s_caption_lbl : s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
         }
@@ -3309,6 +3322,7 @@ static void lock_face(bool on, float now)
     if (on) {
         muse_dialog_close();
         muse_menu_close();
+        muse_lyrics_ui_drop();   /* nothing of the reply shown, or kept */
         image_hide_locked();
         photo_full_hide(now);
         photo_drop();
@@ -3437,6 +3451,7 @@ static void frame_tick(lv_timer_t *timer)
     if (mode != s_last_mode) {
         if (mode == MUSE_MODE_LISTENING && !muse_lock_locked()) {
             image_hide_locked();
+            muse_lyrics_ui_drop();   /* the last reply, sheet and all, goes with the new turn */
             photo_full_hide(now);
             muse_ui_show_face();
         }
