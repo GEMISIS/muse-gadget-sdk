@@ -62,7 +62,7 @@ static int s_reconnect_backoff_ms = 1000;  // grows on consecutive failures
 #define RECONNECT_BACKOFF_MIN_MS 1000
 #define RECONNECT_BACKOFF_MAX_MS 60000
 
-static wifi_scan_entry_t s_cache[MAX_CACHED_SCANS];
+EXT_RAM_BSS_ATTR static wifi_scan_entry_t s_cache[MAX_CACHED_SCANS];
 static int s_cache_count = 0;
 
 // Best-BSSID cache: stores the strongest BSSID seen per SSID from the most
@@ -76,7 +76,7 @@ typedef struct {
     uint8_t channel;
 } bssid_cache_entry_t;
 
-static bssid_cache_entry_t s_bssid_cache[MAX_CACHED_SCANS];
+EXT_RAM_BSS_ATTR static bssid_cache_entry_t s_bssid_cache[MAX_CACHED_SCANS];
 static int s_bssid_cache_count = 0;
 static struct {
     char ssid[33];

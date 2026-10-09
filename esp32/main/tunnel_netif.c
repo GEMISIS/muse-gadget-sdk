@@ -79,7 +79,7 @@ static struct netif s_netif;
 static bool s_started = false;
 static QueueHandle_t s_tx_queue = NULL;       // tx_item_t* (filled work)
 static QueueHandle_t s_tx_free_queue = NULL;  // tx_item_t* (free pool)
-static tx_item_t s_tx_slots[TX_QUEUE_DEPTH];
+EXT_RAM_BSS_ATTR static tx_item_t s_tx_slots[TX_QUEUE_DEPTH];
 static TaskHandle_t s_tx_task = NULL;
 typedef struct {
     _Atomic uint32_t rx_pkts;

@@ -45,7 +45,7 @@ static volatile int64_t s_happy_until_us;
 static volatile bool s_asleep;
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
-static char s_caption[MUSE_CAPTION_MAX];
+EXT_RAM_BSS_ATTR static char s_caption[MUSE_CAPTION_MAX];   /* PSRAM, as the reply: internal RAM is the DMA heap's */
 static uint32_t s_caption_version;
 static SemaphoreHandle_t s_format_lock;
 static EventGroupHandle_t s_wake;
@@ -144,7 +144,7 @@ float muse_state_progress(void)
     return s_progress;
 }
 
-static char s_caption_buf[sizeof(s_caption)];   /* too big for some callers' stacks; under s_format_lock */
+EXT_RAM_BSS_ATTR static char s_caption_buf[sizeof(s_caption)];   /* too big for some callers' stacks; under s_format_lock */
 
 /* s_caption_buf as the caption; with s_format_lock held. */
 static void caption_from_buf(void)

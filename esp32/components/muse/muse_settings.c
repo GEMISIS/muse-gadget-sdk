@@ -21,6 +21,7 @@
 #include <string.h>
 #include <strings.h>
 
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_random.h"
@@ -36,7 +37,7 @@ static const char *TAG = "muse_settings";
 #define NS "muse"
 #define DEFAULT_HOST "hatch.metaaivm.com"
 
-static struct {
+typedef struct {
     uint8_t volume;
     bool speaker_on;
     bool touch_sounds;
@@ -70,7 +71,12 @@ static struct {
     int8_t told_new;                           /* the new chat's, until it joins the named ones (RAM only) */
     char told_other_sid[MUSE_CHAT_SID_MAX + 1];   /* a chat picked by its id alone (RAM only) */
     int8_t told_other;
-} s = {
+} settings_t;
+
+/* The settings till NVS says otherwise: copied into `s` first thing
+ * (muse_settings_init). `s` is 2 KB (the chats, the token), in PSRAM: as
+ * initialized data it took internal RAM the DMA heap needs. */
+static const settings_t DEFAULTS = {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
     .touch_sounds = true,
@@ -86,6 +92,7 @@ static struct {
     .told_new = -1,
     .told_other = -1,
 };
+EXT_RAM_BSS_ATTR static settings_t s;
 
 static SemaphoreHandle_t s_lock;
 static nvs_handle_t s_nvs;
@@ -296,6 +303,7 @@ static bool chat_name(const char *in, char out[MUSE_CHAT_NAME_MAX + 1])
 
 esp_err_t muse_settings_init(void)
 {
+    s = DEFAULTS;
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS layout changed, erasing");

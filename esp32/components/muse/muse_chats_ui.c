@@ -29,6 +29,7 @@
 
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_timer.h"
 
 #include "muse_board.h"
@@ -48,7 +49,7 @@ static lv_obj_t *s_list;
 static lv_obj_t *s_note;
 static char s_note_text[NOTE_MAX];   /* kept for s_note across rebuilds */
 static int64_t s_note_us;            /* when it was set */
-static muse_chat_item_t s_items[MUSE_CHAT_ITEMS_MAX];
+EXT_RAM_BSS_ATTR static muse_chat_item_t s_items[MUSE_CHAT_ITEMS_MAX];
 static lv_obj_t *s_values[MUSE_CHAT_ITEMS_MAX];
 static int s_count;
 static int s_current = -1;

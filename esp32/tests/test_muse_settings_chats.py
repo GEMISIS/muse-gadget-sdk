@@ -25,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # The IDF headers muse_settings.c includes; the harness fakes what they declare.
-EMPTY_HEADERS = ('esp_err.h', 'esp_log.h', 'esp_mac.h', 'esp_random.h', 'freertos/FreeRTOS.h',
+EMPTY_HEADERS = ('esp_attr.h', 'esp_err.h', 'esp_log.h', 'esp_mac.h', 'esp_random.h', 'freertos/FreeRTOS.h',
                  'freertos/semphr.h', 'nvs.h', 'nvs_flash.h', 'muse_link.h')
 
 
