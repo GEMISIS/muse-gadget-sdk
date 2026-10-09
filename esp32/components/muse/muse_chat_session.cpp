@@ -146,6 +146,8 @@ static const char *TAG = "muse_chat_session";
 #define REPLY_TIMEOUT_US (60 * 1000000LL)  /* chat posted -> first assistant message */
 #define TURN_CAP_US (180 * 1000000LL)
 #define SETTLE_US (3 * 1000000LL)          /* quiet period that ends a turn */
+#define HELPER_CAP_US (6 * 60 * 1000000LL) /* the turn cap, while Muse waits on a helper (s_turn.helper) */
+#define HELPER_HOLD_US (4 * 60 * 1000000LL) /* and how long that keeps a quiet turn open */
 #define BUSY_HOLD_US (20 * 1000000LL)      /* how long a busy agent keeps it open */
 #define TEXT_REPLY_TIMEOUT_US (5 * 60 * 1000000LL)   /* typed turns: agents can work a while */
 #define TEXT_TURN_CAP_US (15 * 60 * 1000000LL)
@@ -339,6 +341,7 @@ struct turn_t {
     msg_t msgs[MAX_MSGS];
     int nmsgs;
     bool agent_busy;
+    bool helper;             /* Muse waits on a helper (a subagent, his browser): the answer comes later */
     muse_activity_t activity;   /* what Muse says he's at (agent.status), as the face has it */
     bool img_made;           /* he's made an image this turn: what follows is it coming (IMAGE_MADE) */
     /* TTS */
@@ -1711,6 +1714,7 @@ static int bind_msg(const char *id, cJSON *payload)
     if (s_turn.nmsgs == MAX_MSGS) {
         return -1;
     }
+    s_turn.helper = false;   /* its answer, likely */
     msg_t &m = s_turn.msgs[s_turn.nmsgs];
     m = msg_t{};
     strlcpy(m.id, id, sizeof(m.id));
@@ -2297,6 +2301,9 @@ static void on_event(cJSON *line)
             turn_activity(code, text);   /* task.status says only running or done */
         }
         bool was = s_turn.agent_busy;
+        if (code && !strcmp(code, "waiting_for_subagents")) {
+            s_turn.helper = true;   /* "let me check" said, the answer to come */
+        }
         if (code) {
             s_turn.agent_busy = code[0] && strcmp(code, "online") && strcmp(code, "idle");
         } else if (status) {
@@ -2621,7 +2628,8 @@ static void check_turn(void)
     }
     bool text = s_turn.text;
     int64_t held = s_turn.img_hold_us ? (s_turn.img_hold ? t : s_turn.img_hold_end_us) - s_turn.img_hold_us : 0;
-    if (t - s_turn.start_us - held > (text ? TEXT_TURN_CAP_US : TURN_CAP_US)) {
+    bool helper = s_turn.helper || muse_browse_busy();
+    if (t - s_turn.start_us - held > (text ? TEXT_TURN_CAP_US : helper ? HELPER_CAP_US : TURN_CAP_US)) {
         ESP_LOGW(TAG, "turn hit the time cap");
         /* A voice turn that waited out the cap on a busy agent got no reply at all. */
         if (!text && !s_turn.nmsgs) {
@@ -2659,6 +2667,9 @@ static void check_turn(void)
     }
     if (s_turn.agent_busy && t - s_turn.last_content_us < (text ? TEXT_BUSY_HOLD_US : BUSY_HOLD_US)) {
         return;
+    }
+    if (helper && t - s_turn.last_content_us < HELPER_HOLD_US) {
+        return;   /* the answer's still to come */
     }
     ESP_LOGI(TAG, "turn done: %d message(s) in %.1fs", s_turn.nmsgs, (t - s_turn.start_us) / 1e6);
     log_marks();

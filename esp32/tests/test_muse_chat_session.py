@@ -221,6 +221,7 @@ extern "C" void muse_widget_clear(void) { widget_clears++; }
 static int browse_turns, browse_updates;
 extern "C" void muse_browse_turn(void) { browse_turns++; }
 extern "C" void muse_browse_update(const cJSON *) { browse_updates++; }
+extern "C" bool muse_browse_busy(void) { return false; }
 extern "C" bool muse_widget_add(const muse_widget_t *w, const char *sid) {
     widget_adds++;
     widget_last = *w;
