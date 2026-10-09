@@ -123,6 +123,15 @@ muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap);
  */
 bool muse_hatch_turn_caption(size_t played, char *out, size_t cap);
 
+/*
+ * The whole reply so far, its messages a line each, for the captions as
+ * lyrics (muse_state_set_reply), and *at how much of it the speech has said
+ * after `played` frames; *spoken whether there's speech to follow (else it's
+ * shown at reading pace). False until there's reply text, and while an
+ * image holds it up.
+ */
+bool muse_chat_turn_reply(size_t played, char *out, size_t cap, size_t *at, bool *spoken);
+
 /* Reply speech as 16 kHz mono. Waits up to wait_ms for some; returns frames read. */
 size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms);
 

@@ -34,9 +34,11 @@
 #include "muse_audio.h"
 #include "muse_board.h"
 #include "muse_chat.h"
+#include "muse_chat_priv.h"
 #include "muse_gadget_mode.h"
 #include "muse_input.h"
 #include "muse_lock.h"
+#include "muse_lyrics.h"
 #include "muse_mem.h"
 #include "muse_sd.h"
 #include "muse_settings.h"
@@ -86,6 +88,13 @@ static volatile float s_monitor_db = -100.0f;
 static volatile bool s_chirp;
 static volatile bool s_loopback;
 static volatile bool s_mp3test;
+/* ">caption=" (muse_voice_bench_caption): its text in PSRAM, said by the voice task. */
+EXT_RAM_BSS_ATTR static struct {
+    char *text;
+    float secs;
+    bool muted;
+    volatile bool go, busy;
+} s_bench;
 static volatile int s_earcon = -1;         /* muse_earcon_t asked for, -1 for none */
 static volatile uint32_t s_earcon_ms;      /* when, in ms since boot */
 
@@ -443,6 +452,16 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
 
 static void go_idle(const char *caption);
 
+/* MUSE_REPLY_MAX for the whole reply (muse_state_set_reply), in PSRAM; NULL without. */
+static char *reply_buf(void)
+{
+    EXT_RAM_BSS_ATTR static char *buf;
+    if (!buf) {
+        buf = heap_caps_malloc(MUSE_REPLY_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    return buf;
+}
+
 /*
  * Plays Hatch's reply as it arrives, with its text as the caption. Returns
  * true if interrupted by a new press. *delivered: the VM has the note.
@@ -554,9 +573,17 @@ static bool hatch_reply(bool *delivered)
             muse_state_set_level(0);
             muse_audio_write(silence, MUSE_AUDIO_CHUNK);
         }
-        /* The page being said, or before the speech the reply's opening page. */
+        /* The page being said, or before the speech the reply's opening page;
+         * and the whole reply, with how far it's said, for the lyrics. */
         if ((speaking || replied) && muse_hatch_turn_caption(played, page, sizeof(page))) {
-            muse_state_set_caption("%s", page);
+            size_t at;
+            bool spoken;
+            char *reply = reply_buf();
+            if (reply && muse_chat_turn_reply(played, reply, MUSE_REPLY_MAX, &at, &spoken)) {
+                muse_state_set_reply(page, reply, at, spoken);
+            } else {
+                muse_state_set_caption("%s", page);
+            }
             muse_sd_caption_page(page);
         }
     }
@@ -581,6 +608,15 @@ static void go_idle(const char *caption)
 #if CONFIG_MUSE_TTS_PICO
 EXT_RAM_BSS_ATTR static char s_replay_page[MUSE_CAPTION_MAX];
 
+/* The replay's page (s_replay_page) as the caption, and the reply for the
+ * lyrics, `played` frames into Pico's pace through it (muse_tts_caption). */
+static void replay_show(const char *text, size_t played, bool spoken)
+{
+    size_t len = strlen(text), frames = muse_tts_caption_frames(text), w = muse_lyrics_weight(text, len);
+    size_t at = muse_lyrics_at(text, len, frames ? (size_t)((uint64_t)played * w / frames) : w);
+    muse_state_set_reply(s_replay_page, text, at, spoken);
+}
+
 /*
  * The last reply again without speech (the speaker off, or a mode that
  * doesn't speak replies): its pages, at the pace Pico would have said them,
@@ -598,7 +634,7 @@ static void replay_captions(const char *text)
         }
         size_t at = (size_t)((now - t0) * MUSE_AUDIO_RATE / 1000000);
         if (muse_tts_caption(text, at, s_replay_page, sizeof(s_replay_page))) {
-            muse_state_set_caption("%s", s_replay_page);
+            replay_show(text, at, false);
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -653,7 +689,7 @@ static void replay_reply(void)
             vTaskDelay(pdMS_TO_TICKS(10));   /* the engine loading */
         }
         if (muse_tts_caption(text, played, page, page_cap)) {
-            muse_state_set_caption("%s", page);
+            replay_show(text, played, true);
         }
     }
     muse_tts_stop();
@@ -663,6 +699,48 @@ static void replay_reply(void)
     go_idle("");
 }
 #endif
+
+#define BENCH_CPS 14          /* ">caption=": Pico's pace (muse_tts.c's CHARS_PER_S) */
+#define BENCH_READ_CPS 16     /* muted: the reading pace (muse_chat_session.cpp's TEXT_CHARS_PER_S) */
+#define BENCH_HOLD_US 1500000 /* the last words up a moment after */
+
+/*
+ * ">caption=": s_bench's text as a reply on the face, said silently over its
+ * time (the speech's pace, or s_bench.secs), its captions following and
+ * Muse's mouth moving with the words, still in the pauses; or muted, held up
+ * as long as a reply that isn't spoken would be, for the face to read at its
+ * pace. Any press stops it, as in a reply.
+ */
+static void bench_caption(void)
+{
+    const char *text = s_bench.text;
+    char *page = s_bench.text + MUSE_REPLY_MAX;
+    size_t len = strlen(text), w = muse_lyrics_weight(text, len);
+    int64_t span = s_bench.secs > 0 ? (int64_t)(s_bench.secs * 1e6f)
+                                    : (int64_t)w * 1000000 / (s_bench.muted ? BENCH_READ_CPS : BENCH_CPS);
+    ESP_LOGI(TAG, "bench caption: %u chars over %.1fs%s", (unsigned)len, (double)span / 1e6,
+             s_bench.muted ? ", muted" : "");
+    muse_state_set_mode(MUSE_MODE_SPEAKING);
+    int64_t t0 = esp_timer_get_time();
+    for (int64_t t = 0; t < span + BENCH_HOLD_US; t = esp_timer_get_time() - t0) {
+        muse_input_event_t ev;
+        if (xQueuePeek(s_queue, &ev, 0) == pdTRUE || answer_waiting() || muse_lock_locked()) {
+            break;
+        }
+        size_t said = t < span ? (size_t)((uint64_t)t * w / span) : w;
+        size_t at = muse_lyrics_at(text, len, said);
+        /* The mouth: open and close with the syllables, shut in a pause. */
+        bool pause = at >= len || (said > 2 && muse_lyrics_at(text, len, said - 2) == at);
+        float level = s_bench.muted || pause ? 0.0f : 0.35f + 0.3f * fabsf(sinf((float)t * 1.9e-5f));
+        muse_state_set_level(level);
+        if (muse_hatch_caption_at(text, at < len ? at : len - 1, page, MUSE_CAPTION_MAX)) {
+            muse_state_set_reply(page, text, at, !s_bench.muted);
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    muse_state_set_level(0);
+    go_idle("");
+}
 
 /* Why a press can't go to Hatch; voice notes only go there. */
 static const char *not_ready_reason(void)
@@ -1087,7 +1165,7 @@ static void voice_task(void *arg)
             muse_input_event_t ev;
             bool asleep = muse_state_asleep();
             bool battery = muse_state_on_battery();
-            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback;
+            bool rest = asleep && battery && !s_chirp && !s_mp3test && !s_loopback && !s_bench.go;
 #if HOLD_NOTES
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
@@ -1148,6 +1226,13 @@ static void voice_task(void *arg)
                 pre_reset();
             }
 #endif
+            if (s_bench.go) {
+                s_bench.busy = true;
+                s_bench.go = false;
+                bench_caption();
+                s_bench.busy = false;
+                pre_reset();
+            }
 #if CONFIG_MUSE_HATCH
             if (answer_waiting()) {
                 pending_down = answer_turn();
@@ -1277,6 +1362,31 @@ void muse_voice_request_loopback(void)
 void muse_voice_request_mp3test(void)
 {
     s_mp3test = true;
+    muse_state_nudge();
+}
+
+void muse_voice_bench_caption(const char *text, float secs, bool muted)
+{
+    static const char SAMPLE[] =
+        "Good morning! It's 72 and sunny in Seattle, with a light breeze off the water. "
+        "Later this afternoon, around 3:30, clouds roll in from the coast... and there's a 40% "
+        "chance of showers by evening, so maybe bring a jacket. Tomorrow looks dry again, "
+        "and warmer: highs near 78, perfect for that walk you've been planning.";
+    if (s_bench.go || s_bench.busy) {
+        return;   /* one still going */
+    }
+    char *buf = s_bench.text;
+    if (!buf) {
+        buf = heap_caps_malloc(MUSE_REPLY_MAX + MUSE_CAPTION_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);   /* and its page */
+    }
+    if (!buf) {
+        return;   /* no PSRAM */
+    }
+    strlcpy(buf, text && text[0] ? text : SAMPLE, MUSE_REPLY_MAX);
+    s_bench.text = buf;
+    s_bench.secs = secs;
+    s_bench.muted = muted;
+    s_bench.go = true;
     muse_state_nudge();
 }
 

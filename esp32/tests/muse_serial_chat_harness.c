@@ -22,13 +22,19 @@
  *   caption C  stdin is a reply's text: prints it wrapped to C columns, as the
  *              screen pages it (test_muse_caption_wrap.py)
  *   ascii      stdin is a reply's text: prints it with the ASCII stand-ins the
- *              caption shows (muse_text.c, test_muse_caption_wrap.py) */
+ *              caption shows (muse_text.c, test_muse_caption_wrap.py)
+ *   lyrics C   stdin is a reply's text: its lines at C columns, and the line
+ *              and words lit at each byte the speech may reach (muse_lyrics.h,
+ *              test_muse_lyrics.py)
+ *   pace       stdin is a reply's text: the byte the speech has reached at
+ *              each moment of its weight (muse_lyrics.h) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "muse_chat.h"
 #include "muse_chat_priv.h"
+#include "muse_lyrics.h"
 #include "muse_state.h"
 #include "muse_text.h"
 
@@ -104,6 +110,26 @@ int main(int argc, char **argv)
         static char page[1 << 16];
         if (muse_hatch_caption_at(in, (size_t)atol(argv[4]), page, sizeof(page))) {
             fputs(page, stdout);
+        }
+    } else if (argc > 2 && !strcmp(argv[1], "lyrics")) {
+        /* The lines, "L start len", then for each byte the speech may be at,
+         * "A at line lit word" (muse_lyrics.h). */
+        static muse_lyrics_line_t lines[1024];
+        int n = muse_lyrics_wrap(in, atoi(argv[2]), lines, 1024);
+        for (int i = 0; i < n; i++) {
+            printf("L %u %u\n", lines[i].start, lines[i].len);
+        }
+        for (size_t at = 0; n && at <= len; at++) {
+            int l = muse_lyrics_line_at(lines, n, at);
+            size_t word, lit = muse_lyrics_lit(in, &lines[l], at, &word);
+            printf("A %zu %d %zu %zu\n", at, l, lit, word);
+        }
+    } else if (argc > 1 && !strcmp(argv[1], "pace")) {
+        /* "W weight", then "P w at" for each moment of it, and one past. */
+        size_t w = muse_lyrics_weight(in, len);
+        printf("W %zu\n", w);
+        for (size_t i = 0; i <= w + 1; i++) {
+            printf("P %zu %zu\n", i, muse_lyrics_at(in, len, i));
         }
     } else if (argc > 1 && !strcmp(argv[1], "ascii")) {
         static char shown[1 << 16];

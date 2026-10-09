@@ -159,7 +159,10 @@ the things Muse says he's at (`search`, `news`, `calendar`, `reminder`,
 and `>activity=TEXT` as if Muse had said TEXT, printing what it's taken for.
 `>face=download` plays a made-up generated image's whole way in (painting it,
 tossing it up into the cloud, waiting on it, the boxes, unboxing, the picture
-put together).
+put together). `>caption=TEXT` plays TEXT as a reply's captions without asking
+Muse (said silently at speech pace, the lyrics following; `>caption=8|TEXT`
+over 8 s, no TEXT for a sample), and `>caption_muted=TEXT` as a reply that
+isn't spoken, read at the face's own pace.
 Screenshots are off in normal builds because each one takes a buffer the size
 of the screen. `>face=` works in any build. Or run `idf.py` directly:
 

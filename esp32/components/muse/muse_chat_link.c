@@ -945,6 +945,20 @@ bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
     return muse_hatch_caption_at(s_turn.text, at < len ? at : len - 1, out, cap);
 }
 
+bool muse_chat_turn_reply(size_t played, char *out, size_t cap, size_t *at, bool *spoken)
+{
+    (void)played;
+    size_t len = strlen(s_turn.text);
+    if (s_turn.phase != T_REPLY || !s_turn.replied || !len) {
+        return false;
+    }
+    strlcpy(out, s_turn.text, cap);
+    size_t read = read_at(esp_timer_get_time());
+    *at = read < len ? read : len;
+    *spoken = false;   /* text: the face reads it at its own pace */
+    return true;
+}
+
 size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms)
 {
     (void)pcm;

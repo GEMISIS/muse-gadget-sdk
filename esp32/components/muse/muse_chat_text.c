@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "muse_lyrics.h"
 #include "muse_state.h"
 #include "muse_text.h"
 
@@ -145,20 +146,26 @@ static bool next_line(const char **text, const char *stop, int cols, const char 
     return end != p;
 }
 
+/* Where the shown text ends: an image still arriving at its end isn't shown (muse_chat_md.h). */
+static const char *shown_stop(const char *text)
+{
+    const char *stop = text + muse_chat_shown_len(text);
+    while (stop > text && stop[-1] == ' ' && *stop) {
+        stop--;   /* the space before an image still arriving */
+    }
+    return stop;
+}
+
 /*
  * Wraps `text` to the screen's page (muse_state_page) and puts the page holding
  * byte `at` in `out`. Pages overlap by a line: a page's last line starts the
  * next one, so the page turns as that line is reached and nothing is skipped.
- * An image still arriving at the text's end isn't shown (muse_chat_md.h).
  */
 bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap)
 {
     int cols, lines;
     muse_state_page(muse_text_has_cjk(text), &cols, &lines);
-    const char *stop = text + muse_chat_shown_len(text);
-    while (stop > text && stop[-1] == ' ' && *stop) {
-        stop--;   /* the space before an image still arriving */
-    }
+    const char *stop = shown_stop(text);
     const char *p = text, *start;
     size_t len;
     int line = -1, n = 0;
@@ -198,6 +205,144 @@ bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap)
         o += snprintf(out + o, cap - o, "%s%.*s", o ? "\n" : "", (int)len, start);
     }
     return true;
+}
+
+/* ---- Lyrics (muse_lyrics.h) ---- */
+
+static size_t char_len(const char *s)
+{
+    unsigned char c = (unsigned char)*s;
+    size_t n = c < 0xC0 ? 1 : c < 0xE0 ? 2 : c < 0xF0 ? 3 : 4;
+    for (size_t i = 1; i < n; i++) {
+        if (!s[i]) {
+            return i;   /* cut short */
+        }
+    }
+    return n;
+}
+
+int muse_lyrics_wrap(const char *text, int cols, muse_lyrics_line_t *lines, int max)
+{
+    const char *stop = shown_stop(text), *p = text, *start;
+    size_t len;
+    int n = 0;
+    while (n < max && next_line(&p, stop, cols, &start, &len)) {
+        lines[n].start = (uint16_t)(start - text);
+        lines[n].len = (uint16_t)len;
+        n++;
+    }
+    return n;
+}
+
+int muse_lyrics_line_at(const muse_lyrics_line_t *lines, int n, size_t at)
+{
+    int i = 0;
+    while (i + 1 < n && lines[i + 1].start < at) {
+        i++;
+    }
+    return i;
+}
+
+size_t muse_lyrics_lit(const char *text, const muse_lyrics_line_t *line, size_t at, size_t *word)
+{
+    const char *p = text + line->start, *end = p + line->len, *q = p;
+    size_t lit = 0;
+    *word = 0;
+    while (q < end) {
+        while (q < end && *q == ' ') {
+            q++;
+        }
+        if (q >= end || (size_t)(q - text) >= at) {
+            break;   /* not said yet */
+        }
+        const char *w = q;
+        if (muse_text_cjk(q) == MUSE_TEXT_CJK) {
+            q += char_len(q);
+        } else {
+            while (q < end && *q != ' ' && (q == w || muse_text_cjk(q) != MUSE_TEXT_CJK)) {
+                q += char_len(q);
+            }
+        }
+        while (q < end && muse_text_cjk(q) == MUSE_TEXT_CJK_CLOSE) {
+            q += char_len(q);   /* "，" with what it follows */
+        }
+        *word = (size_t)(w - p);
+        lit = (size_t)(q - p);
+    }
+    return lit;
+}
+
+static bool is_closer(char c)
+{
+    return c == '"' || c == '\'' || c == ')' || c == ']';
+}
+
+/* The pause after the character at p: where a clause or sentence ends, not
+ * in "3.5", "12:30" or the first dots of "...". */
+static size_t pause_after(const char *text, const char *p, const char *end)
+{
+    if (*p == '\n') {
+        return MUSE_LYRICS_PAUSE_STOP;
+    }
+    if ((unsigned char)*p >= 0x80) {
+        static const char *const STOPS[] = { "\xe3\x80\x82", "\xef\xbc\x81", "\xef\xbc\x9f" };   /* 。！？ */
+        static const char *const COMMAS[] = { "\xef\xbc\x8c", "\xe3\x80\x81", "\xef\xbc\x9b", "\xef\xbc\x9a" };   /* ，、；： */
+        for (size_t i = 0; i < sizeof(STOPS) / sizeof(STOPS[0]); i++) {
+            if (!strncmp(p, STOPS[i], 3)) {
+                return MUSE_LYRICS_PAUSE_STOP;
+            }
+        }
+        for (size_t i = 0; i < sizeof(COMMAS) / sizeof(COMMAS[0]); i++) {
+            if (!strncmp(p, COMMAS[i], 3)) {
+                return MUSE_LYRICS_PAUSE_COMMA;
+            }
+        }
+        return 0;
+    }
+    /* The pause comes after a quote or bracket that closes the clause. */
+    const char *q = p;
+    while (q > text && is_closer(*q)) {
+        q--;
+    }
+    bool stop = *q == '.' || *q == '!' || *q == '?';
+    if ((!stop && *q != ',' && *q != ';' && *q != ':') || (q != p && !is_closer(*p))) {
+        return 0;
+    }
+    const char *next = p + 1;
+    if (next < end && (is_closer(*next) || (*next != ' ' && *next != '\n' && (unsigned char)*next < 0x80))) {
+        return 0;   /* inside a word or a number, a run of them, or quoted */
+    }
+    return stop ? MUSE_LYRICS_PAUSE_STOP : MUSE_LYRICS_PAUSE_COMMA;
+}
+
+size_t muse_lyrics_weight(const char *text, size_t len)
+{
+    const char *p = text, *end = text + len;
+    size_t w = 0;
+    while (p < end && *p) {
+        size_t n = char_len(p);
+        w += n + pause_after(text, p, end);
+        p += n;
+    }
+    return w;
+}
+
+size_t muse_lyrics_at(const char *text, size_t len, size_t w)
+{
+    const char *p = text, *end = text + len;
+    size_t acc = 0;
+    while (p < end && *p) {
+        size_t n = char_len(p);
+        if (w < acc + n) {
+            return (size_t)(p - text) + (w - acc);
+        }
+        acc += n + pause_after(text, p, end);
+        p += n;
+        if (w < acc) {
+            return (size_t)(p - text);   /* just past it, its pause still going */
+        }
+    }
+    return (size_t)(p - text);
 }
 
 /* ---- Typed turns on the serial console ---- */

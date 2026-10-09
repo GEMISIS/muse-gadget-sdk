@@ -84,6 +84,21 @@ void muse_state_set_caption(const char *fmt, ...) __attribute__((format(printf, 
 /* Copies the caption if it changed since *version; returns true on change. */
 bool muse_state_caption(char *out, size_t out_len, uint32_t *version);
 
+/*
+ * The reply being answered with, whole (up to MUSE_REPLY_MAX, in PSRAM), and
+ * how far its speech has got (`at`, bytes of it said), for the full layout's
+ * captions to follow line by line (muse_lyrics_ui.h); set with its `page`,
+ * the caption, which everything else shows. `spoken`: there's speech to
+ * follow, not silence at reading pace. It's the caption's: once any other
+ * caption is set, it's stale until set again. Without PSRAM only the page is.
+ */
+#define MUSE_REPLY_MAX 4096
+
+void muse_state_set_reply(const char *page, const char *text, size_t at, bool spoken);
+/* True while the reply is the caption; copies its text (with the caption's
+ * ASCII stand-ins, `at` counted in them) if it changed since *version. */
+bool muse_state_reply(char *out, size_t out_len, uint32_t *version, size_t *at, bool *spoken);
+
 /* How much reply text the screen shows at once, set by the UI: lines of up to
  * `cols` characters. The replies are wrapped and paged to fit. A screen that
  * draws CJK larger than its other caption text sets a page for replies with CJK

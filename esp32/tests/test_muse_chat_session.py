@@ -175,6 +175,9 @@ static void emit(muse_hatch_ev_t type, const char *text) {
 }
 void muse_hatch_console(const char *, const char *, const char *, ...) { console_events++; }
 void muse_hatch_tail_words(const char *text, char *out, size_t cap) { strlcpy(out, text, cap); }
+/* The speech's pace through the text (muse_lyrics.h, test_muse_lyrics.py), evenly here. */
+size_t muse_lyrics_weight(const char *, size_t len) { return len; }
+size_t muse_lyrics_at(const char *, size_t len, size_t w) { return w < len ? w : len; }
 bool muse_hatch_caption_at(const char *text, size_t, char *out, size_t cap) {
     strlcpy(out, text, cap); return text[0];
 }

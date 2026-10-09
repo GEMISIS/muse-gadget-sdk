@@ -1039,6 +1039,28 @@ static bool console_command(char *line, bool whole)
         s_nap_now = true;
         return true;
     }
+    bool muted = !strncmp(line, "caption_muted=", 14);
+    if (muted || !strncmp(line, "caption=", 8)) {
+        /* Captions as if Muse were replying, without asking him
+         * (muse_voice_bench_caption): "caption=TEXT" said at speech pace,
+         * "caption=8|TEXT" over 8 s, "caption_muted=TEXT" to be read at the
+         * face's pace; no TEXT for a sample. */
+        char *text = line + (muted ? 14 : 8), *bar = strchr(text, '|');
+        char *end;
+        float secs = bar ? strtof(text, &end) : 0.0f;
+        if (bar && end == bar && secs > 0 && secs <= 120) {
+            text = bar + 1;
+        } else {
+            secs = 0;
+        }
+        muse_hatch_unescape(text);
+        muse_ui_bench_pose(MUSE_UI_BENCH_NONE);
+        set_asleep(false, "serial");
+        muse_voice_bench_caption(text, secs, muted);
+        printf("@caption {\"muted\":%s,\"secs\":%.1f}\n", muted ? "true" : "false", (double)secs);
+        fflush(stdout);
+        return true;
+    }
     if (!strcmp(line, "quake")) {
         muse_ui_quake();   /* as a shake of the board would */
         return true;
@@ -1184,7 +1206,10 @@ static bool console_command(char *line, bool whole)
  * TEXT (muse_activity_of) and prints what it's taken for, "widget=NAME" shows
  * a sample widget (option, options, list, map, localmap, shopping, text,
  * multi, card; none takes it away) as if a reply had brought it, or Muse's
- * browser at work ("browser"), "chat=" sends a typed message to Hatch (see chat_line
+ * browser at work ("browser"), "caption=TEXT" plays TEXT as a reply's
+ * captions, said silently ("caption=8|TEXT" over 8 s; no TEXT, a sample),
+ * and "caption_muted=TEXT" as one that isn't spoken, read at the face's
+ * pace (muse_voice_bench_caption), "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and "chat_sid=", "chat_new=" and "chats" pick
  * the chat it goes to and list the named ones (see chat_sid_command).
  * The passcode's (muse_lock.h): "lock" locks now, "lockstate" prints

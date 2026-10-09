@@ -106,6 +106,7 @@ extern "C" {
 #endif
 }
 #include "muse_chat_priv.h"
+#include "muse_lyrics.h"
 
 #include <xplat/noise/core/ClientSession.h>
 #include <xplat/noise/core/PsaCryptoBackend.h>
@@ -2392,6 +2393,19 @@ static void on_chat_ack(stream_t *s)
 
 /* ---- Turn: speech ---- */
 
+/*
+ * How far message m's speech has got through its text after `played` frames
+ * of the reply's: as far through the text's weight as through its speech, so
+ * it holds a beat at commas and sentences' ends as the speech does
+ * (muse_lyrics.h), and never runs past the words.
+ */
+static size_t speech_at(const msg_t &m, const char *text, size_t played)
+{
+    size_t len = strlen(text), w = muse_lyrics_weight(text, len);
+    uint32_t frames = m.pcm_frames ? m.pcm_frames : (uint32_t)((uint64_t)w * MIC_RATE / SPEECH_CHARS_PER_S);
+    return frames ? muse_lyrics_at(text, len, (size_t)((uint64_t)(played - m.pcm_start) * w / frames)) : 0;
+}
+
 static void start_tts(void)
 {
     if (s_turn.tts_msg >= 0) {
@@ -3745,19 +3759,65 @@ extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
         }
         return false;
     }
-    size_t len = strlen(text);
-    uint32_t frames = m->pcm_frames ? m->pcm_frames : (uint32_t)(len * MIC_RATE / SPEECH_CHARS_PER_S);
-    size_t at = frames ? (size_t)((uint64_t)(played - m->pcm_start) * len / frames) : 0;
-    if (at >= len) {
-        at = len ? len - 1 : 0;
-    }
-
-    return muse_hatch_caption_at(text, at, out, cap);
+    size_t len = strlen(text), at = speech_at(*m, text, played);
+    return muse_hatch_caption_at(text, at < len ? at : (len ? len - 1 : 0), out, cap);
 }
 
 extern "C" size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms)
 {
     return xStreamBufferReceive(s_out, pcm, frames * sizeof(int16_t), pdMS_TO_TICKS(wait_ms)) / sizeof(int16_t);
+}
+
+extern "C" bool muse_chat_turn_reply(size_t played, char *out, size_t cap, size_t *at, bool *spoken)
+{
+    if (s_turn.img_hold || !s_turn.texts || cap < 2) {
+        return false;   /* the words come with the speech, once the image is up */
+    }
+    int said = -1;   /* the message being spoken, as muse_hatch_turn_caption has it */
+    for (int i = 0; i < s_turn.nmsgs; i++) {
+        const msg_t &c = s_turn.msgs[i];
+        if (c.tts >= TTS_ACTIVE && c.len && c.pcm_start <= played) {
+            said = i;
+        }
+    }
+    size_t o = 0;
+    *at = 0;
+    for (int i = 0; i < s_turn.nmsgs && o + 2 < cap; i++) {
+        const char *text = s_turn.texts + i * TEXT_MAX;
+        size_t n = s_turn.msgs[i].len ? muse_chat_shown_len(text) : 0;
+        while (n && text[n - 1] == ' ') {
+            n--;
+        }
+        if (!n) {
+            continue;
+        }
+        if (o) {
+            out[o++] = '\n';   /* the next message on a line of its own */
+        }
+        size_t base = o;
+        if (o + n >= cap) {
+            n = cap - 1 - o;
+            while (n && (text[n] & 0xC0) == 0x80) {
+                n--;   /* whole characters */
+            }
+        }
+        memcpy(out + o, text, n);
+        o += n;
+        if (i == said) {
+            size_t a = speech_at(s_turn.msgs[i], text, played);
+            *at = base + (a < n ? a : n);
+        } else if (i < said) {
+            *at = o;
+        }
+    }
+    out[o] = '\0';
+#if CONFIG_MUSE_TTS_PICO
+    bool speech = muse_tts_wanted();
+#else
+    bool speech = false;
+#endif
+    *spoken = said >= 0 ? !s_turn.silent : speech;   /* before it starts: whether it will be */
+    return o > 0;
 }
 
 /* Bench test: decodes the embedded test_reply.mp3 exactly as a reply is decoded. */
