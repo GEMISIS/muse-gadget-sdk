@@ -196,6 +196,8 @@ static uint16_t *resize(const uint16_t *src, int sw, int sh, int dw, int dh)
     return dst;
 }
 
+static bool s_oom;   /* the present task's: the last run failed for want of memory */
+
 /*
  * Sizes `img` (iw x ih RGB565, taken whatever happens) to fit the screen and
  * to the size Muse holds it up, and hands both to the face. False if it
@@ -216,6 +218,7 @@ static bool present_pixels(const job_t *job, uint16_t *img, int iw, int ih, int 
     }
     if (!full || (photo && !held)) {
         ESP_LOGW(TAG, "\"%s\": out of memory", job->label);
+        s_oom = true;   /* for a while: run_patiently tries again */
         heap_caps_free(full);
         heap_caps_free(held);
         return false;
@@ -309,6 +312,7 @@ static bool show_jpeg(const job_t *job)
 /* ---- Fetching a web image ourselves --------------------------------------- */
 
 static bool run(job_t *job);
+static bool run_patiently(job_t *job);
 
 /* Whether the bytes are a format shown here. */
 static bool can_show(const uint8_t *d, size_t len)
@@ -1244,7 +1248,7 @@ static void present_task(void *arg)
             heap_caps_free(job);
         } else if (job) {
             int64_t t0 = esp_timer_get_time();
-            if (run(job)) {
+            if (run_patiently(job)) {
                 atomic_fetch_add(&s_seq, 1);   /* the face has it */
             }
             portENTER_CRITICAL(&s_ask_lock);
@@ -1260,6 +1264,29 @@ static void present_task(void *arg)
         }
         ask_tick();
         web_expire();
+    }
+}
+
+/*
+ * run(), again while it fails for want of memory: speech (Pico's 1.1 MB) or
+ * a map can hold PSRAM a while, and dropping the image then lost it, Muse
+ * told it was shown. Half a second apart, up to OOM_WAIT_MS.
+ */
+#define OOM_WAIT_MS 30000
+static bool run_patiently(job_t *job)
+{
+    for (int waited = 0;; waited += 500) {
+        s_oom = false;
+        if (run(job)) {
+            return true;
+        }
+        if (!s_oom || waited >= OOM_WAIT_MS) {
+            return false;
+        }
+        if (!waited) {
+            ESP_LOGW(TAG, "\"%s\": no room for it yet: trying again as memory frees", job->label);
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 

@@ -57,8 +57,9 @@
  * hold ("GETTING THE IMAGE... 40%") until Muse holds the image up, then
  * follow. Muse saying he's at work on an image (agent.status) holds them from
  * the start, and the speech gives an image event a moment to turn up first.
- * Pico starts on the reply meanwhile, so its first words are ready to play
- * the moment the speech may go: only the playing and the captions wait.
+ * Pico starts on the reply meanwhile (not while an image is on its way: its
+ * memory is the photo's then), so its first words are ready to play the
+ * moment the speech may go: only the playing and the captions wait.
  *
  * A background request (muse_chat_bg_ask, for the face's "up next" line) is a
  * typed message to a chat of the asker's, on streams of its own beside the
@@ -2423,8 +2424,14 @@ static void start_tts(void)
     if (!queued) {
         return;
     }
+    /* Not while an image is on its way: Pico's 1.1 MB of working memory left
+     * the photo none to be sized in (it was decoded, then dropped). It starts
+     * once the photo's up, half a second or so before its first words. */
     /* Pico may start while the speech still waits (decode() holds the playing); showing it may not. */
-    bool wait = speech_wait();
+    bool wait = speech_wait();   /* first: it's where an image's hold ends */
+    if (s_turn.img_hold) {
+        return;
+    }
     for (int i = 0; i < s_turn.nmsgs; i++) {
         msg_t &m = s_turn.msgs[i];
         if (m.tts != TTS_QUEUED) {
