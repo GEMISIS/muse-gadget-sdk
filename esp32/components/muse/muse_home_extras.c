@@ -36,11 +36,11 @@
 /* "Up next" (muse_up_next.h): a pill centred over the page dots (its bottom
  * at y 446 on 480 px), just the line in unscii, Muse's own pixel type.
  * A line wider than UP_TEXT_W wraps, centred, to as few lines as it takes
- * (up_fit), the pill growing upwards: two take it to y 394, three to 376,
- * still under Muse's feet (367). Past UP_LINES it ends in dots. A reply's
+ * (up_fit), the pill growing upwards: two take it to y 394, the most,
+ * just under Muse's feet (about 387). Past UP_LINES it ends in dots. A reply's
  * page hides it, and the Night face leaves it out. */
 #define UP_TEXT_W 360           /* 22 columns of unscii_16 */
-#define UP_LINES 3
+#define UP_LINES 2   /* a third would reach Muse's feet (MUSE_DOWN_PX) */
 #define UP_LINE_SPACE 2
 #define UP_PAD_V 9
 #define CAPTION_S 6.0f          /* a new caption keeps the pill out of its way this long */
