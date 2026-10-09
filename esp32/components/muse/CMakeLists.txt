@@ -49,6 +49,7 @@ if(CONFIG_MUSE_ENABLED)
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
         list(APPEND srcs "muse_present.c")   # images in replies, held up on the face
+        list(APPEND srcs "muse_widget.c")   # widgets in replies (options, lists...)
         if(CONFIG_MUSE_PRESENT_FORMATS)
             list(APPEND srcs "muse_image.c")   # their PNG and WebP
         endif()
@@ -78,6 +79,9 @@ if(CONFIG_MUSE_ENABLED)
         list(APPEND srcs "boards/board_waveshare_s3_175c.c" "boards/muse_lcd_bands.c")
     elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_216)
         list(APPEND srcs "boards/board_waveshare_s3_216.c" "boards/muse_lcd_bands.c")
+        if(CONFIG_MUSE_HATCH)
+            list(APPEND srcs "muse_widget_ui.c")   # their sheet on the face
+        endif()
         if(CONFIG_MUSE_GADGET_EXTRAS)
             # microSD, RTC, IMU and the face's corner readouts (Kconfig.gadget)
             list(APPEND srcs "muse_extras.c" "muse_sd.c" "muse_rtc.c" "muse_imu.c"
@@ -134,7 +138,8 @@ if(CONFIG_MUSE_ENABLED)
 elseif(CONFIG_HOMEHUB_VOICE)
     # The Voice PE board uses just the Hatch voice session; the project's main/
     # voice_muse_chat.c stands in for the Muse settings, Wi-Fi and Link hooks.
-    list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_chat_text.c" "muse_text.c")
+    list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_chat_text.c" "muse_text.c"
+                     "muse_widget.c")
     list(APPEND embed "test_reply.mp3")
 endif()
 

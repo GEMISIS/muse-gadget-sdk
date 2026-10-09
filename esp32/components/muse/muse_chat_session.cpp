@@ -94,6 +94,7 @@ extern "C" {
 #include "muse_gadget_mode.h"
 #include "muse_link.h"
 #include "muse_settings.h"
+#include "muse_widget.h"
 #include "muse_wifi.h"
 #if CONFIG_MUSE_TTS_PICO
 #include "muse_tts.h"
@@ -181,12 +182,12 @@ static const char *TAG = "muse_chat_session";
 /* ---- Voice task <-> session task ---- */
 
 enum cmd_type_t : uint8_t { CMD_CONNECT, CMD_FORGET, CMD_BEGIN, CMD_END, CMD_CANCEL, CMD_TEXT, CMD_TEXT_CANCEL, CMD_WAKE,
-                           CMD_BG, CMD_TYPED };
+                           CMD_BG, CMD_TYPED, CMD_WIDGET };
 
 struct cmd_t {
     cmd_type_t type;
     uint32_t gen;
-    char *text;              /* CMD_TEXT, CMD_BG, CMD_TYPED: malloc'd, freed by the session task */
+    char *text;              /* CMD_TEXT, CMD_BG, CMD_TYPED, CMD_WIDGET: malloc'd, freed by the session task */
 };
 
 struct ev_t {
@@ -1100,7 +1101,8 @@ static void free_rec(void)
 }
 
 /* Session task only: words for the next voice turn to send instead of the mic's
- * (muse_hatch_typed_voice), and this turn's, once taken. */
+ * (muse_hatch_typed_voice), and this turn's, once taken: "<chat>\n<words>",
+ * the chat "*" for the one picked, else the one a widget's answer goes to. */
 static char *s_typed_next, *s_typed;
 
 static void turn_finish(void)
@@ -1174,6 +1176,7 @@ static bool turn_start(uint32_t gen, bool text)
     s_turn.img_seq = img_seq();
     s_turn.img_up = img_up();
     img_activity(MUSE_ACTIVITY_NONE);
+    muse_widget_clear();   /* the last reply's widgets are answered, or passed over */
     memset(s_marks, 0, sizeof(s_marks));
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
@@ -1210,12 +1213,14 @@ static bool dictate_begin(void)
 
 static void turn_begin(uint32_t gen)
 {
+    char *typed = s_typed_next;   /* this turn's, whether or not it gets going */
+    s_typed_next = nullptr;
     if (!turn_start(gen, false)) {
+        free(typed);
         return;
     }
-    if (s_typed_next) {
-        s_typed = s_typed_next;   /* sent on the release, the mic's audio dropped */
-        s_typed_next = nullptr;
+    if (typed) {
+        s_typed = typed;   /* sent on the release, the mic's audio dropped */
         ESP_LOGI(TAG, "voice turn with typed words: %u bytes", (unsigned)strlen(s_typed));
         s_turn.phase = P_LISTEN;
         return;
@@ -1570,8 +1575,23 @@ static bool record_typed(void)
     if (s_turn.end_requested) {
         mark(M_RELEASE);
         s_turn.end_sent = true;
-        emit(MUSE_HATCH_EV_HEARD, s_typed);
-        send_chat(s_typed, "text");
+        /* An answer to a widget goes to its chat, which is the picked one
+         * unless the pick changed since (and the widget went with it). */
+        char *words = strchr(s_typed, '\n');
+        if (words) {
+            *words++ = '\0';   /* s_typed is the chat now */
+        }
+        char sid[MUSE_CHAT_SID_MAX + 1];
+        muse_settings_chat_sid(sid);
+        if (words && strcmp(s_typed, "*") != 0 && strcmp(s_typed, sid) != 0) {
+            ESP_LOGW(TAG, "an answer for chat %s, but %s is picked now: not sent", s_typed[0] ? s_typed : "main",
+                     sid[0] ? sid : "main");
+            turn_fail("THAT WAS ANOTHER CHAT");
+            return true;
+        }
+        words = words ? words : s_typed;
+        emit(MUSE_HATCH_EV_HEARD, words);
+        send_chat(words, "text");
         if (s_turn.phase == P_WAIT_REPLY) {
             mark(M_SENT);
         }
@@ -2134,6 +2154,57 @@ static void img_present(cJSON *payload)
     img_expect(file, label);
 }
 
+/* ---- Turn: widgets ---- */
+
+/* A widget of the reply's (muse_widget.h): parsed, logged, and handed to the face, as the turn's chat's. */
+static void widget_take(const cJSON *json, const char *from)
+{
+    EXT_RAM_BSS_ATTR static muse_widget_t *w;   /* PSRAM, kept: 14 KB */
+    if (!w) {
+        w = static_cast<muse_widget_t *>(psram_alloc(sizeof(*w)));
+    }
+    if (!w || !muse_widget_parse(json, w)) {
+        return;
+    }
+    if (!muse_widget_add(w, s_turn.sid)) {
+        ESP_LOGW(TAG, "widget %s %s (%s): left out, the turn has its fill", w->name, w->id, from);
+        return;
+    }
+    ESP_LOGI(TAG, "widget %s %s (%s): %d item%s", w->name, w->id[0] ? w->id : "-", from, w->count,
+             w->count == 1 ? "" : "s");
+}
+
+/* A delta.presentation that isn't an image (img_present's): a widget, if it's the turn's. */
+static void widget_present(cJSON *payload)
+{
+    if (!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "kind")) ?: "image", "image")) {
+        return;
+    }
+    const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "session_id"));
+    if (!sid) {
+        sid = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(payload, "chat_context"), "chat_id"));
+    }
+    if (bg_chat(sid) || !img_ours(sid)) {
+        ESP_LOGI(TAG, "widget for chat %s: not this turn's", sid ?: "?");
+        return;
+    }
+    widget_take(payload, "presented");
+}
+
+/* A done message's widgets, and any presentations in it that aren't images. */
+static void widgets_of(cJSON *payload)
+{
+    cJSON *w;
+    cJSON_ArrayForEach(w, cJSON_GetObjectItem(payload, "widgets")) {
+        widget_take(w, "in the reply");
+    }
+    cJSON_ArrayForEach(w, cJSON_GetObjectItem(payload, "presentations")) {
+        if (strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(w, "kind")) ?: "image", "image") != 0) {
+            widget_take(w, "in the reply");
+        }
+    }
+}
+
 static void on_event(cJSON *line)
 {
     if (strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(line, "type")) ?: "", "event") != 0) {
@@ -2181,6 +2252,7 @@ static void on_event(cJSON *line)
     }
     if (!strcmp(event, "delta.presentation")) {
         img_present(payload);   /* the turn's, or one just after it */
+        widget_present(payload);
         return;
     }
     if (s_turn.phase != P_WAIT_REPLY) {
@@ -2258,6 +2330,7 @@ static void on_event(cJSON *line)
         if (done || !cJSON_IsFalse(ready)) {
             message_done(i, text);
         }
+        widgets_of(payload);
     }
 }
 
@@ -3159,6 +3232,22 @@ static void drop_connection(const char *why)
     muse_hatch_report(MUSE_HATCH_UNTESTED, "");
 }
 
+/* CMD_WIDGET (the bench's ">widget="): a sample widget, as if a reply in the picked chat had just brought it. */
+static void widget_bench(const char *json)
+{
+    cJSON *root = cJSON_Parse(json);
+    auto *w = static_cast<muse_widget_t *>(psram_alloc(sizeof(muse_widget_t)));
+    if (root && w && muse_widget_parse(root, w)) {
+        char sid[MUSE_CHAT_SID_MAX + 1];
+        muse_settings_chat_sid(sid);
+        muse_widget_clear();
+        muse_widget_add(w, sid);
+        ESP_LOGI(TAG, "widget %s %s (bench): %d item%s", w->name, w->id, w->count, w->count == 1 ? "" : "s");
+    }
+    heap_caps_free(w);
+    cJSON_Delete(root);
+}
+
 static void handle(const cmd_t &cmd)
 {
     switch (cmd.type) {
@@ -3215,6 +3304,10 @@ static void handle(const cmd_t &cmd)
     case CMD_TYPED:
         free(s_typed_next);
         s_typed_next = cmd.text;
+        break;
+    case CMD_WIDGET:
+        widget_bench(cmd.text);
+        free(cmd.text);
         break;
     }
 }
@@ -3351,6 +3444,7 @@ extern "C" void muse_hatch_start(void)
     }
     cJSON_Hooks hooks = { json_alloc, heap_caps_free };
     cJSON_InitHooks(&hooks);
+    muse_widget_init();
     /* Keep the command/event queues out of internal DRAM, which Wi-Fi, BLE and
      * mbedTLS can exhaust: when the allocation failed here hatch_task never
      * started and every turn was silently dropped. Fall back to internal RAM
@@ -3399,6 +3493,7 @@ extern "C" void muse_hatch_chat_forget(void)
 
 extern "C" void muse_chat_changed(void)
 {
+    muse_widget_clear();   /* another chat's widgets: not this one's to answer */
     s_chat_check = true;
     post(CMD_WAKE, 0);   /* a resting task looks now */
 }
@@ -3527,12 +3622,41 @@ extern "C" void muse_hatch_text_turn(char *text)
     }
 }
 
+extern "C" bool muse_hatch_typed_voice_to(const char *sid, const char *text)
+{
+    sid = sid ? sid : "*";
+    size_t n = strlen(sid) + 1 + strlen(text) + 1;
+    char *both = static_cast<char *>(psram_alloc(n));
+    if (!both) {
+        return false;
+    }
+    snprintf(both, n, "%s\n%s", sid, text);
+    cmd_t cmd{ CMD_TYPED, 0, both };
+    if (!s_cmds || xQueueSend(s_cmds, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        free(both);
+        return false;
+    }
+    return true;
+}
+
 extern "C" void muse_hatch_typed_voice(char *text)
 {
-    cmd_t cmd{ CMD_TYPED, 0, text };
-    if (!s_cmds || xQueueSend(s_cmds, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE) {
-        free(text);
+    muse_hatch_typed_voice_to(nullptr, text);
+    free(text);
+}
+
+extern "C" bool muse_hatch_widget_bench(const char *json)
+{
+    char *copy = json ? static_cast<char *>(psram_alloc(strlen(json) + 1)) : nullptr;
+    if (copy) {
+        strcpy(copy, json);
     }
+    cmd_t cmd{ CMD_WIDGET, 0, copy };
+    if (!copy || !s_cmds || xQueueSend(s_cmds, &cmd, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        free(copy);
+        return false;
+    }
+    return true;
 }
 
 extern "C" void muse_hatch_text_cancel(void)

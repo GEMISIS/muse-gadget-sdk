@@ -107,6 +107,34 @@ class MuseChatMdTest(unittest.TestCase):
         _, img = self.stream("![x](ftp://example.com/a.png)")
         self.assertEqual(img, ("", ""))
 
+    def test_widget_token_goes_and_never_shows_half(self):
+        token = "[[hatch_widget:widget-31f0904a-89f7-4071-a169-8006fd06d4fe]]"
+        steps, img = self.stream(f"What's it going to be tonight?\n\n{token}")
+        self.assertEqual(steps[-1][1].rstrip(), "What's it going to be tonight?")
+        self.assertEqual(img, ("", ""))
+        steps, _ = self.stream(f"Pick one {token} please.")
+        self.assertEqual(steps[-1], ("Pick one please.",) * 2)
+        steps, _ = self.stream(f"{token}\nThen this.")
+        self.assertEqual(steps[-1][1], "Then this.")
+        # Every split point: no part of it is ever shown, nor kept once it's whole.
+        for cut in range(1, len(token)):
+            steps, _ = self.stream("A ", token[:cut], token[cut:], " B")
+            for shown, _ in steps:
+                self.assertNotIn("[", shown, cut)
+            self.assertEqual(steps[-1], ("A B", "A B"), cut)
+        # With an image beside it.
+        steps, img = self.stream(f"Here {PANDA} and {token} done")
+        self.assertEqual(steps[-1][1], "Here and done")
+        self.assertEqual(img, (PANDA_FILE, "red panda"))
+
+    def test_brackets_that_are_not_a_token_stay(self):
+        for text in ["[[other]] stays", "a [link](https://x.io)", "[x] y", "[[hatch_widget:\nno"]:
+            steps, _ = self.stream(text)
+            self.assertEqual(steps[-1], (text, text))
+        # A '[' at the end waits for what follows it.
+        steps, _ = self.stream("Hi [", "x] there")
+        self.assertEqual([shown for shown, _ in steps], ["Hi ", "Hi [x] there"])
+
     def test_find_and_file(self):
         self.assertEqual(self.run_harness("find", f"ok {PANDA}").split("\x1f"),
                          [PANDA_FILE, "red panda", "-"])

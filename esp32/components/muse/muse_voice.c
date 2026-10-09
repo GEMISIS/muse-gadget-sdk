@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -41,7 +42,6 @@
 #include "muse_state.h"
 #include "muse_wifi.h"
 #if CONFIG_MUSE_TTS_PICO
-#include "esp_attr.h"
 #include "muse_tts.h"
 #endif
 
@@ -125,6 +125,22 @@ typedef struct {
     int64_t at_us;   /* when it was recorded */
     int tries;
 } held_note_t;
+
+/* An answer given on a reply's widget (muse_hatch_reply_text): "<chat>\n<words>",
+ * in PSRAM, for the loop to take; a reply playing stops for it. */
+#if CONFIG_MUSE_HATCH
+EXT_RAM_BSS_ATTR static char *s_answer;
+
+static bool answer_waiting(void)
+{
+    return __atomic_load_n(&s_answer, __ATOMIC_ACQUIRE) != NULL;
+}
+#else
+static bool answer_waiting(void)
+{
+    return false;
+}
+#endif
 
 static int s_held_count;
 static volatile bool s_waiting;        /* muse_voice_notes_waiting() */
@@ -500,6 +516,12 @@ static bool hatch_reply(bool *delivered)
             muse_state_set_level(0);
             return true;
         }
+        if (answer_waiting()) {
+            ESP_LOGI(TAG, "reply cut short: a widget was answered");
+            muse_hatch_turn_cancel();
+            muse_state_set_level(0);
+            return false;   /* the loop sends the answer next */
+        }
         size_t n = muse_hatch_turn_read(buf, MUSE_AUDIO_CHUNK, speaking || done ? 0 : 20);
         if (n) {
             if (!speaking) {
@@ -556,7 +578,7 @@ static void replay_captions(const char *text)
     muse_state_set_mode(MUSE_MODE_SPEAKING);   /* the reply's layout */
     for (int64_t now = t0; now < end_us; now = esp_timer_get_time()) {
         muse_input_event_t ev;
-        if (xQueuePeek(s_queue, &ev, 0) == pdTRUE) {
+        if (xQueuePeek(s_queue, &ev, 0) == pdTRUE || answer_waiting()) {
             break;
         }
         size_t at = (size_t)((now - t0) * MUSE_AUDIO_RATE / 1000000);
@@ -595,7 +617,7 @@ static void replay_reply(void)
     muse_state_set_mode(MUSE_MODE_SPEAKING);
     for (;;) {
         muse_input_event_t ev;
-        if (xQueuePeek(s_queue, &ev, 0) == pdTRUE) {
+        if (xQueuePeek(s_queue, &ev, 0) == pdTRUE || answer_waiting()) {
             break;
         }
         /* Half a second ahead before the first word, as in a turn. */
@@ -989,6 +1011,57 @@ static bool can_record(void)
     return true;
 }
 
+#if CONFIG_MUSE_HATCH
+bool muse_hatch_reply_text(const char *sid, const char *text)
+{
+    if (!text || !text[0] || !muse_hatch_ready()) {
+        return false;
+    }
+    sid = sid ? sid : "";
+    size_t n = strlen(sid) + 1 + strlen(text) + 1;
+    char *a = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!a) {
+        return false;
+    }
+    snprintf(a, n, "%s\n%s", sid, text);
+    free(__atomic_exchange_n(&s_answer, a, __ATOMIC_ACQ_REL));   /* a newer tap wins */
+    muse_state_poke();
+    muse_state_nudge();
+    return true;
+}
+
+/*
+ * The answer's turn: a talk press and release with the words typed in place
+ * of the mic's (muse_hatch_typed_voice_to), then the reply as after a note.
+ * True if a press cut the reply short.
+ */
+static bool answer_turn(void)
+{
+    char *a = __atomic_exchange_n(&s_answer, NULL, __ATOMIC_ACQ_REL);
+    char *words = a ? strchr(a, '\n') : NULL;
+    if (!words) {
+        free(a);
+        return false;
+    }
+    *words++ = '\0';
+    ESP_LOGI(TAG, "answering a widget: \"%s\"", words);
+    muse_wifi_power(MUSE_WIFI_FULL);
+    bool interrupted = false, delivered;
+    if (!muse_hatch_ready()) {
+        go_idle(not_ready_reason());
+    } else if (!muse_hatch_typed_voice_to(a, words)) {
+        go_idle("CAN'T REACH MUSE");
+    } else {
+        muse_hatch_turn_begin();
+        muse_hatch_turn_end();
+        earcon_play(MUSE_EARCON_STOP);   /* off it goes, as at a release */
+        interrupted = hatch_reply(&delivered);
+    }
+    free(a);
+    return interrupted;
+}
+#endif
+
 static void voice_task(void *arg)
 {
     bool pending_down = false;
@@ -1008,7 +1081,7 @@ static void voice_task(void *arg)
                 muse_wifi_power(MUSE_WIFI_FULL);
                 pending_down = send_held(asleep);
                 pre_reset();
-                if (!pending_down && !asleep && muse_state_mode(NULL) != MUSE_MODE_IDLE) {
+                if (!pending_down && !asleep && !answer_waiting() && muse_state_mode(NULL) != MUSE_MODE_IDLE) {
                     muse_state_make_happy();
                     go_idle("");
                 }
@@ -1060,6 +1133,17 @@ static void voice_task(void *arg)
                 pre_reset();
             }
 #endif
+#if CONFIG_MUSE_HATCH
+            if (answer_waiting()) {
+                pending_down = answer_turn();
+                pre_reset();
+                if (!pending_down && !answer_waiting() && muse_state_mode(NULL) != MUSE_MODE_IDLE) {
+                    muse_state_make_happy();
+                    go_idle("");
+                }
+                continue;
+            }
+#endif
             /* The 20 ms read paces this loop. */
             idle_capture();
             if (xQueueReceive(s_queue, &ev, 0) != pdTRUE) {
@@ -1107,7 +1191,7 @@ static void voice_task(void *arg)
         }
         pending_down = finish_note();
         pre_reset();
-        if (!pending_down && muse_state_mode(NULL) != MUSE_MODE_IDLE) {
+        if (!pending_down && !answer_waiting() && muse_state_mode(NULL) != MUSE_MODE_IDLE) {
             muse_state_make_happy();
             go_idle("");
         }

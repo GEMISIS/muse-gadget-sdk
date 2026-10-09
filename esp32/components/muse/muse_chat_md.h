@@ -24,6 +24,10 @@
  * pointed. A reply streams in pieces, so an image can be half here: the
  * caption stops short of it until the rest comes (muse_chat_shown_len).
  *
+ * A widget's token, `[[hatch_widget:widget-<uuid>]]`, where Muse puts one
+ * in a reply (muse_widget.h), goes the same way: the widget shows in its
+ * own sheet, and the token is never captioned or spoken.
+ *
  * Header-only, for both the session (C++) and the caption code (C), and
  * their host tests.
  */
@@ -140,12 +144,54 @@ static inline bool muse_chat_md_image_take(const char *p, const char *end, muse_
     return true;
 }
 
-/* How much of `text` to show: all of it, or up to an image still arriving at its end. */
+#define MUSE_CHAT_WIDGET_TOKEN "[[hatch_widget:"
+
+/*
+ * At p, a '[': where a whole widget token ends (past its "]]"), else NULL,
+ * with *partial set if the text ends inside what could still become one
+ * (a lone '[' at the end too). It doesn't span a line.
+ */
+static inline const char *muse_chat_widget_end(const char *p, bool *partial)
+{
+    static const char tok[] = MUSE_CHAT_WIDGET_TOKEN;
+    *partial = false;
+    size_t k = 0;
+    while (tok[k] && p[k] == tok[k]) {
+        k++;
+    }
+    if (tok[k]) {
+        *partial = !p[k];
+        return NULL;
+    }
+    const char *q = p + k;
+    while (*q && *q != '\n' && !(q[0] == ']' && q[1] == ']') && q - p < MUSE_CHAT_MD_PARTIAL_MAX) {
+        q++;
+    }
+    if (q[0] == ']' && q[1] == ']') {
+        return q + 2;
+    }
+    *partial = !*q && q - p < MUSE_CHAT_MD_PARTIAL_MAX;
+    return NULL;
+}
+
+/* How much of `text` to show: all of it, or up to an image or a widget's token still arriving at its end. */
 static inline size_t muse_chat_shown_len(const char *text)
 {
+    size_t shown = strlen(text);
     for (const char *p = strstr(text, "!["); p; p = strstr(p + 1, "![")) {
         bool partial;
         const char *end = muse_chat_md_image_end(p, &partial);
+        if (partial) {
+            shown = (size_t)(p - text);
+            break;
+        }
+        if (end) {
+            p = end - 1;
+        }
+    }
+    for (const char *p = strchr(text, '['); p && (size_t)(p - text) < shown; p = strchr(p + 1, '[')) {
+        bool partial;
+        const char *end = muse_chat_widget_end(p, &partial);
         if (partial) {
             return (size_t)(p - text);
         }
@@ -153,7 +199,7 @@ static inline size_t muse_chat_shown_len(const char *text)
             p = end - 1;
         }
     }
-    return strlen(text);
+    return shown;
 }
 
 /* The first whole image in `text` whose target is a workspace file, in *img. */
@@ -170,7 +216,7 @@ static inline bool muse_chat_first_image(const char *text, muse_chat_image_t *im
 }
 
 /*
- * Takes the whole images out of `text`, in place, with the doubled space or
+ * Takes the whole images (and widget tokens) out of `text`, in place, with the doubled space or
  * the empty line each leaves. An image's gap can come in a later piece than
  * the image, so no run of spaces (past an indent) or of blank lines is left
  * anywhere, which captions and speech don't show anyway. The first image
@@ -184,8 +230,12 @@ static inline size_t muse_chat_strip_images(char *text, muse_chat_image_t *first
     while (*p) {
         bool partial = false;
         const char *end = p[0] == '!' && p[1] == '[' ? muse_chat_md_image_end(p, &partial) : NULL;
+        bool image = end != NULL;
+        if (!end && p[0] == '[' && p[1] == '[') {
+            end = muse_chat_widget_end(p, &partial);   /* a widget's token: its sheet shows it */
+        }
         if (end) {
-            if (first && !first->path[0]) {
+            if (image && first && !first->path[0]) {
                 muse_chat_md_image_take(p, end, first);
             }
             bool line_start = o == text || o[-1] == '\n';
