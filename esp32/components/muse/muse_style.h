@@ -18,9 +18,10 @@
  * One look for the screens and the cards over them: the palette, the type
  * for each role, the sizes of rows, buttons and cards, and the few widgets
  * more than one screen builds (a row, a button, the "?" button, a card on a
- * dimmed backdrop, a scrolling column). The settings pages, the Chats screen,
- * the dialogs, the power menu and the face's overlays all take them from
- * here, so they can't drift apart. All of it runs in the LVGL task.
+ * dimmed backdrop, a scrolling column), and how anything tapped answers: it
+ * gives, lights and clicks (muse_style_pressable). The settings pages, the
+ * Chats screen, the dialogs, the power menu and the face's overlays all take
+ * them from here, so they can't drift apart. All of it runs in the LVGL task.
  */
 #pragma once
 
@@ -42,6 +43,7 @@ extern "C" {
 #define MUSE_COLOR_CARD 0x1a1530             /* a row on black, a card's own colour */
 #define MUSE_COLOR_CARD_PRESSED 0x2e2552     /* that pressed; a row on a card */
 #define MUSE_COLOR_RAISED_PRESSED 0x3d3270   /* a row on a card, pressed */
+#define MUSE_COLOR_KEY_LIT 0x6a55b8          /* a key, pressed: lit, fading as it's let go */
 #define MUSE_COLOR_OK 0x6ff0bf               /* connected, working */
 #define MUSE_COLOR_WARN 0xffb45c             /* needs a look; On-the-go */
 #define MUSE_COLOR_DANGER 0xff5c5c           /* can't be undone */
@@ -100,6 +102,43 @@ extern "C" {
 #endif
 #define MUSE_TICK_W 24   /* a tick's room on a row's right, kept whether or not it shows */
 
+/* ---------- pressing ---------- */
+
+/*
+ * Anything tapped answers the moment it's touched, the same way by its size,
+ * and springs back when let go:
+ *
+ *   ROW     a full-width row or button: its colour deepens and it gives a
+ *           few px (too big to scale every frame for so little)
+ *   BUTTON  a smaller button, a pill, a switch: shrinks to 96% about its
+ *           centre, springing back with a little overshoot
+ *   KEY     a key or a small round button: shrinks to 94% and lights up
+ *           (MUSE_COLOR_KEY_LIT where it's filled), a ring round it that
+ *           widens and fades as it's let go
+ *
+ * and clicks (muse_style_click): on the touch for a button or key, on the
+ * tap for a row, which might be the start of a scroll. `primary` gives the
+ * lower click of the choice that goes ahead (Send, Done, OK).
+ */
+typedef enum {
+    MUSE_PRESS_ROW,
+    MUSE_PRESS_BUTTON,
+    MUSE_PRESS_KEY,
+} muse_press_kind_t;
+
+/* Gives `obj` the press of its kind, and the click. Call it after the obj's
+ * own styles are set (it keeps their pressed colours); once per obj. */
+void muse_style_pressable(lv_obj_t *obj, muse_press_kind_t kind, bool primary);
+
+/* A button matrix's (a keyboard's) keys: lit while pressed, and a click on
+ * each touch of one; the CUSTOM_1 key (return, Done) the primary click. */
+void muse_style_pressable_keys(lv_obj_t *matrix);
+
+/* The click alone, for a tap that isn't on a button (a pat of Muse, a tap
+ * to put a picture away). Muted with the speaker or Touch sounds off, and
+ * skipped while Muse listens or speaks (muse_voice_earcon); never waits. */
+void muse_style_click(bool primary);
+
 /* ---------- widgets ---------- */
 
 typedef enum {
@@ -116,13 +155,14 @@ lv_obj_t *muse_style_title(lv_obj_t *parent, const char *text);
 
 /*
  * A row, full width and MUSE_ROW_H tall, laid out left to right and centred
- * up and down: a button if `clickable`. On a card (`on_card`) it's a shade
- * lighter, so it shows.
+ * up and down: a button if `clickable` (MUSE_PRESS_ROW). On a card
+ * (`on_card`) it's a shade lighter, so it shows.
  */
 lv_obj_t *muse_style_row(lv_obj_t *parent, bool clickable, bool on_card);
 
 /* A full-width button `h` tall with `text` in `font`, centred, ending in
- * "..." if it's too long; the label is its first child. */
+ * "..." if it's too long; the label is its first child. MUSE_PRESS_ROW, as
+ * it's as wide as one; ACCENT's click the primary one. */
 lv_obj_t *muse_style_button(lv_obj_t *parent, const char *text, muse_button_kind_t kind, const lv_font_t *font,
                             int h);
 

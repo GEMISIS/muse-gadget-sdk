@@ -124,6 +124,7 @@ static void on_chat(lv_event_t *e)
         return;
     }
     if (code == LV_EVENT_LONG_PRESSED && s_items[i].kind == MUSE_CHAT_NAMED) {
+        muse_style_click(false);   /* held long enough: the tap a hold makes */
         open_forget(i);
         return;
     }

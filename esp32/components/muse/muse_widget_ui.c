@@ -133,7 +133,6 @@ EXT_RAM_BSS_ATTR static int32_t s_drag;               /* the header dragged down
 EXT_RAM_BSS_ATTR static int32_t s_chip_dx;            /* the chip dragged sideways this far */
 EXT_RAM_BSS_ATTR static bool s_chip_dragged;
 EXT_RAM_BSS_ATTR static char s_sent[MUSE_WIDGET_ROW_TITLE];
-EXT_RAM_BSS_ATTR static lv_style_transition_dsc_t s_press_tr;
 EXT_RAM_BSS_ATTR static uint32_t s_caption_ver;      /* the caption the chip last saw, */
 EXT_RAM_BSS_ATTR static float s_caption_at;          /* and when it was new (0: never) */
 EXT_RAM_BSS_ATTR static uint32_t s_checked[MUSE_WIDGET_MAX];   /* a multi-select's ticks, by row */
@@ -177,14 +176,6 @@ static lv_obj_t *box(lv_obj_t *parent)
 }
 
 /* Pressed, a thing gives a little, as the settings' rows darken: both. */
-static void press_look(lv_obj_t *o)
-{
-    lv_obj_set_style_transform_width(o, -3, LV_STATE_PRESSED);
-    lv_obj_set_style_transform_height(o, -2, LV_STATE_PRESSED);
-    lv_obj_set_style_transition(o, &s_press_tr, 0);
-    lv_obj_set_style_transition(o, &s_press_tr, LV_STATE_PRESSED);
-}
-
 static void fade_opa(void *o, int32_t v)
 {
     lv_obj_set_style_opa(o, (lv_opa_t)v, 0);
@@ -243,9 +234,9 @@ static lv_obj_t *round_button(lv_obj_t *parent, int d, const char *sym, lv_event
     lv_obj_set_style_radius(x, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_opa(x, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(x, lv_color_hex(MUSE_COLOR_CARD_PRESSED), 0);
-    lv_obj_set_style_bg_color(x, lv_color_hex(MUSE_COLOR_RAISED_PRESSED), LV_STATE_PRESSED);
     lv_obj_remove_flag(x, LV_OBJ_FLAG_SCROLLABLE);
-    press_look(x);
+    muse_style_pressable(x, MUSE_PRESS_KEY, false);
+    lv_obj_add_flag(parent, LV_OBJ_FLAG_OVERFLOW_VISIBLE);   /* its ring, let go, past the row's end */
     lv_obj_center(muse_style_label(x, d < 32 ? FONT_SMALL : MUSE_FONT_NOTE, MUSE_COLOR_DIM, sym));
     lv_obj_add_event_cb(x, cb, LV_EVENT_CLICKED, NULL);
     return x;
@@ -260,8 +251,7 @@ static lv_obj_t *pill(lv_obj_t *parent, const char *label, bool primary, lv_even
     lv_obj_set_style_bg_color(b, lv_color_hex(MUSE_COLOR_CARD_PRESSED), LV_STATE_DISABLED);
     lv_obj_set_style_border_opa(b, LV_OPA_TRANSP, LV_STATE_DISABLED);
     lv_obj_set_style_text_color(lv_obj_get_child(b, 0), lv_color_hex(MUSE_COLOR_DIM), LV_STATE_DISABLED);
-    press_look(b);
-    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, user);
+    lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, user);   /* pressed as a row (muse_style_button) */
     return b;
 }
 
@@ -707,7 +697,7 @@ static void row_button(lv_obj_t *row, const char *label, int at, lv_event_cb_t c
     lv_obj_set_style_bg_color(b, lv_color_hex(MUSE_COLOR_ACCENT_PRESSED), LV_STATE_PRESSED);
     lv_obj_set_ext_click_area(b, 8);
     lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE);
-    press_look(b);
+    muse_style_pressable(b, MUSE_PRESS_BUTTON, true);
     lv_obj_center(muse_style_label(b, MUSE_FONT_NOTE, MUSE_COLOR_CARD, label));
     lv_obj_add_event_cb(b, cb, LV_EVENT_CLICKED, (void *)(intptr_t)at);
 }
@@ -755,8 +745,7 @@ static lv_obj_t *add_row(lv_obj_t *col, const muse_widget_t *w, int wi, int ri, 
         lv_obj_set_style_outline_color(row, lv_color_hex(MUSE_COLOR_ACCENT), 0);
     }
     if (tap) {
-        press_look(row);
-        lv_obj_add_event_cb(row, on_row, LV_EVENT_CLICKED, (void *)(intptr_t)at);
+        lv_obj_add_event_cb(row, on_row, LV_EVENT_CLICKED, (void *)(intptr_t)at);   /* pressed as a row */
     }
     leading(row, r, w->filled, ticked, number);
     row_words(row, r, r->type == MUSE_WIDGET_ROW_FIELD && ri < FIELDS_MAX ? s_values[wi][ri] : NULL);
@@ -773,7 +762,7 @@ static lv_obj_t *add_row(lv_obj_t *col, const muse_widget_t *w, int wi, int ri, 
 
 /* ---- Options as pills ---- */
 
-/* "dotted_lines": dots round the pill, inside its edge, as it's drawn (pressed, smaller). */
+/* "dotted_lines": dots round the pill, inside its edge, as it's drawn (pressed, they shrink with it). */
 static void on_dots(lv_event_t *e)
 {
     lv_obj_t *o = lv_event_get_target_obj(e);
@@ -857,7 +846,7 @@ static void add_pills(lv_obj_t *col, const muse_widget_t *w, int wi)
         lv_obj_set_style_bg_color(b, lv_color_hex(w->filled ? MUSE_COLOR_ACCENT_PRESSED : MUSE_COLOR_RAISED_PRESSED),
                                   LV_STATE_PRESSED);
         lv_obj_remove_flag(b, LV_OBJ_FLAG_SCROLLABLE);
-        press_look(b);
+        muse_style_pressable(b, MUSE_PRESS_BUTTON, false);
         if (!w->filled) {
             lv_obj_add_event_cb(b, on_dots, LV_EVENT_DRAW_MAIN_END, NULL);
         }
@@ -1815,9 +1804,6 @@ void muse_widget_ui_build(lv_obj_t *face, int w, int h, int top)
     s_detail = s_typing = NONE;
     s_set = heap_caps_calloc(1, sizeof(*s_set), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_browse = heap_caps_calloc(1, sizeof(*s_browse), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    static const lv_style_prop_t PRESS[] = { LV_STYLE_TRANSFORM_WIDTH, LV_STYLE_TRANSFORM_HEIGHT, 0 };
-    lv_style_transition_dsc_init(&s_press_tr, PRESS, lv_anim_path_ease_out, 90, 0, NULL);
-
     s_chip = lv_obj_create(face);
     lv_obj_remove_style_all(s_chip);
     lv_obj_set_size(s_chip, LV_SIZE_CONTENT, CHIP_H);
@@ -1835,7 +1821,7 @@ void muse_widget_ui_build(lv_obj_t *face, int w, int h, int top)
     lv_obj_set_flex_align(s_chip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_remove_flag(s_chip, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_obj_add_flag(s_chip, LV_OBJ_FLAG_CLICKABLE);
-    press_look(s_chip);
+    muse_style_pressable(s_chip, MUSE_PRESS_BUTTON, false);
     s_chip_icon = muse_style_label(s_chip, MUSE_FONT_NOTE, MUSE_COLOR_ACCENT, "");
     s_chip_lbl = muse_style_label(s_chip, &lv_font_unscii_16, COLOR_CHIP_TEXT, "");
     lv_obj_set_style_max_width(s_chip_lbl, CHIP_TEXT_W, 0);

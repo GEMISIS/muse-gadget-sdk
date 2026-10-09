@@ -25,7 +25,10 @@
  * The keys are one button matrix, laid out like a phone's: letters (a
  * capital first, then small), and numbers and symbols. The return key is
  * drawn in the accent colour (a draw task's colours, as a matrix can't style
- * one key), dim until there's something to send.
+ * one key), dim until there's something to send. A letter or symbol pressed
+ * rises over the finger, bigger, as a phone's does (the matrix's popover),
+ * and goes in when it's let go; every key lights and clicks as it's touched
+ * (muse_style_pressable_keys).
  */
 #include "muse_widget_keys.h"
 
@@ -46,7 +49,13 @@
 #define CLOSE_MS 200
 #define COLOR_KEY 0x2e2552        /* MUSE_COLOR_CARD_PRESSED: a key */
 #define COLOR_KEY_SPECIAL 0x221c3e   /* shift, delete, 123: a shade darker */
-#define COLOR_KEY_PRESSED 0x4a3d85
+
+#if LV_FONT_MONTSERRAT_28
+#define FONT_POPOVER (&lv_font_montserrat_28)   /* a pressed key's letter, over it */
+#else
+#define FONT_POPOVER (&lv_font_montserrat_20)
+#endif
+#define RET_W_MAX 96   /* the return key's name, bigger, fits it */
 
 #define SHIFT LV_SYMBOL_UP
 #define DEL LV_SYMBOL_BACKSPACE
@@ -73,19 +82,21 @@ static const char *const NUMBERS[] = {
 };
 
 #define K(w) (LV_BUTTONMATRIX_CTRL_WIDTH_##w | LV_BUTTONMATRIX_CTRL_NO_REPEAT)
+#define C(w) (K(w) | LV_BUTTONMATRIX_CTRL_POPOVER)   /* a character: it pops up */
 #define SPECIAL(w) (K(w) | LV_BUTTONMATRIX_CTRL_CHECKED)
+#define RET(w) (SPECIAL(w) | LV_BUTTONMATRIX_CTRL_CUSTOM_1)   /* the primary click */
 #define GAP (LV_BUTTONMATRIX_CTRL_WIDTH_1 | LV_BUTTONMATRIX_CTRL_HIDDEN)
 static const lv_buttonmatrix_ctrl_t LETTERS_CTRL[] = {
-    K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2),
-    GAP, K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2), GAP,
-    SPECIAL(3), K(2), K(2), K(2), K(2), K(2), K(2), K(2), SPECIAL(3) & ~LV_BUTTONMATRIX_CTRL_NO_REPEAT,
-    SPECIAL(3), K(2), K(8), K(2), SPECIAL(5),
+    C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2),
+    GAP, C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2), GAP,
+    SPECIAL(3), C(2), C(2), C(2), C(2), C(2), C(2), C(2), SPECIAL(3) & ~LV_BUTTONMATRIX_CTRL_NO_REPEAT,
+    SPECIAL(3), C(2), K(8), C(2), RET(5),
 };
 static const lv_buttonmatrix_ctrl_t NUMBERS_CTRL[] = {
-    K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2),
-    K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2),
-    K(2), K(2), K(2), K(2), K(2), K(2), K(2), K(2), SPECIAL(4) & ~LV_BUTTONMATRIX_CTRL_NO_REPEAT,
-    SPECIAL(3), K(2), K(8), K(2), SPECIAL(5),
+    C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2),
+    C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2),
+    C(2), C(2), C(2), C(2), C(2), C(2), C(2), C(2), SPECIAL(4) & ~LV_BUTTONMATRIX_CTRL_NO_REPEAT,
+    SPECIAL(3), C(2), K(8), C(2), RET(5),
 };
 #define RET_ID (k.layout == KEYS_NUMBERS ? 33 : 34)   /* the return key's index */
 
@@ -276,10 +287,15 @@ static lv_obj_t *build_keys(lv_obj_t *root)
     lv_obj_set_style_bg_opa(kb, LV_OPA_COVER, LV_PART_ITEMS);
     lv_obj_set_style_bg_color(kb, lv_color_hex(COLOR_KEY), LV_PART_ITEMS);
     lv_obj_set_style_bg_color(kb, lv_color_hex(COLOR_KEY_SPECIAL), LV_PART_ITEMS | LV_STATE_CHECKED);
-    lv_obj_set_style_bg_color(kb, lv_color_hex(COLOR_KEY_PRESSED), LV_PART_ITEMS | LV_STATE_PRESSED);
-    lv_obj_set_style_bg_color(kb, lv_color_hex(COLOR_KEY_PRESSED), LV_PART_ITEMS | LV_STATE_CHECKED | LV_STATE_PRESSED);
     lv_obj_set_style_text_color(kb, lv_color_hex(MUSE_COLOR_TEXT), LV_PART_ITEMS);
     lv_obj_set_style_text_font(kb, &lv_font_montserrat_20, LV_PART_ITEMS);
+    /* Pressed, a key's words are bigger: a letter's in its popover, but a return key's name too. */
+    lv_point_t ret;
+    lv_text_get_size(&ret, s_ret, FONT_POPOVER, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    if (ret.x <= RET_W_MAX) {
+        lv_obj_set_style_text_font(kb, FONT_POPOVER, LV_PART_ITEMS | LV_STATE_PRESSED);
+    }
+    muse_style_pressable_keys(kb);
     lv_obj_set_style_shadow_width(kb, 0, LV_PART_ITEMS);
     lv_obj_set_style_border_width(kb, 0, LV_PART_ITEMS);
     lv_obj_add_flag(kb, LV_OBJ_FLAG_SEND_DRAW_TASK_EVENTS);
@@ -318,6 +334,7 @@ void muse_widget_keys_open(lv_obj_t *parent, const char *prompt, const char *pla
     lv_obj_set_ext_click_area(cancel, 8);
     lv_obj_center(muse_style_label(cancel, MUSE_FONT_BUTTON, MUSE_COLOR_ACCENT, "Cancel"));
     lv_obj_set_style_text_opa(cancel, LV_OPA_60, LV_STATE_PRESSED);
+    muse_style_pressable(cancel, MUSE_PRESS_BUTTON, false);
     lv_obj_align(cancel, LV_ALIGN_TOP_LEFT, PAD - 8, 16);
     lv_obj_add_event_cb(cancel, on_cancel, LV_EVENT_CLICKED, NULL);
 
@@ -336,6 +353,7 @@ void muse_widget_keys_open(lv_obj_t *parent, const char *prompt, const char *pla
     lv_obj_center(k.send_lbl);
     lv_obj_align(k.send, LV_ALIGN_TOP_RIGHT, -PAD, 20);
     lv_obj_add_state(k.send, LV_STATE_DISABLED);
+    muse_style_pressable(k.send, MUSE_PRESS_BUTTON, true);
     lv_obj_add_event_cb(k.send, on_send, LV_EVENT_CLICKED, NULL);
 
     /* The question over the field, as tall as they need. */

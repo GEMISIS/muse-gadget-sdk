@@ -23,7 +23,6 @@
 
 #define COLOR_TEXT MUSE_COLOR_TEXT
 #define COLOR_CARD MUSE_COLOR_CARD
-#define COLOR_CARD_PRESSED MUSE_COLOR_CARD_PRESSED
 #define COLOR_ACCENT MUSE_COLOR_ACCENT
 
 #define TAP_MS 1000    /* a second tap on the same key within this steps to its next character */
@@ -275,8 +274,8 @@ lv_obj_t *muse_keypad_create(lv_obj_t *parent, lv_obj_t *ta, bool round)
     lv_obj_set_style_text_color(s_kp, lv_color_hex(COLOR_TEXT), LV_PART_ITEMS);
     lv_obj_set_style_bg_opa(s_kp, LV_OPA_COVER, LV_PART_ITEMS);
     lv_obj_set_style_bg_color(s_kp, lv_color_hex(COLOR_CARD), LV_PART_ITEMS);
-    lv_obj_set_style_bg_color(s_kp, lv_color_hex(COLOR_CARD_PRESSED), LV_PART_ITEMS | LV_STATE_PRESSED);
     lv_obj_set_style_bg_color(s_kp, lv_color_hex(COLOR_ACCENT), LV_PART_ITEMS | LV_STATE_CHECKED);
+    muse_style_pressable_keys(s_kp);   /* lit and a click as each is touched */
     lv_obj_set_style_radius(s_kp, 12, LV_PART_ITEMS);
     /* A swipe across the keys is sloppy typing, not "back": it would lose the text. */
     lv_obj_remove_flag(s_kp, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -305,7 +304,7 @@ void muse_keypad_reset(lv_obj_t *kp, bool password)
             set_ctrl(k, tap, true);
         }
     }
-    set_ctrl(KEY_DONE, LV_BUTTONMATRIX_CTRL_CHECKED, true);
+    set_ctrl(KEY_DONE, LV_BUTTONMATRIX_CTRL_CHECKED | LV_BUTTONMATRIX_CTRL_CUSTOM_1, true);   /* the primary click */
     /* Without a password the gap where Show was keeps Done apart from the mode key. */
     set_ctrl(KEY_SHOW, LV_BUTTONMATRIX_CTRL_HIDDEN, !password);
     /* Round, Done is no wider than the mode key, so both stay in from the edge. */

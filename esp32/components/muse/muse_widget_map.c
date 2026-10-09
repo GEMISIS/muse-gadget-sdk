@@ -502,6 +502,7 @@ static lv_obj_t *pin(lv_obj_t *map, int x, int y, int number, int row, bool sele
     snprintf(n, sizeof(n), "%d", number);
     lv_obj_center(muse_style_label(p, selected ? MUSE_FONT_NOTE : &lv_font_montserrat_14, MUSE_COLOR_CARD, n));
     lv_obj_add_event_cb(p, on_pin, LV_EVENT_CLICKED, (void *)(intptr_t)row);
+    muse_style_pressable(p, MUSE_PRESS_KEY, false);
     return p;
 }
 
