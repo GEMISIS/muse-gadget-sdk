@@ -224,6 +224,15 @@ int muse_wifi_scan_results(muse_wifi_ap_t *out, int max, uint32_t *gen)
     return 0;
 }
 
+int muse_wifi_bssids(muse_wifi_bssid_t *out, int max, uint32_t *gen)
+{
+    if (s_ops && s_ops->wifi_bssids) {
+        return s_ops->wifi_bssids(out, max, gen);
+    }
+    *gen = 0;
+    return 0;
+}
+
 int muse_wifi_saved(muse_wifi_saved_t *out, int max)
 {
     return s_ops && s_ops->wifi_saved ? s_ops->wifi_saved(out, max) : 0;

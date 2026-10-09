@@ -49,7 +49,8 @@ if(CONFIG_MUSE_ENABLED)
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
         list(APPEND srcs "muse_present.c")   # images in replies, held up on the face
-        list(APPEND srcs "muse_widget.c")   # widgets in replies (options, lists...)
+        list(APPEND srcs "muse_widget.c" "muse_widget_html.c")   # widgets in replies (options, lists, forms...)
+        list(APPEND srcs "muse_browse.c")   # Muse's browser at work in a turn
         if(CONFIG_MUSE_PRESENT_FORMATS)
             list(APPEND srcs "muse_image.c")   # their PNG and WebP
         endif()
@@ -80,7 +81,11 @@ if(CONFIG_MUSE_ENABLED)
     elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_216)
         list(APPEND srcs "boards/board_waveshare_s3_216.c" "boards/muse_lcd_bands.c")
         if(CONFIG_MUSE_HATCH)
-            list(APPEND srcs "muse_widget_ui.c")   # their sheet on the face
+            list(APPEND srcs "muse_widget_ui.c" "muse_widget_keys.c")   # their sheet on the face, its keyboard
+            list(APPEND srcs "muse_widget_map.c" "muse_map.c")   # a map's tiles and pins
+            if(CONFIG_MUSE_GADGET_EXTRAS)
+                list(APPEND srcs "muse_where.c")   # where the gadget is, for a map
+            endif()
         endif()
         if(CONFIG_MUSE_GADGET_EXTRAS)
             # microSD, RTC, IMU and the face's corner readouts (Kconfig.gadget)
@@ -139,7 +144,7 @@ elseif(CONFIG_HOMEHUB_VOICE)
     # The Voice PE board uses just the Hatch voice session; the project's main/
     # voice_muse_chat.c stands in for the Muse settings, Wi-Fi and Link hooks.
     list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_chat_text.c" "muse_text.c"
-                     "muse_widget.c")
+                     "muse_widget.c" "muse_widget_html.c" "muse_browse.c")
     list(APPEND embed "test_reply.mp3")
 endif()
 
@@ -149,7 +154,8 @@ set(muse_priv_requires
     noise_core minimp3 picotts
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
     esp_driver_pcnt
-    fatfs sdmmc esp_driver_sdmmc esp_netif lwip)   # the 2.16's extras: microSD, SNTP
+    fatfs sdmmc esp_driver_sdmmc esp_netif lwip   # the 2.16's extras: microSD, SNTP
+    product_info)   # the region, for a map's miles or km
 list(APPEND muse_priv_requires camera)
 # A reply's WebP images (muse_image.c): libwebp builds nothing unless
 # CONFIG_MUSE_PRESENT_FORMATS, and requirements can't wait on the config.

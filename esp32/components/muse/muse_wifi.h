@@ -78,6 +78,16 @@ bool muse_wifi_scanning(void);
 /* Copies the latest results (strongest first); *gen changes when they do. */
 int muse_wifi_scan_results(muse_wifi_ap_t *out, int max, uint32_t *gen);
 
+/* The last scan's access points, one per BSSID, strongest first, for finding
+ * where the gadget is (muse_where.h): hidden, locally administered and
+ * "_nomap" ones left out. Returns the count; *gen changes with each scan. */
+typedef struct {
+    uint8_t mac[6];
+    int8_t rssi;
+    uint8_t channel;
+} muse_wifi_bssid_t;
+int muse_wifi_bssids(muse_wifi_bssid_t *out, int max, uint32_t *gen);
+
 /* Saved networks, most recently joined first. Returns the count. */
 int muse_wifi_saved(muse_wifi_saved_t *out, int max);
 /* Forgets one saved network, disconnecting first if it's the one in use. */

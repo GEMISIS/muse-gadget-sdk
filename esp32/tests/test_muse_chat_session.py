@@ -100,6 +100,7 @@ void test_set_mode(int mode) { s_mode = mode; }
 #include "muse_chat_priv.h"
 #include "muse_present.h"
 #include "muse_widget.h"
+#include "muse_browse.h"
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGW(tag, ...) ((void)snprintf(nullptr, 0, __VA_ARGS__))
 #define EXT_RAM_BSS_ATTR
@@ -216,6 +217,10 @@ static int widget_clears, widget_adds;
 static muse_widget_t widget_last;
 static char widget_sid[64];
 extern "C" void muse_widget_clear(void) { widget_clears++; }
+/* Muse's browser (muse_browse.h): new turns, and the browser_task updates handed on. */
+static int browse_turns, browse_updates;
+extern "C" void muse_browse_turn(void) { browse_turns++; }
+extern "C" void muse_browse_update(const cJSON *) { browse_updates++; }
 extern "C" bool muse_widget_add(const muse_widget_t *w, const char *sid) {
     widget_adds++;
     widget_last = *w;
@@ -1038,12 +1043,15 @@ int main(int argc, char **argv) {
         flags = ['-Wall', '-Wextra', '-Werror', '-I', str(JSON),
                  '-I', str(ROOT / 'tests'), '-I', str(ROOT / 'components/muse'),
                  '-I', str(ROOT / 'components/minimp3/include')]
-        objects = [str(out / 'cjson.o'), str(out / 'mode.o'), str(out / 'widget.o'), str(out / 'text.o')]
+        objects = [str(out / 'cjson.o'), str(out / 'mode.o'), str(out / 'widget.o'), str(out / 'html.o'),
+                   str(out / 'text.o')]
         commands = [
             [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
              '-c', str(JSON / 'cJSON.c'), '-o', str(out / 'cjson.o')],
             [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
              '-c', str(ROOT / 'components/muse/muse_widget.c'), '-o', str(out / 'widget.o')],
+            [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
+             '-c', str(ROOT / 'components/muse/muse_widget_html.c'), '-o', str(out / 'html.o')],
             [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
              '-c', str(ROOT / 'components/muse/muse_text.c'), '-o', str(out / 'text.o')],
             [*shlex.split(os.environ.get('CC', 'cc')), '-std=gnu11', *flags,

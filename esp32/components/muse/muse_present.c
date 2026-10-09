@@ -63,7 +63,7 @@ static const char *TAG = "muse_present";
 #define TEST_BYTES 900                  /* and a JPEG this small too: a 96 px preview is ~1.5 KB */
 #define WEB_BUFFER 16384                /* esp_http_client's receive buffer (PSRAM: over the 4 KB internal limit) */
 #define TASK_PRIORITY 3                 /* under the UI (5), the chat session (5) and draw_url's (4) */
-#define JOBS 3                          /* the one being shown, the next, and a nudge to ask */
+#define JOBS 6                          /* the one being shown, the next, a nudge to ask, and others' calls */
 #define JPEG_POOL_BYTES 3100            /* the ROM decoder's work pool, as its documentation asks */
 #define DECODED_MAX (3 * 1024 * 1024)   /* RGB565 out of the decoder, before resizing */
 #define LABEL_MAX 48
@@ -80,6 +80,8 @@ typedef struct {
     size_t len;
     char label[LABEL_MAX];
     bool sharper;   /* a bigger copy of the image already shown this turn (after its preview) */
+    void (*call)(void *arg);   /* muse_present_call's, instead of an image */
+    void *arg;
 } job_t;
 
 static QueueHandle_t s_jobs;   /* job_t *, or NULL to look at the asking */
@@ -719,7 +721,10 @@ static void present_task(void *arg)
     for (;;) {
         job_t *job = NULL;
         TickType_t wait = ask_pending() ? pdMS_TO_TICKS(ASK_POLL_MS) : portMAX_DELAY;
-        if (xQueueReceive(s_jobs, &job, wait) == pdTRUE && job) {
+        if (xQueueReceive(s_jobs, &job, wait) == pdTRUE && job && job->call) {
+            job->call(job->arg);   /* someone else's: a map's tiles, where we are */
+            heap_caps_free(job);
+        } else if (job) {
             int64_t t0 = esp_timer_get_time();
             if (run(job)) {
                 atomic_fetch_add(&s_seq, 1);   /* the face has it */
@@ -823,6 +828,155 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
         return false;
     }
     return true;
+}
+
+bool muse_present_call(void (*fn)(void *arg), void *arg)
+{
+    job_t *job = heap_caps_calloc(1, sizeof(*job), MUSE_BIG_CAPS);
+    if (!job) {
+        return false;
+    }
+    job->call = fn;
+    job->arg = arg;
+    if (!start() || xQueueSend(s_jobs, &job, 0) != pdTRUE) {
+        heap_caps_free(job);
+        return false;
+    }
+    return true;
+}
+
+typedef struct {
+    uint8_t *buf;
+    size_t len, cap, max;
+    bool too_big;
+} got_t;
+
+static esp_err_t got_event(esp_http_client_event_t *ev)
+{
+    got_t *g = ev->user_data;
+    if (ev->event_id != HTTP_EVENT_ON_DATA || g->too_big) {
+        return ESP_OK;
+    }
+    int status = esp_http_client_get_status_code(ev->client);
+    if (status >= 300 && status < 400) {
+        return ESP_OK;   /* a redirect's body */
+    }
+    if (g->len + ev->data_len > g->cap) {
+        size_t cap = g->cap ? g->cap * 2 : 16 * 1024;
+        while (cap < g->len + ev->data_len) {
+            cap *= 2;
+        }
+        cap = cap > g->max ? g->max : cap;
+        uint8_t *grown = g->len + ev->data_len <= cap ? heap_caps_realloc(g->buf, cap + 1, MUSE_BIG_CAPS) : NULL;
+        if (!grown) {
+            g->too_big = true;
+            return ESP_OK;
+        }
+        g->buf = grown;
+        g->cap = cap;
+    }
+    memcpy(g->buf + g->len, ev->data, ev->data_len);
+    g->len += ev->data_len;
+    g->buf[g->len] = 0;   /* text ends there */
+    return ESP_OK;
+}
+
+uint8_t *muse_present_fetch(const char *url, const char *body, size_t max, size_t *len, int *status)
+{
+    int64_t t0 = esp_timer_get_time();
+    got_t g = { .max = max };
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = body ? HTTP_METHOD_POST : HTTP_METHOD_GET,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = WEB_TIMEOUT_MS,
+        .buffer_size = WEB_BUFFER,
+        .buffer_size_tx = 1024,
+        .max_redirection_count = 3,
+        .event_handler = got_event,
+        .user_data = &g,
+        .user_agent = "MuseGadget/1.0 (+https://muse.ai)",
+    };
+    *len = 0;
+    *status = 0;
+    esp_http_client_handle_t http = esp_http_client_init(&cfg);
+    if (!http) {
+        return NULL;
+    }
+    if (body) {
+        esp_http_client_set_header(http, "Content-Type", "application/json");
+        esp_http_client_set_post_field(http, body, (int)strlen(body));
+    }
+    esp_err_t err = esp_http_client_perform(http);
+    *status = esp_http_client_get_status_code(http);
+    esp_http_client_cleanup(http);
+    if (err != ESP_OK || g.too_big || !g.len) {
+        ESP_LOGW(TAG, "%.48s...: %s, HTTP %d, %u bytes%s in %d ms", url, esp_err_to_name(err), *status,
+                 (unsigned)g.len, g.too_big ? " (too big)" : "", (int)ms_since(t0));
+        heap_caps_free(g.buf);
+        return NULL;
+    }
+    *len = g.len;
+    return g.buf;
+}
+
+bool muse_present_decode(const uint8_t *data, size_t len, int fit_w, int fit_h, uint16_t **px, int *w, int *h)
+{
+    *px = NULL;
+    if (len > 3 && data[0] == 0xFF && data[1] == 0xD8) {
+        void *pool = heap_caps_malloc(JPEG_POOL_BYTES, MUSE_BIG_CAPS);
+        if (!pool) {
+            return false;
+        }
+        jpeg_t j = { .data = data, .len = len };
+        JDEC jd;
+        JRESULT rc = jd_prepare(&jd, jpeg_in, pool, JPEG_POOL_BYTES, &j);
+        uint8_t scale = 0;
+        int fw = 0, fh = 0;
+        if (rc == JDR_OK) {
+            fit(jd.width, jd.height, fit_w, fit_h, &fw, &fh);
+            while (scale < 3 && (int)(jd.width >> (scale + 1)) >= fw && (int)(jd.height >> (scale + 1)) >= fh) {
+                scale++;
+            }
+            j.w = jd.width >> scale;
+            j.h = jd.height >> scale;
+            j.out = (size_t)j.w * j.h * 2 <= DECODED_MAX ? heap_caps_calloc((size_t)j.w * j.h, 2, MUSE_BIG_CAPS) : NULL;
+            rc = j.out ? jd_decomp(&jd, jpeg_out, scale) : JDR_MEM1;
+        }
+        heap_caps_free(pool);
+        if (rc != JDR_OK) {
+            heap_caps_free(j.out);
+            return false;
+        }
+        if (j.w > fw || j.h > fh) {
+            uint16_t *small = resize(j.out, j.w, j.h, fw, fh);
+            heap_caps_free(j.out);
+            if (!small) {
+                return false;
+            }
+            j.out = small;
+            j.w = fw;
+            j.h = fh;
+        }
+        *px = j.out;
+        *w = j.w;
+        *h = j.h;
+        return true;
+    }
+#if CONFIG_MUSE_PRESENT_FORMATS
+    muse_image_t img;
+    char err[48];
+    if (!muse_image_decode(data, len, fit_w, fit_h, &img, err, sizeof(err))) {
+        ESP_LOGW(TAG, "decoding: %s", err);
+        return false;
+    }
+    *px = img.px;
+    *w = img.w;
+    *h = img.h;
+    return true;
+#else
+    return false;
+#endif
 }
 
 void muse_present_ask(const char *path, const char *label)

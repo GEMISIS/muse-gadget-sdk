@@ -94,6 +94,7 @@ extern "C" {
 #include "muse_gadget_mode.h"
 #include "muse_link.h"
 #include "muse_settings.h"
+#include "muse_browse.h"
 #include "muse_widget.h"
 #include "muse_wifi.h"
 #if CONFIG_MUSE_TTS_PICO
@@ -155,7 +156,8 @@ static const char *TAG = "muse_chat_session";
 #define IMG_UP_CAP_US (15 * 1000000LL)     /* handed to the face: unboxed and held up (img_up) by then at the latest */
 #define IMG_CAPTION "GETTING THE IMAGE..."
 /* After the words of every message (and any mode contract): Muse forgets the contract's standing order. */
-#define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: a 96px baseline JPEG preview, then 240px.)"
+/* And what its widgets can be here (muse_widget_ui.h): an HTML one is read for a few simple controls (muse_widget_html.c). */
+#define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: a 96px baseline JPEG preview, then 240px. This gadget shows options, lists, maps and shopping natively, and an HTML widget only as its question with text fields, checkboxes, radios or a select, and a button: keep forms that simple.)"
 /*
  * The VM's streaming dictation has no ASR behind it right now, so each press
  * goes to the chat as a voice note, the way the phone app sends them, and the
@@ -1177,6 +1179,7 @@ static bool turn_start(uint32_t gen, bool text)
     s_turn.img_up = img_up();
     img_activity(MUSE_ACTIVITY_NONE);
     muse_widget_clear();   /* the last reply's widgets are answered, or passed over */
+    muse_browse_turn();    /* and its browsing's history */
     memset(s_marks, 0, sizeof(s_marks));
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
@@ -2163,6 +2166,12 @@ static void widget_take(const cJSON *json, const char *from)
     if (!w) {
         w = static_cast<muse_widget_t *>(psram_alloc(sizeof(*w)));
     }
+    /* The whole of it on the console too, for kinds and fields not seen before ("wraw" lines). */
+    char *raw = cJSON_PrintUnformatted(json);
+    for (size_t o = 0, n = raw ? strlen(raw) : 0; o < n; o += 400) {
+        ESP_LOGI(TAG, "wraw %u/%u %.400s", (unsigned)o, (unsigned)n, raw + o);
+    }
+    cJSON_free(raw);
     if (!w || !muse_widget_parse(json, w)) {
         return;
     }
@@ -2183,6 +2192,15 @@ static void widget_present(cJSON *payload)
     const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "session_id"));
     if (!sid) {
         sid = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(payload, "chat_context"), "chat_id"));
+    }
+    if (!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "kind")) ?: "", "browser_task")) {
+        /* Muse's browser at work: the turn's history (muse_browse.h), not a widget. It can go on after the
+         * reply, so the turn's chat's, whatever the turn's phase; which task is the turn's, it works out. */
+        bool chat = sid && s_turn.sid[0] ? !strcmp(sid, s_turn.sid) : img_ours(sid);
+        if (!bg_chat(sid) && chat) {
+            muse_browse_update(payload);
+        }
+        return;
     }
     if (bg_chat(sid) || !img_ours(sid)) {
         ESP_LOGI(TAG, "widget for chat %s: not this turn's", sid ?: "?");
@@ -3494,6 +3512,7 @@ extern "C" void muse_hatch_chat_forget(void)
 extern "C" void muse_chat_changed(void)
 {
     muse_widget_clear();   /* another chat's widgets: not this one's to answer */
+    muse_browse_turn();
     s_chat_check = true;
     post(CMD_WAKE, 0);   /* a resting task looks now */
 }

@@ -62,6 +62,17 @@ bool wifi_mgr_joining(char *ssid, size_t cap);
 int wifi_mgr_scan(wifi_scan_entry_t *out, int max_entries, uint8_t channel,
                   const char *target_ssid);
 
+// The last scan's access points for geolocation (muse_where.c), one per
+// BSSID, strongest first: hidden networks, locally administered addresses and
+// "_nomap" networks (asking not to be mapped) left out. Returns the count
+// (none without PSRAM); *gen changes with each scan.
+typedef struct {
+    uint8_t bssid[6];
+    int8_t rssi;
+    uint8_t channel;
+} wifi_bssid_entry_t;
+int wifi_mgr_scan_bssids(wifi_bssid_entry_t *out, int max_entries, uint32_t *gen);
+
 // Run a scan and store the results in the internal cache. Returns count.
 int wifi_mgr_scan_and_cache(void);
 

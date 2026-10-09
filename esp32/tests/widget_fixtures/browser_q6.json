@@ -1,0 +1,690 @@
+[
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Reading page",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"step_count": 8,
+"updated_at_ms": 1791505770467
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"step_count": 8,
+"updated_at_ms": 1791505771892
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"step_count": 8,
+"updated_at_ms": 1791505772126
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"activity_title": "Starting browser...",
+"status": "Queued",
+"display_state": "starting",
+"display_status": "Starting",
+"step_count": 0,
+"updated_at_ms": 1791505773933
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"activity_title": "Starting browser...",
+"status": "Queued",
+"display_state": "starting",
+"display_status": "Starting",
+"step_count": 0,
+"updated_at_ms": 1791505774056
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"activity_title": "Starting browser...",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"step_count": 0,
+"updated_at_ms": 1791505774124
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"activity_title": "Starting browser...",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"step_count": 0,
+"updated_at_ms": 1791505774124
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"activity_title": "Starting browser...",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"step_count": 0,
+"updated_at_ms": 1791505774124
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"step_count": 8,
+"updated_at_ms": 1791505732114
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"step_count": 8,
+"updated_at_ms": 1791505732114
+}
+},
+{
+"id": "browser-task:browser-task:2fa46b79-2738-443b-b3ea-a65150dbd830",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:2fa46b79-2738-443b-b3ea-a65150dbd830",
+"activity_title": "Task completed",
+"status": "Completed",
+"display_state": "completed",
+"display_status": "Completed",
+"current_site": {
+"domain": "www.bestbuy.com",
+"page_title": "Switch 2 System - Best Buy",
+"url": "https://www.bestbuy.com/product/switch-2-system/J7GSL57TGH/sku/6614313"
+},
+"latest_tab": {
+"title": "Switch 2 System - Best Buy",
+"url": "https://www.bestbuy.com/product/switch-2-system/J7GSL57TGH/sku/6614313"
+},
+"step_count": 17,
+"updated_at_ms": 1791505518876
+}
+},
+{
+"id": "browser-task:browser-task:2fa46b79-2738-443b-b3ea-a65150dbd830",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:2fa46b79-2738-443b-b3ea-a65150dbd830",
+"activity_title": "Task completed",
+"status": "Completed",
+"display_state": "completed",
+"display_status": "Completed",
+"current_site": {
+"domain": "www.bestbuy.com",
+"page_title": "Switch 2 System - Best Buy",
+"url": "https://www.bestbuy.com/product/switch-2-system/J7GSL57TGH/sku/6614313"
+},
+"latest_tab": {
+"title": "Switch 2 System - Best Buy",
+"url": "https://www.bestbuy.com/product/switch-2-system/J7GSL57TGH/sku/6614313"
+},
+"step_count": 17,
+"updated_at_ms": 1791505518876
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Checking site",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Nova 4 Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C04404/merrell-nova-4-trail-running-shoes-mens"
+},
+"step_count": 9,
+"updated_at_ms": 1791505775674
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"activity_title": "Checking site",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"step_count": 1,
+"updated_at_ms": 1791505775785
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 1,
+"updated_at_ms": 1791505780112
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 1,
+"updated_at_ms": 1791505780249
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"step_count": 9,
+"updated_at_ms": 1791505780727
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"activity_title": "Reading page",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 2,
+"updated_at_ms": 1791505781543
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 2,
+"updated_at_ms": 1791505782760
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 2,
+"updated_at_ms": 1791505783072
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"activity_title": "Reading page",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 3,
+"updated_at_ms": 1791505784923
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Selecting option",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"step_count": 10,
+"updated_at_ms": 1791505785115
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 3,
+"updated_at_ms": 1791505786209
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 3,
+"updated_at_ms": 1791505786664
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 4,
+"updated_at_ms": 1791505789425
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"step_count": 10,
+"updated_at_ms": 1791505789548
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"step_count": 10,
+"updated_at_ms": 1791505790739
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 4,
+"updated_at_ms": 1791505791318
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Reading page",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"step_count": 11,
+"updated_at_ms": 1791505791647
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"step_count": 11,
+"updated_at_ms": 1791505793073
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"step_count": 11,
+"updated_at_ms": 1791505793370
+}
+},
+{
+"id": "browser-task:browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5",
+"activity_title": "Scrolling page",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.spl.org",
+"page_title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"latest_tab": {
+"title": "Central Library | The Seattle Public Library",
+"url": "https://www.spl.org/hours-and-locations/central-library"
+},
+"step_count": 5,
+"updated_at_ms": 1791505794493
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Checking site",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Merrell Morphlite Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C00887/merrell-morphlite-trail-running-shoes-mens"
+},
+"step_count": 12,
+"updated_at_ms": 1791505795171
+}
+}
+]
