@@ -45,6 +45,7 @@
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_watchdog.h"
+#include "muse_logring.h"
 #include "muse_ui.h"
 #include "muse_up_next.h"
 #include "muse_voice.h"
@@ -1015,6 +1016,10 @@ static bool console_command(char *line, bool whole)
         return true;
     }
 #endif
+    if (!strcmp(line, "log")) {
+        muse_logring_print();   /* what happened before anyone was watching */
+        return true;
+    }
     if (!strcmp(line, "crash")) {
         muse_watchdog_print();   /* why the last boot ended */
         return true;

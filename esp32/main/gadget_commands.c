@@ -28,8 +28,11 @@
 #if CONFIG_MUSE_HATCH
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_timer.h"
 #include "muse_present.h"
+
+static const char *TAG = "link.gadget";
 #endif
 
 // ---- Commands (host-tested) -------------------------------------------------
@@ -430,6 +433,13 @@ cJSON *gadget_show_image_command(const cJSON *params) {
         return gadget_error("invalid_param", "data_b64 isn't valid base64");
     }
     if (offset == 0) {
+        // Muse retries old pushes; one that isn't the image wanted now would
+        // show in its place. Refused, saying which is (what's under way stays).
+        char why[160];
+        if (!muse_present_push_ok(cJSON_GetStringValue(label), why, sizeof(why))) {
+            ESP_LOGI(TAG, "display.show_image: %s", why);
+            return gadget_error("wrong_image", why);
+        }
         push_reset();   // a new image, or this one from the start again
     } else if (offset != s_push.len) {
         char message[48];
@@ -466,8 +476,24 @@ cJSON *gadget_show_image_command(const cJSON *params) {
     if (offset == 0 || (l && l[0])) {
         strlcpy(s_push.label, l && l[0] ? l : "image", sizeof(s_push.label));
     }
+    if (!final && s_push.len >= 2 && jpeg_intact(s_push.buf, s_push.len)
+        && (!size_hint || s_push.len >= size_hint)) {
+        // Muse sends a whole image in one chunk but now and then leaves final
+        // out (or false), and then believes it's shown: a JPEG that's whole,
+        // end marker and all, is the image, whatever final says.
+        ESP_LOGI(TAG, "display.show_image: %u bytes, whole, without final: shown", (unsigned)s_push.len);
+        final = true;
+    }
     if (!final) {
-        return push_progress(false, false);
+        cJSON *result = push_progress(false, false);
+        cJSON *payload = cJSON_GetObjectItem(result, "payload");
+        if (payload) {
+            // Said plainly, for Muse: nothing is on the screen until the rest comes.
+            cJSON_AddNumberToObject(payload, "next_offset", (double)s_push.len);
+            cJSON_AddStringToObject(payload, "note",
+                                    "not shown yet: send the rest from next_offset, the last chunk with final=true");
+        }
+        return result;
     }
     if (s_push.len < 2) {
         return push_error("invalid_param", "not a JPEG");

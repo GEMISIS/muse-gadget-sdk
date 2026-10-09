@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 
 #include "esp_attr.h"
 #include "esp_crt_bundle.h"
@@ -474,6 +475,7 @@ EXT_RAM_BSS_ATTR static size_t s_guard_len;   /* the size of the one shown this 
  * request ended (Muse's answer can be late): with s_ask_lock. */
 EXT_RAM_BSS_ATTR static int64_t s_shown_us;
 EXT_RAM_BSS_ATTR static size_t s_shown_len;
+EXT_RAM_BSS_ATTR static char s_shown_label[LABEL_MAX];
 #define LATE_SHARPER_US (300LL * 1000000)
 EXT_RAM_BSS_ATTR static bool s_web_tried;   /* the wanted web image was fetched here already (or tried) */
 
@@ -764,6 +766,107 @@ static bool start(void)
     return atomic_load(&s_started) == 2;
 }
 
+/* A label's words that name something: lower case, three letters or more, not filler. */
+static bool label_word(const char *w, size_t n)
+{
+    static const char *const FILLER[] = { "the", "and", "with", "image", "photo", "picture", "preview",
+                                          "sharper", "copy", "jpeg", "for", "from", "your" };
+    if (n < 3) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(FILLER) / sizeof(FILLER[0]); i++) {
+        if (strlen(FILLER[i]) == n && !strncasecmp(w, FILLER[i], n)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The next word in *p (letters and digits): false at the end. */
+static bool next_word(const char **p, const char **w, size_t *n)
+{
+    while (**p && !isalnum((unsigned char)**p)) {
+        (*p)++;
+    }
+    *w = *p;
+    while (isalnum((unsigned char)**p)) {
+        (*p)++;
+    }
+    *n = (size_t)(*p - *w);
+    return *n > 0;
+}
+
+/* Whether a label has a word that names something. */
+static bool label_says(const char *s)
+{
+    const char *w;
+    size_t n;
+    while (next_word(&s, &w, &n)) {
+        if (label_word(w, n)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Whether two labels name the same thing: a word in common ("leopard" and
+ * "leopards" count), or one of them says nothing much ("image", "preview"). */
+static bool labels_agree(const char *a, const char *b)
+{
+    if (!label_says(a) || !label_says(b)) {
+        return true;
+    }
+    const char *pa = a, *w;
+    size_t n;
+    while (next_word(&pa, &w, &n)) {
+        if (!label_word(w, n)) {
+            continue;
+        }
+        const char *pb = b, *v;
+        size_t m;
+        while (next_word(&pb, &v, &m)) {
+            size_t k = n < m ? n : m, d = n > m ? n - m : m - n;
+            if (label_word(v, m) && d <= 2 && k >= 3 && !strncasecmp(w, v, k)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool muse_present_push_ok(const char *label, char *why, size_t cap)
+{
+    if (!label || !label[0]) {
+        return true;   /* nothing to go by */
+    }
+    char expect[LABEL_MAX] = "";
+    bool any = false;
+    portENTER_CRITICAL(&s_ask_lock);
+    if (s_asking) {
+        memcpy(expect, s_asking_label, sizeof(expect));
+    } else if (s_want.want) {
+        memcpy(expect, s_want.label, sizeof(expect));
+    } else if (s_wait.since_us) {
+        any = true;   /* the turn's own, named by nothing yet */
+    } else if (s_shown_us && esp_timer_get_time() - s_shown_us < LATE_SHARPER_US) {
+        memcpy(expect, s_shown_label, sizeof(expect));   /* its sharper copy, late */
+    }
+    portEXIT_CRITICAL(&s_ask_lock);
+    muse_mode_t mode = muse_state_mode(NULL);
+    if (any || (!expect[0] && (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING))) {
+        return true;
+    }
+    if (!expect[0]) {
+        snprintf(why, cap, "not shown: no image is wanted now");
+        return false;
+    }
+    if (labels_agree(label, expect)) {
+        return true;
+    }
+    snprintf(why, cap, "not shown: this gadget is waiting for \"%s\", not \"%s\"", expect, label);
+    return false;
+}
+
 bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
 {
     job_t *job = heap_caps_calloc(1, sizeof(*job), MUSE_BIG_CAPS);
@@ -800,6 +903,9 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label)
     if (!twice) {
         s_shown_us = esp_timer_get_time();
         s_shown_len = job->len;
+        if (!job->sharper) {
+            strlcpy(s_shown_label, job->label, sizeof(s_shown_label));
+        }
     }
     s_dl.on = false;   /* all here */
     if (!twice && !job->sharper) {

@@ -59,6 +59,7 @@
 #include "muse_settings_ui.h"
 #include "muse_state.h"
 #include "muse_watchdog.h"
+#include "muse_logring.h"
 #include "muse_style.h"
 #include "muse_text.h"
 #if CONFIG_MUSE_TTS_PICO
@@ -3299,6 +3300,7 @@ static void frame_tick(lv_timer_t *timer)
 
 esp_err_t muse_ui_start(void)
 {
+    muse_logring_start();   /* from here on, the log's kept for ">log" */
     s_w = muse_board->width;
     s_h = muse_board->height;
     /* The full layout assumes room for the 466 px board's header and bottom
