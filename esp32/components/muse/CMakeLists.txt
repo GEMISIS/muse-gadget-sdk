@@ -81,6 +81,7 @@ if(CONFIG_MUSE_ENABLED)
     elseif(CONFIG_MUSE_BOARD_WAVESHARE_S3_216)
         list(APPEND srcs "boards/board_waveshare_s3_216.c" "boards/muse_lcd_bands.c")
         list(APPEND srcs "muse_watchdog.c")   # a freeze becomes a restart, with a core dump
+        list(APPEND srcs "muse_logring.c")    # the log's last lines, for ">log"
         if(CONFIG_MUSE_HATCH)
             list(APPEND srcs "muse_widget_ui.c" "muse_widget_keys.c")   # their sheet on the face, its keyboard
             list(APPEND srcs "muse_widget_map.c" "muse_map.c")   # a map's tiles and pins

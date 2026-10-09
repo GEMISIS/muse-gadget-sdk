@@ -228,12 +228,27 @@ static bool muse_present_bytes(uint8_t *data, size_t len, const char *label) {
     return true;
 }
 
+// Whether the push is the image wanted now: the harness wants them all,
+// unless a test says otherwise.
+static const char *s_unwanted;
+static bool muse_present_push_ok(const char *label, char *why, size_t cap) {
+    if (s_unwanted && label && !strcmp(label, s_unwanted)) {
+        snprintf(why, cap, "not shown: this gadget is waiting for \"x\", not \"%s\"", label);
+        return false;
+    }
+    return true;
+}
+
 // How far the push has got, for the caption's percentage.
 static size_t s_chunk_received, s_chunk_size;
 static void muse_present_chunk(size_t received, size_t size) {
     s_chunk_received = received;
     s_chunk_size = size;
 }
+
+// esp_log.h's, as the commands use it.
+static const char *TAG = "link.gadget";
+#define ESP_LOGI(tag, ...) ((void)(tag))
 
 #include "gadget_commands.inc"
 
@@ -720,6 +735,45 @@ static void test_show_image_chunks(void) {
     free(img);
 }
 
+// Muse sends a whole image in one chunk but leaves final false: it's shown
+// all the same. A part is told plainly it isn't, and where to go on from.
+static void test_show_image_whole_without_final(void) {
+    size_t len;
+    uint8_t *img = jpeg(9000, false, &len);
+    img[300] ^= 0x33;   // not one shown before
+    s_now_us += 300 * 1000000LL;
+    int before = s_presents;
+    cJSON *result = chunk(img, 0, len, false, "\"label\":\"preview\"");
+    expect_ok(result);
+    cJSON *payload = cJSON_GetObjectItem(result, "payload");
+    assert(cJSON_IsTrue(cJSON_GetObjectItem(payload, "complete")));
+    assert(cJSON_IsTrue(cJSON_GetObjectItem(payload, "shown")));
+    cJSON_Delete(result);
+    assert(s_presents == before + 1 && s_presented_len == len);
+
+    img[400] ^= 0x33;
+    result = chunk(img, 0, len / 2, false, NULL);
+    expect_ok(result);
+    payload = cJSON_GetObjectItem(result, "payload");
+    assert(cJSON_IsFalse(cJSON_GetObjectItem(payload, "complete")));
+    assert(cJSON_GetObjectItem(payload, "next_offset")->valuedouble == (double)(len / 2));
+    assert(strstr(cJSON_GetStringValue(cJSON_GetObjectItem(payload, "note")), "not shown yet"));
+    cJSON_Delete(result);
+    assert(s_presents == before + 1);
+
+    // An image other than the one wanted is refused, and nothing's shown.
+    s_unwanted = "sea otter";
+    img[500] ^= 0x33;
+    result = chunk(img, 0, len, true, "\"label\":\"sea otter\"");
+    assert(!cJSON_IsTrue(cJSON_GetObjectItem(result, "ok")));
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(result, "error"), "code")),
+                   "wrong_image"));
+    cJSON_Delete(result);
+    assert(s_presents == before + 1);
+    s_unwanted = NULL;
+    free(img);
+}
+
 int main(void) {
     test_show_text();
     test_set_mode();
@@ -727,6 +781,7 @@ int main(void) {
     test_list_chats();
     test_show_image_params();
     test_show_image_chunks();
+    test_show_image_whole_without_final();
     printf("gadget commands ok\n");
     return 0;
 }
