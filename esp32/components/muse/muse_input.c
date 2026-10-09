@@ -43,6 +43,7 @@
 #include "muse_mem.h"
 #include "muse_menu.h"
 #include "muse_power_menu.h"
+#include "muse_present.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_watchdog.h"
@@ -1100,6 +1101,16 @@ static bool console_command(char *line, bool whole)
     }
 #endif
 #if CONFIG_MUSE_HATCH
+    if (!strncmp(line, "fetch=", 6)) {
+        /* A web image fetched and shown with no turn, each phase timed:
+         * "@fetch {...}" once it's up (muse_present_bench_fetch). */
+        set_asleep(false, "serial");
+        if (!muse_present_bench_fetch(line + 6)) {
+            printf("@fetch {\"ok\":false,\"error\":\"an http(s) URL, please; or the image task is busy\"}\n");
+            fflush(stdout);
+        }
+        return true;
+    }
     if (!strncmp(line, "say=", 4) && line[4]) {
         /* Typed words as a voice turn, on the face: a talk press and release, the mic's audio dropped. */
         char *words = strdup(line + 4);
@@ -1208,7 +1219,8 @@ static bool console_command(char *line, bool whole)
  * TEXT (muse_activity_of) and prints what it's taken for, "widget=NAME" shows
  * a sample widget (option, options, list, map, localmap, shopping, text,
  * multi, card; none takes it away) as if a reply had brought it, or Muse's
- * browser at work ("browser"), "caption=TEXT" plays TEXT as a reply's
+ * browser at work ("browser"), "fetch=URL" fetches a web image and shows it
+ * with no turn, timing each phase ("@fetch {...}"), "caption=TEXT" plays TEXT as a reply's
  * captions, said silently ("caption=8|TEXT" over 8 s; no TEXT, a sample),
  * and "caption_muted=TEXT" as one that isn't spoken, read at the face's
  * pace (muse_voice_bench_caption), "chat=" sends a typed message to Hatch (see chat_line

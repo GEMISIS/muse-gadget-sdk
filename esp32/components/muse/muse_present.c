@@ -31,6 +31,7 @@
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
+#include <unistd.h>
 
 #include "esp_attr.h"
 #include "esp_crt_bundle.h"
@@ -45,7 +46,11 @@
 #include "freertos/task.h"
 #include "rom/tjpgd.h"
 
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
+
 #include "muse_chat.h"
+#include "muse_img_url.h"
 #if CONFIG_MUSE_PRESENT_FORMATS
 #include "muse_image.h"
 #endif
@@ -317,114 +322,578 @@ static bool can_show(const uint8_t *d, size_t len)
 #endif
 }
 
-typedef struct {
-    uint8_t *buf;
-    size_t len, cap;
-    bool too_big;
-    int64_t connected_us, first_us;   /* for the log: the handshake, then the bytes */
-} fetch_t;
-
 static void fetching(bool on, size_t received, size_t size);
 static void decoding(int n);
 
-static esp_err_t fetch_event(esp_http_client_event_t *ev)
+/*
+ * Fast as it'll go within a 16 KB TCP window (~1 Mbit/s at ~125 ms, the
+ * DMA heap's limit: cmake/validate_config.cmake):
+ * - a CDN's ~640 px copy first (muse_img_url.h), the original if that fails;
+ * - JPEG asked for over WebP (the ROM decodes it, at 1/2, 1/4 or 1/8);
+ * - the last host's TLS session kept a minute (s_kept), so the next fetch
+ *   from it, a redirect's or the original after its smaller copy, resumes
+ *   it in a round trip instead of a full handshake; a redirect to the same
+ *   host keeps its connection;
+ * - a big one (PARALLEL_MIN, its server taking ranges) in up to three
+ *   ranges at once, each its own connection and window, while the DMA heap
+ *   has a window's room for each over the Noise channel's floor; the ranges
+ *   go on short-lived tasks with PSRAM stacks (no flash, no NVS).
+ * DNS, connecting (TCP and TLS), waiting and the body are logged apart.
+ */
+#define WEB_ACCEPT "image/jpeg,image/png;q=0.9,image/webp;q=0.5,*/*;q=0.1"
+#define WEB_AGENT "Mozilla/5.0 (MuseGadget)"
+#define WEB_TX 1536                     /* request buffer: over 1 KB, so in PSRAM too */
+#define WEB_HOST_MAX 96
+#define WEB_URL_MAX 640
+#define WEB_REDIRECTS 4
+#define WEB_KEEP_US (60 * 1000000LL)    /* a host's TLS session kept this long, for the next fetch */
+#define PARALLEL_MIN (128 * 1024)       /* smaller, one connection is as quick: the others' handshakes cost more */
+#define PARALLEL_MAX 3                  /* connections, the first among them */
+#define PART_MIN (48 * 1024)
+#define DMA_FLOOR (12 * 1024)           /* the Noise control channel's (noise_tx_has_control_headroom) */
+#define DMA_PER_CONN (16 * 1024)        /* a connection's window, in flight in Wi-Fi's buffers */
+#define PART_STACK (12 * 1024)          /* a range's task: TLS, in PSRAM */
+#define PART_WAIT_MS 45000
+
+typedef struct {
+    bool ranges;             /* Accept-Ranges: bytes */
+    int64_t connected_us;    /* HTTP_EVENT_ON_CONNECTED: TCP and TLS done */
+} web_ev_t;
+
+typedef struct {
+    int dns_ms, tcp_ms, connect_ms, wait_ms, body_ms;   /* -1: not measured */
+    int status, parts;
+    bool resumed;            /* the kept session's host */
+} web_times_t;
+
+/* The last host fetched from, its client (and so its TLS session) kept a
+ * while: the present task's own, so no lock. */
+EXT_RAM_BSS_ATTR static struct {
+    char host[WEB_HOST_MAX];
+    esp_http_client_handle_t http;
+    int64_t used_us;
+} s_kept;
+
+static esp_err_t web_event(esp_http_client_event_t *ev)
 {
-    fetch_t *f = ev->user_data;
-    if (ev->event_id == HTTP_EVENT_ON_CONNECTED && !f->connected_us) {
-        f->connected_us = esp_timer_get_time();
-        fetching(true, 0, 0);   /* connected: the boxes start coming */
-    }
-    if (ev->event_id != HTTP_EVENT_ON_DATA || f->too_big) {
+    web_ev_t *w = ev->user_data;
+    if (!w) {
         return ESP_OK;
     }
-    if (!f->first_us) {
-        f->first_us = esp_timer_get_time();
+    if (ev->event_id == HTTP_EVENT_ON_CONNECTED && !w->connected_us) {
+        w->connected_us = esp_timer_get_time();
+    } else if (ev->event_id == HTTP_EVENT_ON_HEADER && ev->header_key && ev->header_value
+               && !strcasecmp(ev->header_key, "Accept-Ranges") && !strncasecmp(ev->header_value, "bytes", 5)) {
+        w->ranges = true;
     }
-    if (esp_http_client_get_status_code(ev->client) != 200) {
-        return ESP_OK;   /* a redirect's body, or an error page */
-    }
-    if (f->len + ev->data_len > f->cap) {
-        size_t cap = f->cap ? f->cap * 2 : 64 * 1024;
-        while (cap < f->len + ev->data_len) {
-            cap *= 2;
-        }
-        if (cap > WEB_MAX) {
-            f->too_big = true;
-            return ESP_OK;
-        }
-        uint8_t *grown = heap_caps_realloc(f->buf, cap, MUSE_BIG_CAPS);
-        if (!grown) {
-            f->too_big = true;
-            return ESP_OK;
-        }
-        f->buf = grown;
-        f->cap = cap;
-    }
-    memcpy(f->buf + f->len, ev->data, ev->data_len);
-    f->len += ev->data_len;
-    int64_t size = esp_http_client_get_content_length(ev->client);   /* 0 or less: chunked, not said */
-    fetching(true, f->len, size > 0 ? (size_t)size : 0);
     return ESP_OK;
 }
 
-/*
- * A public web image (an https URL Muse wrote into a reply) fetched straight
- * here: a second or two, not the ~20 s of Muse pushing a copy. No token or
- * cookie goes with it. True if it was shown; else Muse is asked after all
- * (too big, not a baseline JPEG, refused, out of reach).
- */
-static bool show_from_web(const char *url, const char *label)
+static esp_http_client_handle_t web_client(const char *url)
 {
-    int64_t t0 = esp_timer_get_time();
-    fetch_t f = { 0 };
     esp_http_client_config_t cfg = {
         .url = url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = WEB_TIMEOUT_MS,
         .buffer_size = WEB_BUFFER,
-        .buffer_size_tx = 1024,
-        .max_redirection_count = 4,
-        .event_handler = fetch_event,
-        .user_data = &f,
-        .user_agent = "Mozilla/5.0 (MuseGadget)",
+        .buffer_size_tx = WEB_TX,
+        .event_handler = web_event,
+        .user_agent = WEB_AGENT,
+#if CONFIG_ESP_TLS_CLIENT_SESSION_TICKETS
+        .save_client_session = true,   /* kept with the client, for its next connection */
+#endif
     };
     esp_http_client_handle_t http = esp_http_client_init(&cfg);
+    if (http) {
+        esp_http_client_set_header(http, "Accept", WEB_ACCEPT);
+    }
+    return http;
+}
+
+/* The URL's host, lower case; false if there's none or it's too long. */
+static bool host_of(const char *url, char *out, size_t cap)
+{
+    const char *p = strstr(url, "://");
+    if (!p) {
+        return false;
+    }
+    p += 3;
+    size_t n = strcspn(p, "/?#:");
+    if (!n || n >= cap) {
+        return false;
+    }
+    for (size_t i = 0; i < n; i++) {
+        out[i] = (char)tolower((unsigned char)p[i]);
+    }
+    out[n] = '\0';
+    return true;
+}
+
+/* The kept client, if it's for `host` and still fresh; else a new one. */
+static esp_http_client_handle_t web_take(const char *url, const char *host, bool *resumed)
+{
+    *resumed = false;
+    if (s_kept.http && !strcmp(s_kept.host, host) && esp_timer_get_time() - s_kept.used_us < WEB_KEEP_US) {
+        esp_http_client_handle_t http = s_kept.http;
+        s_kept.http = NULL;
+        if (esp_http_client_set_url(http, url) == ESP_OK) {
+            *resumed = true;
+            return http;
+        }
+        esp_http_client_cleanup(http);
+    }
+    return web_client(url);
+}
+
+/* Done with it: closed, and kept for its host's next fetch in place of the last. */
+static void web_give(esp_http_client_handle_t http, const char *host)
+{
+    esp_http_client_close(http);
+    esp_http_client_set_user_data(http, NULL);
+    if (s_kept.http) {
+        esp_http_client_cleanup(s_kept.http);
+    }
+    s_kept.http = http;
+    strlcpy(s_kept.host, host, sizeof(s_kept.host));
+    s_kept.used_us = esp_timer_get_time();
+}
+
+/* The kept client let go once it's stale: no RAM held for a host not coming back. */
+static void web_expire(void)
+{
+    if (s_kept.http && esp_timer_get_time() - s_kept.used_us >= WEB_KEEP_US) {
+        esp_http_client_cleanup(s_kept.http);
+        s_kept.http = NULL;
+    }
+}
+
+/* Opens the request and reads its headers, following redirects (a same-host
+ * one on the same connection). Its length in *len (-1: not said). */
+static esp_err_t web_open(esp_http_client_handle_t http, int64_t *len, int *status)
+{
+    for (int i = 0;; i++) {
+        esp_err_t err = esp_http_client_open(http, 0);
+        if (err != ESP_OK && i > 0) {
+            esp_http_client_close(http);   /* the server closed the kept connection: a fresh one */
+            err = esp_http_client_open(http, 0);
+        }
+        if (err != ESP_OK) {
+            return err;
+        }
+        int64_t got = esp_http_client_fetch_headers(http);
+        *status = esp_http_client_get_status_code(http);
+        bool chunked = esp_http_client_is_chunked_response(http);
+        *len = chunked || got <= 0 ? -1 : got;
+        bool redirect = *status == 301 || *status == 302 || *status == 303 || *status == 307 || *status == 308;
+        if (got < 0 && !chunked) {
+            return ESP_FAIL;
+        }
+        if (!redirect || i == WEB_REDIRECTS) {
+            return ESP_OK;
+        }
+        esp_http_client_flush_response(http, NULL);
+        if (esp_http_client_set_redirection(http) != ESP_OK) {
+            return ESP_FAIL;
+        }
+    }
+}
+
+/* Reads n bytes into dst (*got counting them); true if all came. */
+static bool web_body(esp_http_client_handle_t http, uint8_t *dst, size_t n, volatile size_t *got)
+{
+    while (*got < n) {
+        size_t want = n - *got < WEB_BUFFER ? n - *got : WEB_BUFFER;
+        int r = esp_http_client_read(http, (char *)dst + *got, (int)want);
+        if (r <= 0) {
+            return false;
+        }
+        *got += (size_t)r;
+    }
+    return true;
+}
+
+/* GETs bytes [from, to) of the URL the client's at into buf + from. */
+static bool web_range(esp_http_client_handle_t http, uint8_t *buf, size_t from, size_t to, volatile size_t *got)
+{
+    char range[48];
+    snprintf(range, sizeof(range), "bytes=%u-%u", (unsigned)from, (unsigned)(to - 1));
+    esp_http_client_set_header(http, "Range", range);
+    int64_t len;
+    int status;
+    *got = 0;
+    bool ok = web_open(http, &len, &status) == ESP_OK && status == 206 && len == (int64_t)(to - from)
+              && web_body(http, buf + from, to - from, got);
+    esp_http_client_delete_header(http, "Range");
+    esp_http_client_close(http);
+    return ok;
+}
+
+typedef struct {
+    char url[WEB_URL_MAX];
+    uint8_t *buf;
+    size_t from, to;
+    volatile size_t got;
+    volatile bool done, ok;
+    int ms;
+    TaskHandle_t waiter, task;
+} part_t;
+
+/* A range on a connection of its own; then it waits to be deleted. */
+static void part_task(void *arg)
+{
+    part_t *p = arg;
+    int64_t t0 = esp_timer_get_time();
+    web_ev_t ev = { 0 };
+    esp_http_client_handle_t http = web_client(p->url);
+    if (http) {
+        esp_http_client_set_user_data(http, &ev);
+        p->ok = web_range(http, p->buf, p->from, p->to, &p->got);
+        esp_http_client_cleanup(http);
+    }
+    p->ms = (int)ms_since(t0);
+    p->done = true;
+    xTaskNotifyGive(p->waiter);
+    vTaskSuspend(NULL);
+}
+
+/* How many connections for a body of `len`: more only while the DMA heap
+ * has a window's room for each over the control channel's floor. */
+static int parts_for(int64_t len, bool ranges)
+{
+    if (!ranges || len < PARALLEL_MIN) {
+        return 1;
+    }
+    size_t dma = heap_caps_get_free_size(MALLOC_CAP_DMA);
+    int n = 1 + (dma > DMA_FLOOR ? (int)((dma - DMA_FLOOR) / DMA_PER_CONN) : 0);
+    n = n < PARALLEL_MAX ? n : PARALLEL_MAX;
+    while (n > 1 && len / n < PART_MIN) {
+        n--;
+    }
+    return n;
+}
+
+static size_t parts_got(part_t *const *parts, int n)
+{
+    size_t sum = 0;
+    for (int i = 0; i < n; i++) {
+        sum += parts[i] ? parts[i]->got : 0;
+    }
+    return sum;
+}
+
+/*
+ * The body, `len` bytes, into buf: the first part on `http` (open, its
+ * headers read), the rest in ranges on their own tasks; a range that
+ * fails is fetched again here. True if all of it came.
+ */
+static bool web_parallel(esp_http_client_handle_t http, uint8_t *buf, size_t len, int n, web_times_t *t)
+{
+    part_t *parts[PARALLEL_MAX] = { 0 };
+    char *url = n > 1 ? heap_caps_malloc(WEB_URL_MAX, MUSE_BIG_CAPS) : NULL;
+    if (!url || esp_http_client_get_url(http, url, WEB_URL_MAX) != ESP_OK) {
+        n = 1;   /* the URL the redirects led to, for the ranges */
+    }
+    size_t cut = len / n;
+    int started = 1;
+    for (int i = 1; i < n; i++) {
+        part_t *p = heap_caps_calloc(1, sizeof(*p), MUSE_BIG_CAPS);
+        if (!p) {
+            break;
+        }
+        strlcpy(p->url, url, sizeof(p->url));
+        p->buf = buf;
+        p->from = cut * i;
+        p->to = i == n - 1 ? len : cut * (i + 1);
+        p->waiter = xTaskGetCurrentTaskHandle();
+        if (xTaskCreatePinnedToCoreWithCaps(part_task, "muse_part", PART_STACK, p, TASK_PRIORITY, &p->task, 0,
+                                            MUSE_BIG_CAPS) != pdPASS) {
+            heap_caps_free(p);
+            break;
+        }
+        parts[i] = p;
+        started++;
+    }
+    heap_caps_free(url);
+    /* Ours: up to the first range taken, or the whole if none was. */
+    size_t ours = started > 1 ? parts[1]->from : len;
+    volatile size_t got = 0;
+    bool ok = true;
+    while (ok && got < ours) {
+        size_t want = ours - got < WEB_BUFFER ? ours - got : WEB_BUFFER;
+        int r = esp_http_client_read(http, (char *)buf + got, (int)want);
+        ok = r > 0;
+        got += r > 0 ? (size_t)r : 0;
+        fetching(true, got + parts_got(parts, PARALLEL_MAX), len);
+    }
+    esp_http_client_close(http);   /* the rest is the ranges' */
+    /* Then the ranges', and any that failed again on ours. */
+    int64_t until = esp_timer_get_time() + PART_WAIT_MS * 1000LL;
+    for (int i = 1; i < PARALLEL_MAX; i++) {
+        part_t *p = parts[i];
+        while (p && !p->done && esp_timer_get_time() < until) {
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
+            fetching(true, got + parts_got(parts, PARALLEL_MAX), len);
+        }
+    }
+    for (int i = 1; i < PARALLEL_MAX; i++) {
+        part_t *p = parts[i];
+        if (!p) {
+            continue;
+        }
+        if (!p->done) {
+            /* Stuck past all its timeouts: left (and its memory) rather than freed under it. */
+            ESP_LOGW(TAG, "range %u-%u never finished: left", (unsigned)p->from, (unsigned)p->to);
+            ok = false;
+            continue;
+        }
+        while (eTaskGetState(p->task) != eSuspended) {
+            vTaskDelay(1);
+        }
+        vTaskDeleteWithCaps(p->task);
+        ESP_LOGI(TAG, "range %u-%u: %s in %d ms", (unsigned)p->from, (unsigned)p->to, p->ok ? "fetched" : "failed",
+                 p->ms);
+        if (!p->ok && ok) {
+            volatile size_t again = 0;
+            ok = web_range(http, buf, p->from, p->to, &again);
+        }
+        heap_caps_free(p);
+    }
+    t->parts = started;
+    return ok;
+}
+
+/*
+ * GETs a web image into *data (PSRAM), timing each phase. False with
+ * *data NULL if it didn't come whole as a 200 (or is over WEB_MAX: *too_big).
+ */
+static bool web_get(const char *url, uint8_t **data, size_t *size, bool *too_big, web_times_t *t)
+{
+    *data = NULL;
+    *size = 0;
+    *too_big = false;
+    memset(t, 0, sizeof(*t));
+    t->dns_ms = t->connect_ms = t->wait_ms = t->body_ms = -1;
+    char host[WEB_HOST_MAX];
+    if (!host_of(url, host, sizeof(host))) {
+        return false;
+    }
+    /* DNS apart: lwIP keeps the answer, so the client's own lookup is instant. */
+    int64_t t0 = esp_timer_get_time();
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
+    if (getaddrinfo(host, NULL, &hints, &res) == 0) {
+        t->dns_ms = (int)ms_since(t0);
+        freeaddrinfo(res);
+    }
+    web_ev_t ev = { 0 };
+    esp_http_client_handle_t http = web_take(url, host, &t->resumed);
     if (!http) {
         return false;
     }
-#if CONFIG_MUSE_PRESENT_FORMATS
-    esp_http_client_set_header(http, "Accept", "image/jpeg,image/png,image/webp;q=0.9,image/*;q=0.5");
-#else
-    esp_http_client_set_header(http, "Accept", "image/jpeg,image/*;q=0.8");
-#endif
-    esp_err_t err = esp_http_client_perform(http);
-    int status = esp_http_client_get_status_code(http);
-    esp_http_client_cleanup(http);
-    bool showable = f.len > 3 && can_show(f.buf, f.len);
-    int64_t t1 = esp_timer_get_time();
-    /* Connecting (DNS, TCP, TLS) apart from the bytes: which one was slow. */
-    int connect_ms = f.connected_us ? (int)((f.connected_us - t0) / 1000) : -1;
-    int body_ms = f.first_us ? (int)((t1 - f.first_us) / 1000) : 0;
-    int kbps = body_ms > 0 ? (int)((uint64_t)f.len * 8 / body_ms) : 0;
-    if (err != ESP_OK || status != 200 || f.too_big || !showable) {
-        ESP_LOGW(TAG, "\"%s\": couldn't fetch it here (%s, HTTP %d, %u bytes%s%s) in %d ms (connected in %d, "
-                 "%d kbit/s): asking Muse", label, esp_err_to_name(err), status, (unsigned)f.len,
-                 f.too_big ? ", too big" : "", f.len && !showable ? ", a format not shown here" : "",
-                 (int)ms_since(t0), connect_ms, kbps);
-        heap_caps_free(f.buf);
-        fetching(false, 0, 0);
+    esp_http_client_set_user_data(http, &ev);
+    int64_t t1 = esp_timer_get_time(), len = -1;
+    esp_err_t err = web_open(http, &len, &t->status);
+    int64_t t2 = esp_timer_get_time();
+    t->connect_ms = ev.connected_us ? (int)((ev.connected_us - t1) / 1000) : 0;
+    t->wait_ms = (int)((t2 - (ev.connected_us ? ev.connected_us : t1)) / 1000);
+    bool ok = err == ESP_OK && t->status == 200;
+    if (ok && len > WEB_MAX) {
+        *too_big = true;
+        ok = false;
+    }
+    uint8_t *buf = NULL;
+    size_t got = 0;
+    if (ok && len > 0) {
+        fetching(true, 0, (size_t)len);   /* connected: the boxes start coming */
+        buf = heap_caps_malloc((size_t)len, MUSE_BIG_CAPS);
+        int n = parts_for(len, ev.ranges);
+        ok = buf && web_parallel(http, buf, (size_t)len, n, t);
+        got = ok ? (size_t)len : 0;
+    } else if (ok) {
+        /* Its length not said (chunked): grown as it comes. */
+        fetching(true, 0, 0);
+        size_t cap = 0;
+        t->parts = 1;
+        for (;;) {
+            if (got == cap) {
+                size_t grown_cap = cap ? cap * 2 : 64 * 1024;
+                uint8_t *grown = grown_cap <= WEB_MAX ? heap_caps_realloc(buf, grown_cap, MUSE_BIG_CAPS) : NULL;
+                if (!grown) {
+                    *too_big = grown_cap > WEB_MAX;
+                    ok = false;
+                    break;
+                }
+                buf = grown;
+                cap = grown_cap;
+            }
+            int r = esp_http_client_read(http, (char *)buf + got, (int)(cap - got));
+            if (r < 0) {
+                ok = false;
+            }
+            if (r <= 0) {
+                break;
+            }
+            got += (size_t)r;
+            fetching(true, got, 0);
+        }
+        ok = ok && got > 0 && esp_http_client_is_complete_data_received(http);
+    }
+    t->body_ms = (int)ms_since(t2);
+    web_give(http, host);
+    if (!ok) {
+        heap_caps_free(buf);
+        return false;
+    }
+    *data = buf;
+    *size = got;
+    return true;
+}
+
+static void web_log(const char *label, const char *what, const web_times_t *t, size_t len, int total_ms)
+{
+    int kbps = t->body_ms > 0 ? (int)((uint64_t)len * 8 / (unsigned)t->body_ms) : 0;
+    ESP_LOGI(TAG, "\"%s\": %s: HTTP %d, %u bytes in %d ms: dns %d, connect %d (tcp+tls%s), wait %d, body %d ms "
+             "at %d kbit/s over %d connection%s", label, what, t->status, (unsigned)len, total_ms, t->dns_ms,
+             t->connect_ms, t->resumed ? ", session kept" : "", t->wait_ms, t->body_ms, kbps, t->parts,
+             t->parts == 1 ? "" : "s");
+}
+
+/*
+ * A public web image (an https URL Muse wrote into a reply) fetched straight
+ * here: a second or two, not the ~20 s of Muse pushing a copy. No token or
+ * cookie goes with it. The CDN's smaller copy first, the URL as given if
+ * that fails. True if it was shown; else Muse is asked after all (too big,
+ * a format not shown here, refused, out of reach).
+ */
+static bool show_from_web(const char *url, const char *label)
+{
+    int64_t t0 = esp_timer_get_time();
+    char *small = heap_caps_malloc(WEB_URL_MAX, MUSE_BIG_CAPS);
+    bool smaller = small && muse_img_url_smaller(url, MUSE_IMG_URL_PX, small, WEB_URL_MAX);
+    uint8_t *data = NULL;
+    size_t len = 0;
+    bool too_big = false, got = false;
+    web_times_t t;
+    for (int i = smaller ? 0 : 1; i < 2 && !got; i++) {
+        const char *u = i == 0 ? small : url;
+        int64_t ti = esp_timer_get_time();
+        got = web_get(u, &data, &len, &too_big, &t) && can_show(data, len);
+        web_log(label, i == 0 ? "its smaller copy" : "fetched here", &t, len, (int)ms_since(ti));
+        if (!got) {
+            ESP_LOGW(TAG, "\"%s\": %.80s: %s", label, u,
+                     too_big ? "too big" : data ? "a format not shown here" : "couldn't fetch it");
+            heap_caps_free(data);
+            data = NULL;
+        }
+    }
+    heap_caps_free(small);
+    fetching(false, 0, 0);
+    if (!got) {
+        ESP_LOGW(TAG, "\"%s\": not fetched here in %d ms: asking Muse", label, (int)ms_since(t0));
         return false;
     }
     decoding(1);
-    fetching(false, 0, 0);
-    ESP_LOGI(TAG, "\"%s\": fetched here: %u bytes in %d ms (connected in %d ms, then %d ms at %d kbit/s)", label,
-             (unsigned)f.len, (int)ms_since(t0), connect_ms, body_ms, kbps);
-    job_t job = { .data = f.buf, .len = f.len };
+    job_t job = { .data = data, .len = len };
     strlcpy(job.label, label, sizeof(job.label));
     bool shown = run(&job);
     decoding(-1);
-    heap_caps_free(f.buf);
+    heap_caps_free(data);
+    ESP_LOGI(TAG, "\"%s\": %s %d ms after asking", label, shown ? "shown" : "not shown", (int)ms_since(t0));
     return shown;
+}
+
+/* ---- >fetch= (muse_present_bench_fetch) ---------------------------------- */
+
+/* TCP alone, to the URL's host on 443 (or 80): the connect's round trip, for the bench. */
+static int tcp_ms(const char *url)
+{
+    char host[WEB_HOST_MAX];
+    if (!host_of(url, host, sizeof(host))) {
+        return -1;
+    }
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
+    if (getaddrinfo(host, strncmp(url, "https", 5) ? "80" : "443", &hints, &res) != 0 || !res) {
+        return -1;
+    }
+    int ms = -1, fd = socket(res->ai_family, res->ai_socktype, 0);
+    if (fd >= 0) {
+        struct timeval tv = { .tv_sec = 5 };
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        int64_t t0 = esp_timer_get_time();
+        if (connect(fd, res->ai_addr, res->ai_addrlen) == 0) {
+            ms = (int)ms_since(t0);
+        }
+        close(fd);
+    }
+    freeaddrinfo(res);
+    return ms;
+}
+
+static void bench_fetch(void *arg)
+{
+    char *url = arg;
+    int64_t t0 = esp_timer_get_time();
+    char *small = heap_caps_malloc(WEB_URL_MAX, MUSE_BIG_CAPS);
+    bool smaller = small && muse_img_url_smaller(url, MUSE_IMG_URL_PX, small, WEB_URL_MAX);
+    const char *u = smaller ? small : url;
+    int tcp = tcp_ms(u);
+    uint8_t *data = NULL;
+    size_t len = 0;
+    bool too_big = false;
+    web_times_t t;
+    bool got = web_get(u, &data, &len, &too_big, &t);
+    if (!got && smaller) {
+        u = url;   /* as show_from_web: the original after its smaller copy */
+        got = web_get(u, &data, &len, &too_big, &t);
+    }
+    int fetch_ms = (int)ms_since(t0);
+    fetching(false, 0, 0);
+    const char *kind = !got ? "none" : len > 3 && data[0] == 0xFF && data[1] == 0xD8 ? "JPEG"
+#if CONFIG_MUSE_PRESENT_FORMATS
+                       : muse_image_kind_name(muse_image_kind(data, len));
+#else
+                       : "other";
+#endif
+    int64_t t1 = esp_timer_get_time();
+    bool shown = false;
+    if (got && can_show(data, len)) {
+        job_t job = { .data = data, .len = len };
+        strlcpy(job.label, "fetch", sizeof(job.label));
+        decoding(1);
+        shown = run(&job);
+        decoding(-1);
+        if (shown) {
+            atomic_fetch_add(&s_seq, 1);   /* the face has it */
+        }
+    }
+    int show_ms = (int)ms_since(t1);
+    printf("@fetch {\"ok\":%s,\"shown\":%s,\"smaller\":%s,\"status\":%d,\"bytes\":%u,\"kind\":\"%s\",\"dns_ms\":%d,"
+           "\"tcp_ms\":%d,\"connect_ms\":%d,\"tls_ms\":%d,\"resumed\":%s,\"wait_ms\":%d,\"body_ms\":%d,"
+           "\"parts\":%d,\"fetch_ms\":%d,\"decode_show_ms\":%d,\"total_ms\":%d,\"dma_free\":%u}\n",
+           got ? "true" : "false", shown ? "true" : "false", u != url ? "true" : "false", t.status, (unsigned)len,
+           kind, t.dns_ms, tcp, t.connect_ms, tcp >= 0 && t.connect_ms > tcp ? t.connect_ms - tcp : -1,
+           t.resumed ? "true" : "false", t.wait_ms, t.body_ms, t.parts, fetch_ms, show_ms, (int)ms_since(t0),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA));
+    fflush(stdout);
+    heap_caps_free(data);
+    heap_caps_free(small);
+    heap_caps_free(url);
+}
+
+bool muse_present_bench_fetch(const char *url)
+{
+    if (!url || (strncmp(url, "https://", 8) && strncmp(url, "http://", 7)) || strlen(url) >= WEB_URL_MAX) {
+        return false;
+    }
+    char *copy = heap_caps_malloc(strlen(url) + 1, MUSE_BIG_CAPS);
+    if (!copy) {
+        return false;
+    }
+    strcpy(copy, url);
+    if (!muse_present_call(bench_fetch, copy)) {
+        heap_caps_free(copy);
+        return false;
+    }
+    return true;
 }
 
 /* ---- Asking for a reply's image ----------------------------------------- */
@@ -768,7 +1237,8 @@ static void present_task(void *arg)
     (void)arg;
     for (;;) {
         job_t *job = NULL;
-        TickType_t wait = ask_pending() ? pdMS_TO_TICKS(ASK_POLL_MS) : portMAX_DELAY;
+        TickType_t wait = ask_pending() ? pdMS_TO_TICKS(ASK_POLL_MS)
+                          : s_kept.http ? pdMS_TO_TICKS(WEB_KEEP_US / 4000) : portMAX_DELAY;
         if (xQueueReceive(s_jobs, &job, wait) == pdTRUE && job && job->call) {
             job->call(job->arg);   /* someone else's: a map's tiles, where we are */
             heap_caps_free(job);
@@ -789,6 +1259,7 @@ static void present_task(void *arg)
                      (unsigned)uxTaskGetStackHighWaterMark(NULL));
         }
         ask_tick();
+        web_expire();
     }
 }
 

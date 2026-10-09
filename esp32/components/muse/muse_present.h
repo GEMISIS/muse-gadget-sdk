@@ -146,6 +146,14 @@ bool muse_present_call(void (*fn)(void *arg), void *arg);
 uint8_t *muse_present_fetch(const char *url, const char *body, size_t max, size_t *len, int *status);
 
 /*
+ * ">fetch=URL": the web image fetched and shown as a reply's would be (its
+ * CDN's smaller copy first), with no turn, each phase timed and printed as
+ * "@fetch {...}" (DNS, TCP, TLS, waiting, the body, decoding and showing).
+ * False if it isn't an http(s) URL or the task is busy. Any task.
+ */
+bool muse_present_bench_fetch(const char *url);
+
+/*
  * A JPEG (baseline), or with CONFIG_MUSE_PRESENT_FORMATS a PNG or WebP, decoded
  * to RGB565 in PSRAM fitting fit_w x fit_h (keeping its shape, never
  * enlarged): *px (heap_caps_free it), *w, *h. False if it couldn't be.
