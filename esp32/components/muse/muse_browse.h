@@ -96,6 +96,8 @@ void muse_browse_turn(void);
 /* The session: a browser_task payload for the turn's chat. */
 void muse_browse_update(const cJSON *payload);
 uint32_t muse_browse_seq(void);
+/* The turn's task is under way (the session keeps the turn open for its answer). Any task. */
+bool muse_browse_busy(void);
 /* Copies it; false if there's none (no PSRAM). */
 bool muse_browse_get(muse_browse_t *out);
 /* Bench (">widget=browser"): a made-up task, its steps fed over ~8 s by

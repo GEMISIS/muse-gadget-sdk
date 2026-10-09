@@ -3019,11 +3019,13 @@ static void pose_act(muse_pose_t *pose, muse_mode_t mode, float mode_t, float no
     waiting = unbox_phase(now, &image) == MUSE_PRESENT_WAITING;
 #endif
 #if MUSE_WIDGET_UI
-    /* Muse's browser at work (a browser_task): at his computer, thinking or
-     * idle (it can outlast the reply), then a flourish as it's done. */
+    /* Muse's browser at work (a browser_task): at his computer, thinking,
+     * idle (it can outlast the reply) or between a turn's messages ("let me
+     * check" said, the browser still going), then a flourish as it's done. */
     uint32_t site;
     float done;
-    if (want == MUSE_ACT_NONE && (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_IDLE) && pose->reach <= 0.0f
+    if (want == MUSE_ACT_NONE
+        && (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_IDLE || mode == MUSE_MODE_SPEAKING) && pose->reach <= 0.0f
         && !pose->holding && muse_widget_ui_browsing(&site, &done)) {
         want = MUSE_ACT_BROWSE;
         progress = done;

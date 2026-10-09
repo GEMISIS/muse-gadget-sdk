@@ -239,6 +239,7 @@ static const char *TAG = "muse_browse";
 EXT_RAM_BSS_ATTR static muse_browse_t *s_b;
 EXT_RAM_BSS_ATTR static SemaphoreHandle_t s_lock;
 EXT_RAM_BSS_ATTR static volatile uint32_t s_seq;
+EXT_RAM_BSS_ATTR static volatile bool s_busy;   /* the turn's task under way */
 
 static int64_t now_ms(void)
 {
@@ -263,6 +264,7 @@ static bool lock(void)
 static void unlock(void)
 {
     s_seq = s_b->seq;
+    s_busy = muse_browse_running(s_b);
     xSemaphoreGive(s_lock);
 }
 
@@ -287,6 +289,11 @@ void muse_browse_update(const cJSON *payload)
                  s->site, s->title, s_b->done ? (s_b->failed ? " (stopped)" : " (done)") : "");
     }
     unlock();
+}
+
+bool muse_browse_busy(void)
+{
+    return s_busy;
 }
 
 uint32_t muse_browse_seq(void)
