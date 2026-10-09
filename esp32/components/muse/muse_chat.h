@@ -157,6 +157,23 @@ void muse_hatch_text_cancel(void);
  * one replaces it.
  */
 void muse_hatch_typed_voice(char *text);
+/* The same, for chat `sid` ("" the main one, NULL whichever is picked):
+ * a turn for another chat than the picked one fails ("THAT WAS ANOTHER
+ * CHAT") rather than going there. Copies `text`; false if it can't be queued. */
+bool muse_hatch_typed_voice_to(const char *sid, const char *text);
+
+/*
+ * An answer given on a reply's widget (muse_widget.h): `text` goes to chat
+ * `sid` ("" the main one) as the user's next message, in a turn on the face
+ * like a voice turn (Muse thinking, the reply captioned and spoken) with no
+ * press. A reply still playing stops for it. False if Muse can't be reached
+ * now or there's no room for it. Any task (muse_voice.c runs it).
+ */
+bool muse_hatch_reply_text(const char *sid, const char *text);
+
+/* Bench (">widget="): a widget's JSON (muse_widget_sample), as if a reply in
+ * the picked chat had just brought it. Any task. */
+bool muse_hatch_widget_bench(const char *json);
 
 /* ---- Background requests (CONFIG_MUSE_HATCH only) ---- */
 

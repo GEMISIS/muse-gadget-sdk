@@ -63,6 +63,7 @@
 #if CONFIG_MUSE_TTS_PICO
 #include "muse_tts.h"
 #endif
+#include "muse_widget_ui.h"
 #include "muse_wifi.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
@@ -231,10 +232,12 @@ typedef struct {
     lv_obj_t *hides[11];      /* what it covers: three of its own, and add_hides' four, twice for the photo */
 } answer_layout_t;
 
-/* ANSWER_PHOTO: holding up a reply's image (photo_*), idle or not. */
-enum { ANSWER_HEARD, ANSWER_READ, ANSWER_PHOTO, ANSWER_COUNT };
+/* ANSWER_PHOTO: holding up a reply's image (photo_*), idle or not. ANSWER_WIDGET:
+ * a reply's widgets in their sheet (muse_widget_ui.h), Muse small over it. */
+enum { ANSWER_HEARD, ANSWER_READ, ANSWER_PHOTO, ANSWER_WIDGET, ANSWER_COUNT };
 EXT_RAM_BSS_ATTR static answer_layout_t s_answers[ANSWER_COUNT];   /* in PSRAM: only read when the layout changes */
 static int s_answer = -1;       /* the layout showing, or -1 */
+EXT_RAM_BSS_ATTR static int s_widget_top;   /* the widget sheet's highest top (ANSWER_WIDGET) */
 static int s_page_for = -1;     /* the layout the reply's page is sized for */
 static int s_big_y;             /* Muse's centre at full size */
 static int s_muse_y;            /* and now */
@@ -902,7 +905,7 @@ static void set_answer(int which)
         lv_obj_set_style_text_align(s_reply_lbl, l->align, 0);
     }
     int px = l ? l->px : s_canvas_px, y = l ? l->y : s_big_y;
-    if (s_night && which != ANSWER_PHOTO && (CORNERS || which != ANSWER_READ)) {
+    if (s_night && which != ANSWER_PHOTO && which != ANSWER_WIDGET && (CORNERS || which != ANSWER_READ)) {
         /* In bed it sits up where it is (muse_pixel.c) rather than growing. */
         px = MUSE_PX_W * NIGHT_CELL_PX;
         y = l ? s_night_heard_y : s_night_y;
@@ -1028,6 +1031,31 @@ static void build_photo_layout(int ring_in, int cw, int pitch)
     ESP_LOGI(TAG, "photo held at %d px, reply under it %d x %d", s_photo_px, cols, lines);
 }
 
+#if MUSE_WIDGET_UI
+/*
+ * The widget sheet's: Muse at his smallest at the very top, two lines of
+ * reply under him, and the sheet from under those down (its highest top,
+ * from the screen's, returned). Nothing else up there: no clock, chat
+ * name or "up next".
+ */
+static int build_widget_layout(int cw, int pitch)
+{
+    answer_layout_t *l = &s_answers[ANSWER_WIDGET];
+    l->px = MUSE_PX_W * MINI_CELL_PX;
+    l->y = -s_h / 2 + l->px / 2;
+    l->align = LV_TEXT_ALIGN_CENTER;
+    int art_bottom = l->y + l->px / 2 - ART_BLANK_ROWS * MINI_CELL_PX;
+    int cols = (s_w - 48) / cw;
+    set_reply_box(l, cols < 24 ? cols : 24, 2, art_bottom + 4, cw, pitch);
+    l->hides[0] = s_state_lbl;
+    l->hides[1] = s_name_lbl;
+    l->hides[2] = muse_home_extras_clock();
+    l->hides[3] = muse_home_extras_up_next();
+    ESP_LOGI(TAG, "widget sheet: reply %d x %d over it", l->cols, l->lines);
+    return s_h / 2 + l->top + l->h + 8;
+}
+#endif
+
 /*
  * The answer layouts, both with Muse centred. Heard: Muse a size smaller,
  * where it was if there's room, over three lines at the bottom. Read: Muse
@@ -1128,6 +1156,9 @@ static void build_answer(lv_obj_t *face, int ring_in)
     }
     add_hides(&s_answers[ANSWER_HEARD], 0);
     build_photo_layout(ring_in, cw, pitch);
+#if MUSE_WIDGET_UI
+    s_widget_top = build_widget_layout(cw, pitch);
+#endif
 }
 
 /* ---- A reply's image, held up (s_photo) ---- */
@@ -1429,6 +1460,7 @@ static void build_screen(void)
 
     build_answer(face, ring_in);
     build_photo(face);
+    muse_widget_ui_build(face, s_w, s_h, s_widget_top);   /* over Muse and the photo's taps */
 }
 
 
@@ -2657,12 +2689,15 @@ static void update_status(muse_mode_t mode, float now)
     if (s_reply_lbl) {
         /* The speaker picks the layout, even mid-reply: the voice task pages to fit.
          * A photo held up has its own, between replies too. */
-        int layout = photo_shown() ? ANSWER_PHOTO : muse_settings_speaker_on() ? ANSWER_HEARD : ANSWER_READ;
+        int layout = muse_widget_ui_sheet_up() ? ANSWER_WIDGET
+                     : photo_shown()           ? ANSWER_PHOTO
+                     : muse_settings_speaker_on() ? ANSWER_HEARD : ANSWER_READ;
         if (layout != s_page_for) {
             muse_state_set_page(s_answers[layout].cols, s_answers[layout].lines);
             s_page_for = layout;
         }
-        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING || layout == ANSWER_PHOTO) {
+        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING || layout == ANSWER_PHOTO
+            || layout == ANSWER_WIDGET) {
             answer = layout;
         }
     }
@@ -2689,6 +2724,24 @@ static void update_status(muse_mode_t mode, float now)
 #endif
     }
     update_power(now);
+}
+
+/* "Up next" steps aside for the widget chip, which takes its place, and
+ * otherwise shows unless the layout up hides it. */
+static void sync_up_next(void)
+{
+    lv_obj_t *up = muse_home_extras_up_next();
+    if (!up || !MUSE_WIDGET_UI) {
+        return;
+    }
+    bool hide = muse_widget_ui_chip_up();
+    const size_t n = sizeof(s_answers[0].hides) / sizeof(s_answers[0].hides[0]);
+    for (size_t i = 0; s_answer >= 0 && i < n; i++) {
+        hide |= s_answers[s_answer].hides[i] == up;
+    }
+    if (hide != lv_obj_has_flag(up, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_set_flag(up, LV_OBJ_FLAG_HIDDEN, hide);
+    }
 }
 
 /*
@@ -3152,7 +3205,7 @@ static void frame_tick(lv_timer_t *timer)
         .mode_t = mode_t,
         .level = s_level,
         .happy = muse_state_happiness(),
-        .bed = s_night && !photo_shown(),   /* up out of bed to show it */
+        .bed = s_night && !photo_shown() && !muse_widget_ui_sheet_up(),   /* up out of bed to show it */
         .dizzy = update_quake(mode, now, quake && !photo_shown(), shaken, brace),
         .reach = reach,
         .holding = holding,
@@ -3171,7 +3224,15 @@ static void frame_tick(lv_timer_t *timer)
     muse_pixel_render(&pose);
     invalidate_muse();
 
+#if MUSE_WIDGET_UI
+    /* A reply's widgets: the sheet takes the photo's place if both are up. */
+    muse_widget_ui_tick(mode, now, !photo_shown());
+    if (muse_widget_ui_sheet_up() && photo_shown()) {
+        photo_put_away(now, "widget sheet");
+    }
+#endif
     update_status(mode, now);
+    sync_up_next();
 }
 
 esp_err_t muse_ui_start(void)
