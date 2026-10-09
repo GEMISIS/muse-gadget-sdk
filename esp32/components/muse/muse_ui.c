@@ -630,12 +630,36 @@ static bool photo_out_again(float now, const char *why);
 static void photo_put_away(float now, const char *why);
 
 EXT_RAM_BSS_ATTR static float s_lock_pat_at;   /* Muse tapped while locked: his battery shows (0: not yet) */
+static volatile bool s_lock_prompt;             /* the talk button, locked: the keypad, next frame */
+
+void muse_ui_lock_prompt(void)
+{
+    s_lock_prompt = true;
+}
 
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
     if (muse_lock_locked()) {
-        s_lock_pat_at = (float)esp_timer_get_time() / 1e6f;   /* only that */
+        /* His box is most of the screen: a tap on Muse himself is a pat (a hop,
+         * and his battery), anywhere else in it the keypad, as off it. */
+        lv_point_t pt;
+        lv_area_t a;
+        lv_indev_t *indev = lv_indev_active();
+        lv_obj_get_coords(s_canvas, &a);
+        int w = lv_area_get_width(&a), h = lv_area_get_height(&a);
+        bool on_him = true;
+        if (indev && w > 0 && h > 0) {
+            lv_indev_get_point(indev, &pt);
+            int fx = (pt.x - a.x1) * 100 / w, fy = (pt.y - a.y1) * 100 / h;
+            on_him = fx >= 22 && fx <= 78 && fy >= 12 && fy <= 96;
+        }
+        if (!on_him) {
+            muse_lock_ui_open(true);
+            return;
+        }
+        s_lock_pat_at = (float)esp_timer_get_time() / 1e6f;
+        muse_state_make_happy();   /* his hop: nothing of the user's */
         return;
     }
 #if MUSE_WIDGET_UI
@@ -3315,7 +3339,7 @@ static bool update_lock(float now)
 
 /* A locked frame: Muse on the locked face, idle whatever's going on, or in
  * the keypad's corner (the same image, at its size), taking it as it goes. */
-static void lock_frame(muse_mode_t mode, float mode_t, float now)
+static void lock_frame(muse_mode_t mode, float mode_t, float now, bool quake)
 {
     EXT_RAM_BSS_ATTR static lv_obj_t *shown_in;
     lv_obj_t *av = muse_lock_ui_avatar();
@@ -3334,13 +3358,21 @@ static void lock_frame(muse_mode_t mode, float mode_t, float now)
     if (av) {
         muse_lock_ui_mood(now, &dizzy, &tired);
     }
+    /* Locked, his own fun goes on (a pat's hop, a shake, being plugged in):
+     * none of it says anything of the user's. */
+    muse_mode_t m = mode == MUSE_MODE_OFF ? mode : MUSE_MODE_IDLE;
+    bool shaken = false;
+    float brace = av ? 0.0f : update_brace(m, now, &shaken);
+    float quaked = av ? 0.0f : update_quake(m, now, quake, shaken, brace);
     muse_pose_t pose = {
-        .mode = mode == MUSE_MODE_OFF ? mode : MUSE_MODE_IDLE,
+        .mode = m,
         .t = now,
         .mode_t = mode == MUSE_MODE_IDLE ? mode_t : now,
         .happy = muse_state_happiness(),
         .bed = !av && s_night,
-        .dizzy = dizzy,
+        .dizzy = dizzy > quaked ? dizzy : quaked,
+        .plugged = av ? 0.0f : update_plugged(m, now, true),
+        .brace = brace,
     };
     pose_battery(&pose, now);
     pose.tired = tired > pose.tired ? tired : pose.tired;
@@ -3385,7 +3417,13 @@ static void frame_tick(lv_timer_t *timer)
     }
     if (locked) {
         muse_home_extras_tick(now);   /* the clock */
-        lock_frame(mode, mode_t, now);
+        if (s_lock_prompt) {
+            s_lock_prompt = false;
+            if (!muse_lock_ui_up()) {
+                muse_lock_ui_open(true);   /* the talk button: the keypad */
+            }
+        }
+        lock_frame(mode, mode_t, now, quake);
         return;
     }
     update_chrome(now);
