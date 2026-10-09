@@ -524,8 +524,11 @@ image ("GETTING THE IMAGE... 40%", the ring showing the same), up to a cap.
 Baseline JPEG is decoded by the ROM's decoder; with
 `CONFIG_MUSE_PRESENT_FORMATS` (the 2.16), PNG and WebP too
 (`components/muse/muse_image.c`, `tests/test_muse_image.py`), all in PSRAM.
-Progressive JPEG isn't shown: neither the ROM decoder nor `esp_new_jpeg`
-reads it.
+A progressive JPEG (the web's often are), which neither the ROM decoder nor
+`esp_new_jpeg` reads, goes to `components/muse/muse_jpeg.c`
+(`tests/test_muse_jpeg.py`): decoded at as many eighths of its size as the
+screen shows and PSRAM allows, down to its DC coefficients alone (1/8). A
+push (`display.show_image`) is still refused if it's progressive.
 
 Muse sees the command once the board reconnects with the new firmware. Keep
 the management commands that `on_ws_command()` also handles (`device.list_vms`,

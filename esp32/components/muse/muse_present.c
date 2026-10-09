@@ -16,9 +16,10 @@
 
 /*
  * An image Muse shows the user (muse_present.h): decoded with the ROM's JPEG
- * decoder (as display.draw_url's are, main/image_fetch.c) into two RGB565
- * copies in PSRAM: one fitting the screen, for a tap to show full size, and
- * one at the size Muse holds it up (muse_ui_present). The same task asks Muse
+ * decoder (as display.draw_url's are, main/image_fetch.c), or muse_jpeg.h's
+ * for a progressive one, into two RGB565 copies in PSRAM: one fitting the
+ * screen, for a tap to show full size, and one at the size Muse holds it
+ * up (muse_ui_present). The same task asks Muse
  * to push a reply's image (muse_present_ask). It has its stack in PSRAM, so
  * it never touches flash or NVS: the microSD copy is saved by the extras
  * task (muse_sd_queue_image).
@@ -51,6 +52,7 @@
 
 #include "muse_chat.h"
 #include "muse_img_url.h"
+#include "muse_jpeg.h"
 #if CONFIG_MUSE_PRESENT_FORMATS
 #include "muse_image.h"
 #endif
@@ -72,6 +74,7 @@ static const char *TAG = "muse_present";
 #define JOBS 6                          /* the one being shown, the next, a nudge to ask, and others' calls */
 #define JPEG_POOL_BYTES 3100            /* the ROM decoder's work pool, as its documentation asks */
 #define DECODED_MAX (3 * 1024 * 1024)   /* RGB565 out of the decoder, before resizing */
+#define JPEG_KEEP_FREE (160 * 1024)     /* PSRAM a progressive JPEG's decoding leaves everyone else */
 #define LABEL_MAX 48
 #define PATH_MAX_LEN 256                /* a workspace file's path, to ask for */
 #define ASK_POLL_MS 1000                /* how often a request waiting to go, or for its reply, is looked at */
@@ -255,6 +258,60 @@ static bool show_other(const job_t *job, muse_image_kind_t kind)
 }
 #endif
 
+/*
+ * What a JPEG the ROM's decoder refuses may take to decode: the largest free
+ * block of PSRAM, less what's left to everyone else. Nothing without PSRAM:
+ * no internal RAM goes on it.
+ */
+static size_t jpeg_budget(void)
+{
+#if CONFIG_SPIRAM
+    size_t all = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    size_t big = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    size_t room = all > JPEG_KEEP_FREE ? all - JPEG_KEEP_FREE : 0;
+    return big < room ? big : room;
+#else
+    return 0;
+#endif
+}
+
+/*
+ * A progressive JPEG (or one otherwise not baseline) by muse_jpeg.h, fitting
+ * w x h: as sharp as the screen shows if there's the memory for it, softer
+ * if not, down to its DC coefficients alone (1/8).
+ */
+static bool own_jpeg(const char *label, const uint8_t *data, size_t len, int w, int h, muse_jpeg_t *img)
+{
+    int64_t t0 = esp_timer_get_time();
+    size_t budget = jpeg_budget();
+    char err[64];
+    if (!muse_jpeg_decode(data, len, w, h, budget, 8, img, err, sizeof(err))) {
+        ESP_LOGW(TAG, "\"%s\": JPEG: %s (%u KB of PSRAM to decode it in)", label, err, (unsigned)(budget / 1024));
+        return false;
+    }
+    char how[8];
+    snprintf(how, sizeof(how), "%d/8", img->eighths);
+    ESP_LOGI(TAG, "\"%s\": %dx%d JPEG, decoded %s %s at %dx%d in %d ms (%u KB of %u KB)", label, img->src_w,
+             img->src_h, img->progressive ? "progressive" : "sequential",
+             img->eighths == 8 ? "full" : img->eighths == 1 ? "dc" : how, img->w, img->h, (int)ms_since(t0),
+             (unsigned)(img->need / 1024), (unsigned)(budget / 1024));
+    return true;
+}
+
+static bool show_own_jpeg(const job_t *job, int sw, int sh, int photo)
+{
+    muse_jpeg_info_t info;
+    if (muse_jpeg_info(job->data, job->len, &info) && (info.w < TEST_PX || info.h < TEST_PX)) {
+        ESP_LOGI(TAG, "\"%s\": %dx%d is a test, not the picture: not shown", job->label, info.w, info.h);
+        return false;
+    }
+    muse_jpeg_t img;
+    if (!own_jpeg(job->label, job->data, job->len, sw, sh, &img)) {
+        return false;
+    }
+    return present_pixels(job, img.px, img.w, img.h, sw, sh, photo);
+}
+
 /* Decodes and hands it to the face; false if it couldn't be. */
 static bool show_jpeg(const job_t *job)
 {
@@ -297,10 +354,13 @@ static bool show_jpeg(const job_t *job)
         }
     }
     heap_caps_free(pool);
+    if (rc == JDR_FMT3) {
+        /* Progressive, as the web's often are, or not baseline some other way: ours. */
+        heap_caps_free(j.out);
+        return show_own_jpeg(job, sw, sh, photo);
+    }
     if (rc != JDR_OK) {
-        ESP_LOGW(TAG, "\"%s\": %s (%d)", job->label,
-                 rc == JDR_FMT3 ? "unsupported JPEG: progressive, not baseline"
-                 : rc == JDR_MEM1 ? "out of memory" : "not a valid JPEG", (int)rc);
+        ESP_LOGW(TAG, "\"%s\": %s (%d)", job->label, rc == JDR_MEM1 ? "out of memory" : "not a valid JPEG", (int)rc);
         heap_caps_free(j.out);
         return false;
     }
@@ -765,44 +825,48 @@ static void web_log(const char *label, const char *what, const web_times_t *t, s
  * A public web image (an https URL Muse wrote into a reply) fetched straight
  * here: a second or two, not the ~20 s of Muse pushing a copy. No token or
  * cookie goes with it. The CDN's smaller copy first, the URL as given if
- * that fails. True if it was shown; else Muse is asked after all (too big,
- * a format not shown here, refused, out of reach).
+ * that can't be fetched or decoded. True if it was shown; else Muse is asked
+ * after all (too big, a format not shown here, refused, out of reach).
  */
 static bool show_from_web(const char *url, const char *label)
 {
     int64_t t0 = esp_timer_get_time();
     char *small = heap_caps_malloc(WEB_URL_MAX, MUSE_BIG_CAPS);
     bool smaller = small && muse_img_url_smaller(url, MUSE_IMG_URL_PX, small, WEB_URL_MAX);
-    uint8_t *data = NULL;
-    size_t len = 0;
-    bool too_big = false, got = false;
-    web_times_t t;
-    for (int i = smaller ? 0 : 1; i < 2 && !got; i++) {
+    bool shown = false;
+    for (int i = smaller ? 0 : 1; i < 2 && !shown; i++) {
         const char *u = i == 0 ? small : url;
+        uint8_t *data = NULL;
+        size_t len = 0;
+        bool too_big = false;
+        web_times_t t;
         int64_t ti = esp_timer_get_time();
-        got = web_get(u, &data, &len, &too_big, &t) && can_show(data, len);
+        bool got = web_get(u, &data, &len, &too_big, &t) && can_show(data, len);
         web_log(label, i == 0 ? "its smaller copy" : "fetched here", &t, len, (int)ms_since(ti));
+        fetching(false, 0, 0);
         if (!got) {
             ESP_LOGW(TAG, "\"%s\": %.80s: %s", label, u,
                      too_big ? "too big" : data ? "a format not shown here" : "couldn't fetch it");
             heap_caps_free(data);
-            data = NULL;
+            continue;
+        }
+        decoding(1);
+        job_t job = { .data = data, .len = len };
+        strlcpy(job.label, label, sizeof(job.label));
+        shown = run(&job);
+        decoding(-1);
+        heap_caps_free(data);
+        if (!shown && i == 0) {
+            ESP_LOGW(TAG, "\"%s\": its smaller copy wasn't shown: the original, then", label);
         }
     }
     heap_caps_free(small);
-    fetching(false, 0, 0);
-    if (!got) {
-        ESP_LOGW(TAG, "\"%s\": not fetched here in %d ms: asking Muse", label, (int)ms_since(t0));
+    if (!shown) {
+        ESP_LOGW(TAG, "\"%s\": not shown from here in %d ms: asking Muse", label, (int)ms_since(t0));
         return false;
     }
-    decoding(1);
-    job_t job = { .data = data, .len = len };
-    strlcpy(job.label, label, sizeof(job.label));
-    bool shown = run(&job);
-    decoding(-1);
-    heap_caps_free(data);
-    ESP_LOGI(TAG, "\"%s\": %s %d ms after asking", label, shown ? "shown" : "not shown", (int)ms_since(t0));
-    return shown;
+    ESP_LOGI(TAG, "\"%s\": shown %d ms after asking", label, (int)ms_since(t0));
+    return true;
 }
 
 /* ---- >fetch= (muse_present_bench_fetch) ---------------------------------- */
@@ -842,34 +906,38 @@ static void bench_fetch(void *arg)
     int tcp = tcp_ms(u);
     uint8_t *data = NULL;
     size_t len = 0;
-    bool too_big = false;
+    bool too_big = false, got = false, shown = false;
     web_times_t t;
-    bool got = web_get(u, &data, &len, &too_big, &t);
-    if (!got && smaller) {
-        u = url;   /* as show_from_web: the original after its smaller copy */
+    const char *kind = "none";
+    int fetch_ms = 0, show_ms = 0;
+    /* As show_from_web: the original after its smaller copy, if that can't be fetched or shown. */
+    for (int i = smaller ? 0 : 1; i < 2 && !shown; i++) {
+        u = i == 0 ? small : url;
+        heap_caps_free(data);
+        data = NULL;
+        int64_t tf = esp_timer_get_time();
         got = web_get(u, &data, &len, &too_big, &t);
-    }
-    int fetch_ms = (int)ms_since(t0);
-    fetching(false, 0, 0);
-    const char *kind = !got ? "none" : len > 3 && data[0] == 0xFF && data[1] == 0xD8 ? "JPEG"
+        fetch_ms += (int)ms_since(tf);
+        fetching(false, 0, 0);
+        kind = !got ? "none" : len > 3 && data[0] == 0xFF && data[1] == 0xD8 ? "JPEG"
 #if CONFIG_MUSE_PRESENT_FORMATS
-                       : muse_image_kind_name(muse_image_kind(data, len));
+               : muse_image_kind_name(muse_image_kind(data, len));
 #else
-                       : "other";
+               : "other";
 #endif
-    int64_t t1 = esp_timer_get_time();
-    bool shown = false;
-    if (got && can_show(data, len)) {
-        job_t job = { .data = data, .len = len };
-        strlcpy(job.label, "fetch", sizeof(job.label));
-        decoding(1);
-        shown = run(&job);
-        decoding(-1);
-        if (shown) {
-            atomic_fetch_add(&s_seq, 1);   /* the face has it */
+        if (got && can_show(data, len)) {
+            int64_t t1 = esp_timer_get_time();
+            job_t job = { .data = data, .len = len };
+            strlcpy(job.label, "fetch", sizeof(job.label));
+            decoding(1);
+            shown = run(&job);
+            decoding(-1);
+            show_ms += (int)ms_since(t1);
+            if (shown) {
+                atomic_fetch_add(&s_seq, 1);   /* the face has it */
+            }
         }
     }
-    int show_ms = (int)ms_since(t1);
     printf("@fetch {\"ok\":%s,\"shown\":%s,\"smaller\":%s,\"status\":%d,\"bytes\":%u,\"kind\":\"%s\",\"dns_ms\":%d,"
            "\"tcp_ms\":%d,\"connect_ms\":%d,\"tls_ms\":%d,\"resumed\":%s,\"wait_ms\":%d,\"body_ms\":%d,"
            "\"parts\":%d,\"fetch_ms\":%d,\"decode_show_ms\":%d,\"total_ms\":%d,\"dma_free\":%u}\n",
@@ -1594,6 +1662,17 @@ bool muse_present_decode(const uint8_t *data, size_t len, int fit_w, int fit_h, 
             rc = j.out ? jd_decomp(&jd, jpeg_out, scale) : JDR_MEM1;
         }
         heap_caps_free(pool);
+        if (rc == JDR_FMT3) {
+            heap_caps_free(j.out);
+            muse_jpeg_t img;
+            if (!own_jpeg("decoding", data, len, fit_w, fit_h, &img)) {
+                return false;
+            }
+            *px = img.px;
+            *w = img.w;
+            *h = img.h;
+            return true;
+        }
         if (rc != JDR_OK) {
             heap_caps_free(j.out);
             return false;

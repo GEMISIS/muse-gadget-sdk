@@ -51,6 +51,7 @@ if(CONFIG_MUSE_ENABLED)
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
         list(APPEND srcs "muse_present.c")   # images in replies, held up on the face
+        list(APPEND srcs "muse_jpeg.c")   # their progressive JPEGs
         list(APPEND srcs "muse_img_url.c")   # a web image's smaller copy, from its CDN
         list(APPEND srcs "muse_widget.c" "muse_widget_html.c")   # widgets in replies (options, lists, forms...)
         list(APPEND srcs "muse_browse.c")   # Muse's browser at work in a turn
