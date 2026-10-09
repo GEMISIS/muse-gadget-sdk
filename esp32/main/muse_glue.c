@@ -351,6 +351,17 @@ static int op_wifi_scan_results(muse_wifi_ap_t *out, int max, uint32_t *gen) {
     return n;
 }
 
+static int op_wifi_bssids(muse_wifi_bssid_t *out, int max, uint32_t *gen) {
+    wifi_bssid_entry_t found[24];
+    int n = wifi_mgr_scan_bssids(found, max < 24 ? max : 24, gen);
+    for (int i = 0; i < n; i++) {
+        memcpy(out[i].mac, found[i].bssid, 6);
+        out[i].rssi = found[i].rssi;
+        out[i].channel = found[i].channel;
+    }
+    return n;
+}
+
 // ---- BLE, Hatch, setup -------------------------------------------------------
 
 static void op_ble_apply(void) {
@@ -392,6 +403,7 @@ static const muse_link_ops_t s_ops = {
     .wifi_scan = op_wifi_scan,
     .wifi_scanning = op_wifi_scanning,
     .wifi_scan_results = op_wifi_scan_results,
+    .wifi_bssids = op_wifi_bssids,
     .ble_apply = op_ble_apply,
     .ble_started = op_ble_started,
     .hatch_linked = op_hatch_linked,

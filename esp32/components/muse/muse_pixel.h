@@ -54,6 +54,7 @@ typedef enum {
     MUSE_ACT_WRITE,
     MUSE_ACT_MEMORY,
     MUSE_ACT_RESPOND,
+    MUSE_ACT_BROWSE,
     MUSE_ACT_COUNT,
 } muse_act_t;
 
@@ -130,7 +131,12 @@ typedef struct {
      * takes); then, made, 0..1 through a flourish and tossing the canvas up
      * into the cloud the boxes will come out of. CLOUD: that cloud up, its
      * arrow pulsing, and him waiting on it, tapping a foot, till the bytes
-     * start coming (PACKAGES). A renderer may leave them alone. */
+     * start coming (PACKAGES). BROWSE, Muse's browser at work on the web: at
+     * a little desk, a hand on the mouse, a laptop's browser window loading
+     * pages in the site's colour (browse_site), scrolling them and clicking
+     * through, his eyes on the pointer (act_progress -1, as long as it
+     * runs); then, done, 0..1 through a cheer and shutting the lid. A
+     * renderer may leave them alone. */
     muse_act_t act;
     float act_t;
     float act_progress;
@@ -143,6 +149,9 @@ typedef struct {
      * feet, arms out, and stands his ground. `dizzy` is the wobble after. A
      * renderer may leave it alone. */
     float brace;
+    /* MUSE_ACT_BROWSE: the site's colour (0xRRGGBB) for its page's header
+     * and the address bar's icon; 0 for none yet (starting up). */
+    uint32_t browse_site;
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */

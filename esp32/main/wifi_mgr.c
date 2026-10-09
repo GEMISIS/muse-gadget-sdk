@@ -21,6 +21,7 @@
 #include <stdatomic.h>
 
 #include "esp_wifi.h"
+#include "esp_attr.h"
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_log.h"
@@ -428,6 +429,54 @@ esp_netif_t *wifi_mgr_get_netif(void) {
     return s_sta_netif;
 }
 
+#if CONFIG_SPIRAM
+#define BSSIDS_MAX 24
+EXT_RAM_BSS_ATTR static wifi_bssid_entry_t s_bssids[BSSIDS_MAX];
+EXT_RAM_BSS_ATTR static int s_bssid_count;
+EXT_RAM_BSS_ATTR static uint32_t s_bssid_gen;
+#endif
+
+// Keeps the scan's access points for wifi_mgr_scan_bssids (recs strongest
+// first). Under s_scan_mutex, as the scan is.
+static void keep_bssids(const wifi_ap_record_t *recs, int n) {
+#if CONFIG_SPIRAM
+    int k = 0;
+    for (int i = 0; i < n && k < BSSIDS_MAX; i++) {
+        const char *ssid = (const char *)recs[i].ssid;
+        size_t len = strlen(ssid);
+        if (!len || (recs[i].bssid[0] & 0x02) || (len >= 6 && !strcmp(ssid + len - 6, "_nomap"))) continue;
+        memcpy(s_bssids[k].bssid, recs[i].bssid, 6);
+        s_bssids[k].rssi = recs[i].rssi;
+        s_bssids[k].channel = recs[i].primary;
+        k++;
+    }
+    s_bssid_count = k;
+    __atomic_add_fetch(&s_bssid_gen, 1, __ATOMIC_RELEASE);
+#else
+    (void)recs;
+    (void)n;
+#endif
+}
+
+int wifi_mgr_scan_bssids(wifi_bssid_entry_t *out, int max_entries, uint32_t *gen) {
+#if CONFIG_SPIRAM
+    *gen = __atomic_load_n(&s_bssid_gen, __ATOMIC_ACQUIRE);
+    if (max_entries <= 0 || !s_scan_mutex || xSemaphoreTake(s_scan_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return 0;   // just the generation, or a scan's under way
+    }
+    int n = s_bssid_count < max_entries ? s_bssid_count : max_entries;
+    memcpy(out, s_bssids, n * sizeof(*out));
+    *gen = s_bssid_gen;
+    xSemaphoreGive(s_scan_mutex);
+    return n;
+#else
+    (void)out;
+    (void)max_entries;
+    *gen = 0;
+    return 0;
+#endif
+}
+
 int wifi_mgr_scan(wifi_scan_entry_t *out, int max_entries, uint8_t channel,
                   const char *target_ssid) {
     if (!s_inited || !out || max_entries <= 0) return 0;
@@ -494,6 +543,7 @@ int wifi_mgr_scan(wifi_scan_entry_t *out, int max_entries, uint8_t channel,
         return -1;
     }
     esp_wifi_scan_get_ap_records(&want, recs);
+    if (!target_ssid && !channel) keep_bssids(recs, want);
 
     // Collapse the per-BSSID records to one entry per SSID: a dual-band or
     // mesh network shows up once per radio. recs is sorted by RSSI desc

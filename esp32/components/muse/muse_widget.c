@@ -18,7 +18,9 @@
 #include "muse_widget.h"
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "muse_text.h"
@@ -69,6 +71,18 @@ static void put_send(char *dst, size_t cap, const char *src)
     n = utf8_fit(src, n, cap - 1);
     memcpy(dst, src ? src : "", n);
     dst[n] = '\0';
+}
+
+/* What a tap sends, made from its parts: cut, if it must be, at a whole character. */
+static void send_fmt(char *dst, size_t cap, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
+static void send_fmt(char *dst, size_t cap, const char *fmt, ...)
+{
+    char tmp[MUSE_WIDGET_SEND * 2];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_end(ap);
+    put_send(dst, cap, tmp);
 }
 
 void muse_widget_text(char *dst, size_t cap, const char *src, bool lines)
@@ -407,7 +421,20 @@ static bool parse_list(const cJSON *data, muse_widget_t *w)
             const char *text = str(d, "text");
             put_send(r->send, sizeof(r->send), text ? text : title);
         } else if (url) {
+            /* A link: its card has the site, and asks Muse to sum it up. */
+            if (type == MUSE_WIDGET_ROW_GENERIC) {
+                r->type = MUSE_WIDGET_ROW_LINK;
+            }
             domain(r->meta, sizeof(r->meta), url);
+            put_send(r->url, sizeof(r->url), url);
+            strcpy(r->button, "Summarise it");
+            send_fmt(r->send, sizeof(r->send), "Summarise %s for me", url);
+            strcpy(r->button2, "Tell me more");
+            send_fmt(r->send2, sizeof(r->send2), "Tell me more about %s", title);
+        } else {
+            /* A calendar's, a mail's, or just words: its card asks about it. */
+            strcpy(r->button, "Tell me more");
+            send_fmt(r->send, sizeof(r->send), "Tell me more about %s", title);
         }
     }
     return w->count > 0;
@@ -415,21 +442,57 @@ static bool parse_list(const cJSON *data, muse_widget_t *w)
 
 /* ---- Places ---- */
 
+static bool coordinate(const cJSON *e, float *lat, float *lon)
+{
+    const cJSON *c = obj(e, "coordinate");
+    c = c ? c : obj(e, "location");
+    c = c ? c : e;
+    const cJSON *la = cJSON_GetObjectItemCaseSensitive(c, "latitude");
+    const cJSON *lo = cJSON_GetObjectItemCaseSensitive(c, "longitude");
+    la = la ? la : cJSON_GetObjectItemCaseSensitive(c, "lat");
+    lo = lo ? lo : cJSON_GetObjectItemCaseSensitive(c, "lng");
+    lo = lo ? lo : cJSON_GetObjectItemCaseSensitive(c, "lon");
+    if (!cJSON_IsNumber(la) || !cJSON_IsNumber(lo) || la->valuedouble < -90 || la->valuedouble > 90
+        || lo->valuedouble < -180 || lo->valuedouble > 180) {
+        return false;
+    }
+    *lat = (float)la->valuedouble;
+    *lon = (float)lo->valuedouble;
+    return true;
+}
+
+/* A short line with a capital: a title from what a map's said to be about. */
+static const char *short_line(const char *s)
+{
+    return s && strlen(s) < MUSE_WIDGET_TITLE - 1 && !strchr(s, '\n') ? s : NULL;
+}
+
+/* "map" ({elements}) and "local_map" ({typed_data: {elements, motivation}, html}). */
 static bool parse_map(const cJSON *data, const cJSON *json, muse_widget_t *w)
 {
-    /* Its title, or what it's said to show if that's a short line, or "Places". */
-    const char *title = str(data, "title");
-    title = title ? title : str(data, "display_text");
-    title = title ? title : str(json, "display_text");
-    if (title && (strlen(title) >= MUSE_WIDGET_TITLE || strchr(title, '\n'))) {
-        title = NULL;
+    const cJSON *typed = obj(data, "typed_data");
+    const cJSON *src = typed ? typed : data;
+    /* Its title, or what it's about if that's a short line, or what it's said to show, or "Places". */
+    const char *title = str(src, "title");
+    const char *about = short_line(str(src, "motivation"));
+    title = title ? title : about;
+    title = title ? title : short_line(str(data, "display_text"));
+    title = title ? title : short_line(str(json, "display_text"));
+    char head[MUSE_WIDGET_TITLE];
+    snprintf(head, sizeof(head), "%s", title ? title : "Places");
+    head[0] = (char)toupper((unsigned char)head[0]);
+    muse_widget_text(w->title, sizeof(w->title), head, false);
+    if (!about) {
+        muse_widget_text(w->text, sizeof(w->text), str(src, "motivation"), true);
     }
-    muse_widget_text(w->title, sizeof(w->title), title ? title : "Places", false);
-    muse_widget_text(w->text, sizeof(w->text), str(data, "motivation"), true);
+    const cJSON *zoom = cJSON_GetObjectItemCaseSensitive(src, "initial_zoom");
+    const char *html = str(data, "html"), *dz = html ? strstr(html, "data-initial-zoom=\"") : NULL;
+    int z = cJSON_IsNumber(zoom) ? (int)zoom->valuedouble : dz ? atoi(dz + 19) : 0;
+    w->zoom = (uint8_t)(z > 0 && z <= 20 ? z : 0);
     const cJSON *e;
-    cJSON_ArrayForEach(e, arr(data, "elements")) {
+    cJSON_ArrayForEach(e, arr(src, "elements")) {
         static const char *const NAME[] = { "name", "title", NULL };
-        static const char *const SUB[] = { "category", "subtitle", NULL };
+        static const char *const SUB[] = { "category", "subtitle", "address", NULL };
         const char *name = first(e, NAME);
         if (!name) {
             continue;
@@ -438,12 +501,17 @@ static bool parse_map(const cJSON *data, const cJSON *json, muse_widget_t *w)
         if (!r) {
             break;
         }
+        r->pos = coordinate(e, &r->lat, &r->lon);
         muse_widget_text(r->title, sizeof(r->title), name, false);
         muse_widget_text(r->sub, sizeof(r->sub), first(e, SUB), false);
-        muse_widget_text(r->extra, sizeof(r->extra), str(e, "description"), false);
-        char send[MUSE_WIDGET_SEND];
-        snprintf(send, sizeof(send), "Tell me more about %s", name);
-        put_send(r->send, sizeof(r->send), send);
+        const char *more = str(e, "description");
+        if (more && (!r->sub[0] || strcmp(more, first(e, SUB)) != 0)) {
+            muse_widget_text(r->extra, sizeof(r->extra), more, false);
+        }
+        strcpy(r->button, "Tell me more");
+        send_fmt(r->send, sizeof(r->send), "Tell me more about %s", name);
+        strcpy(r->button2, "Directions");
+        send_fmt(r->send2, sizeof(r->send2), "How do I get to %s?", name);
     }
     return w->count > 0;
 }
@@ -475,12 +543,23 @@ static bool parse_shopping(const cJSON *data, const char *kind, muse_widget_t *w
         if (sale && price && strcmp(sale, price)) {
             muse_widget_text(r->extra, sizeof(r->extra), price, false);   /* struck through on the face */
         }
+        put_send(r->url, sizeof(r->url), str(p, "url"));
+        const char *image = str(p, "image_url");
+        if (image && !strncmp(image, "https://", 8) && !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(p, "is_image_available"))) {
+            put_send(r->image, sizeof(r->image), image);
+        }
         const char *act = str(p, "primary_action");
         if (act && strstr(act, "cart")) {
-            strcpy(r->button, "Add");
-            char send[MUSE_WIDGET_SEND];
-            snprintf(send, sizeof(send), "Add one more %s to my cart", name);
-            put_send(r->send, sizeof(r->send), send);
+            strcpy(r->button, "Add to cart");
+            send_fmt(r->send, sizeof(r->send), "Add one more %s to my cart", name);
+            strcpy(r->button2, "Tell me more");
+            send_fmt(r->send2, sizeof(r->send2), "Tell me more about the %s", name);
+        } else {
+            const char *shop = first(p, SUB);
+            strcpy(r->button, "Tell me more");
+            send_fmt(r->send, sizeof(r->send), "Tell me more about the %s%s%s", name, shop ? " from " : "", shop ? shop : "");
+            strcpy(r->button2, "Find similar");
+            send_fmt(r->send2, sizeof(r->send2), "Find me a few more like the %s", name);
         }
     }
     return w->count > 0;
@@ -494,7 +573,7 @@ static const char *card_label(const char *kind)
         const char *kind, *label;
     } LABELS[] = {
         { "idea_group", "Ideas" }, { "idea", "Idea" }, { "letter", "Letter" }, { "avatar", "Share" },
-        { "navigation", "Shortcut" }, { "html", "Interactive card" }, { "cart", "Your cart" },
+        { "navigation", "Shortcut" }, { "html", "From Muse" }, { "cart", "Your cart" },
         { "shopping", "Shopping" }, { "map", "Places" }, { "list", "List" },
     };
     for (size_t i = 0; i < sizeof(LABELS) / sizeof(LABELS[0]); i++) {
@@ -556,7 +635,8 @@ bool muse_widget_parse(const cJSON *json, muse_widget_t *out)
     if (!data && str(json, "data_json")) {
         data = parsed = cJSON_Parse(str(json, "data_json"));
     }
-    if ((kind && !strcmp(kind, "image")) || (!kind && !data && !str(json, "display_text"))) {
+    if ((kind && (!strcmp(kind, "image") || !strcmp(kind, "browser_task")))
+        || (!kind && !data && !str(json, "display_text"))) {
         cJSON_Delete(parsed);
         return false;
     }
@@ -568,7 +648,9 @@ bool muse_widget_parse(const cJSON *json, muse_widget_t *out)
     put_send(out->id, sizeof(out->id), id);
     const char *name = out->name;
     bool ok = false;
-    if (strstr(name, "option") || strstr(name, "choice") || strstr(name, "quick_repl") || strstr(name, "button")) {
+    if (strstr(name, "html")) {
+        ok = muse_widget_html(str(data, "html"), out);   /* its kind from what's on it */
+    } else if (strstr(name, "option") || strstr(name, "choice") || strstr(name, "quick_repl") || strstr(name, "button")) {
         out->kind = MUSE_WIDGET_OPTIONS;
         ok = parse_options(data, json, out);
     } else if (strstr(name, "list")) {
@@ -627,12 +709,42 @@ static const struct {
       "{\"id\":\"widget-bench-shopping\",\"kind\":\"shopping_results\",\"data\":{\"products\":["
       "{\"url\":\"https://example.com/a\",\"name\":\"Trail running shoes\",\"price\":\"$129.99\","
       "\"sale_price\":\"$99.99\",\"retailer_name\":\"REI\",\"type\":\"browser\",\"provider\":\"rei\","
+      "\"image_url\":\"https://www.rei.com/media/product/2286170001\","
       "\"product_id\":\"a1\",\"primary_action\":\"add_to_cart\"},"
       "{\"url\":\"https://example.com/b\",\"name\":\"Merino wool socks, 3 pack\",\"price\":\"$24.00\","
       "\"brand\":\"Darn Tough\",\"retailer_name\":\"Amazon\"}]}}" },
     { "card",
-      "{\"id\":\"widget-bench-card\",\"kind\":\"html\",\"display_text\":\"Packing checklist\","
-      "\"data\":{\"html\":\"<div>...</div>\",\"fallback_text\":\"A checklist for your trip: 12 things, 4 packed.\"}}" },
+      "{\"id\":\"widget-bench-card\",\"kind\":\"idea\",\"display_text\":\"Packing checklist\","
+      "\"data\":{\"idea_id\":\"i1\",\"summary\":\"A checklist for your trip: 12 things, 4 packed.\"}}" },
+    /* As captured from Muse (q1, q2, q4), the pages' styles and the state bridge trimmed. */
+    { "text",
+      "{\"id\":\"widget-bench-text\",\"kind\":\"html\",\"fallback_text\":\"Favorite book text input\","
+      "\"data\":{\"fallback_text\":\"Favorite book text input\",\"html\":\"<div style=\\\"padding:12px;\\\">"
+      "<div>What's your favorite book?</div><div style=\\\"display:flex;gap:8px;\\\"><input id=\\\"bookinput\\\" "
+      "type=\\\"text\\\" placeholder=\\\"Type the title...\\\" /><button id=\\\"booksubmit\\\">Submit</button></div>"
+      "<div id=\\\"bookresult\\\"></div></div><script>(function(){var state=window.hatchWidget.getState({book:\\\"\\\"});"
+      "})();</script>\"}}" },
+    { "multi",
+      "{\"id\":\"widget-bench-multi\",\"kind\":\"html\",\"fallback_text\":\"Multi-select pizza toppings\","
+      "\"data\":{\"fallback_text\":\"Multi-select pizza toppings\",\"html\":\"<div><div>Pick your pizza toppings "
+      "(as many as you want):</div><div id=\\\"list\\\"></div><button id=\\\"donebtn\\\">Done</button>"
+      "<div id=\\\"result\\\"></div></div><script>(function(){var toppings=[\\\"Pepperoni\\\",\\\"Sausage\\\","
+      "\\\"Mushrooms\\\",\\\"Bell peppers\\\",\\\"Onions\\\",\\\"Olives\\\",\\\"Extra cheese\\\","
+      "\\\"Pineapple\\\",\\\"Jalape\\u00f1os\\\",\\\"Basil\\\"];var box=document.createElement('input');"
+      "box.type='checkbox';})();</script>\"}}" },
+    { "localmap",
+      "{\"id\":\"widget-bench-localmap\",\"kind\":\"local_map\",\"display_text\":\"Map with 4 places\","
+      "\"data\":{\"html\":\"<section data-local-map-widget data-initial-zoom=\\\"16\\\"></section>\","
+      "\"typed_data\":{\"kind\":\"local_map\",\"motivation\":\"coffee shops near Pike Place Market\","
+      "\"schema_version\":1,\"elements\":["
+      "{\"kind\":\"marker\",\"id\":\"marker_0\",\"title\":\"Storyville Coffee\","
+      "\"subtitle\":\"94 Pike St \u2014 cozy, bay views\",\"coordinate\":{\"latitude\":47.608882,\"longitude\":-122.340398}},"
+      "{\"kind\":\"marker\",\"id\":\"marker_1\",\"title\":\"Anchorhead Coffee\","
+      "\"subtitle\":\"2003 Western Ave \u2014 specialty coffee\",\"coordinate\":{\"latitude\":47.610961,\"longitude\":-122.344589}},"
+      "{\"kind\":\"marker\",\"id\":\"marker_2\",\"title\":\"Ghost Alley Espresso\","
+      "\"subtitle\":\"1499 Post Alley \u2014 by the gum wall\",\"coordinate\":{\"latitude\":47.60863,\"longitude\":-122.340569}},"
+      "{\"kind\":\"marker\",\"id\":\"marker_3\",\"title\":\"Original Starbucks\","
+      "\"subtitle\":\"1912 Pike Pl \u2014 the 1971 store\",\"coordinate\":{\"latitude\":47.610011,\"longitude\":-122.342635}}]}}}" },
 };
 
 const char *muse_widget_sample(const char *name)
@@ -688,6 +800,21 @@ void muse_widget_clear(void)
         s_set->sid[0] = '\0';
         unlock();
     }
+}
+
+void muse_widget_remove(const char *id)
+{
+    if (!id || !id[0] || !lock()) {
+        return;
+    }
+    for (int i = 0; i < s_set->count; i++) {
+        if (!strcmp(s_set->w[i].id, id)) {
+            memmove(&s_set->w[i], &s_set->w[i + 1], sizeof(s_set->w[0]) * (s_set->count - i - 1));
+            s_set->count--;
+            break;
+        }
+    }
+    unlock();
 }
 
 bool muse_widget_add(const muse_widget_t *w, const char *sid)

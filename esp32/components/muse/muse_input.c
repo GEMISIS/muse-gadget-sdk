@@ -47,6 +47,7 @@
 #include "muse_ui.h"
 #include "muse_up_next.h"
 #include "muse_voice.h"
+#include "muse_browse.h"
 #include "muse_widget.h"
 #include "muse_wifi.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
@@ -993,15 +994,21 @@ static bool console_command(char *line, bool whole)
         /* A sample widget (muse_widget_sample), as if the last reply had brought it; "none" takes it away. */
         const char *json = muse_widget_sample(line + 7);
         bool none = !strcmp(line + 7, "none");
+        bool browser = !strcmp(line + 7, "browser");   /* Muse's browser at work for ~8 s (muse_browse_bench) */
         muse_ui_bench_pose(MUSE_UI_BENCH_NONE);
         muse_state_poke();
         if (none) {
             muse_widget_clear();
+            muse_browse_turn();
         }
-        if (none || (json && muse_hatch_widget_bench(json))) {
+        if (browser) {
+            muse_browse_bench();
+        }
+        if (none || browser || (json && muse_hatch_widget_bench(json))) {
             printf("@widget {\"widget\":\"%s\"}\n", line + 7);
         } else {
-            printf("@widget.error \"%s\": option, options, list, map, shopping, card or none\n", line + 7);
+            printf("@widget.error \"%s\": option, options, list, map, localmap, shopping, text, multi, card, "
+                   "browser or none\n", line + 7);
         }
         fflush(stdout);
         return true;
@@ -1063,8 +1070,9 @@ static bool console_command(char *line, bool whole)
  * "up next" line now and "brief?" prints it (muse_up_next.h), "face=" shows a face
  * (see set_face), "activity=TEXT" shows Muse at what he'd be at if he said
  * TEXT (muse_activity_of) and prints what it's taken for, "widget=NAME" shows
- * a sample widget (option, options, list, map, shopping, card; none takes it
- * away) as if a reply had brought it, "chat=" sends a typed message to Hatch (see chat_line
+ * a sample widget (option, options, list, map, localmap, shopping, text,
+ * multi, card; none takes it away) as if a reply had brought it, or Muse's
+ * browser at work ("browser"), "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and "chat_sid=", "chat_new=" and "chats" pick
  * the chat it goes to and list the named ones (see chat_sid_command).
  */

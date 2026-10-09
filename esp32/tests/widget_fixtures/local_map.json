@@ -1,0 +1,60 @@
+{
+ "id": "widget-2baad4f3-1803-48b4-8866-6a3d01800656",
+ "kind": "local_map",
+ "session_id": "234da32c-75da-437b-900f-387739e0c67d",
+ "display_text": "Map with 4 places",
+ "state": {
+  "data": {},
+  "version": 0
+ },
+ "data": {
+  "html": "<section\n  class=\"hatch-widget hatch-local-map-widget\"\n  data-widget-root\n  data-local-map-widget\n  data-style-url=\"https://external.xx.fbcdn.net/maps/vt/style/canterbury_1_0/\"\n  data-dark-style-url=\"\"\n  data-initial-zoom=\"16\"\n></section>",
+  "typed_data": {
+   "elements": [
+    {
+     "coordinate": {
+      "latitude": 47.608882,
+      "longitude": -122.340398
+     },
+     "id": "marker_0",
+     "kind": "marker",
+     "subtitle": "94 Pike St — cozy, bay views",
+     "title": "Storyville Coffee"
+    },
+    {
+     "coordinate": {
+      "latitude": 47.610961,
+      "longitude": -122.344589
+     },
+     "id": "marker_1",
+     "kind": "marker",
+     "subtitle": "2003 Western Ave — specialty coffee",
+     "title": "Anchorhead Coffee"
+    },
+    {
+     "coordinate": {
+      "latitude": 47.60863,
+      "longitude": -122.340569
+     },
+     "id": "marker_2",
+     "kind": "marker",
+     "subtitle": "1499 Post Alley — by the gum wall",
+     "title": "Ghost Alley Espresso"
+    },
+    {
+     "coordinate": {
+      "latitude": 47.610011,
+      "longitude": -122.342635
+     },
+     "id": "marker_3",
+     "kind": "marker",
+     "subtitle": "1912 Pike Pl — the 1971 store",
+     "title": "Original Starbucks"
+    }
+   ],
+   "kind": "local_map",
+   "motivation": "coffee shops near Pike Place Market",
+   "schema_version": 1
+  }
+ }
+}

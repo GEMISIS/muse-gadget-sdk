@@ -1,0 +1,43 @@
+{
+ "id": "widget-aefc2327-0a2f-4260-88f7-6b354b383fba",
+ "kind": "generic_list",
+ "session_id": "234da32c-75da-437b-900f-387739e0c67d",
+ "display_text": "**Weekend ideas**\n- Saturday: Serres Farm pumpkin patch: Redmond, ~18 min — animal train, duck races, pumpkin patch\n- Sunday: Kelsey Creek Farm with Ezra: Bellevue — farm animals, easy outing with Ezra\n- Sunday evening: family movie night: After Ezra's swim class — cozy night in",
+ "state": {
+  "data": {},
+  "version": 0
+ },
+ "data": {
+  "items": [
+   {
+    "data": {
+     "text": "Let's do the Serres Farm pumpkin patch Saturday morning"
+    },
+    "icons": [],
+    "subtitle": "Redmond, ~18 min — animal train, duck races, pumpkin patch",
+    "title": "Saturday: Serres Farm pumpkin patch",
+    "type": "send_message"
+   },
+   {
+    "data": {
+     "text": "Let's do Kelsey Creek Farm Sunday afternoon"
+    },
+    "icons": [],
+    "subtitle": "Bellevue — farm animals, easy outing with Ezra",
+    "title": "Sunday: Kelsey Creek Farm with Ezra",
+    "type": "send_message"
+   },
+   {
+    "data": {
+     "text": "Let's do a family movie night Sunday evening"
+    },
+    "icons": [],
+    "subtitle": "After Ezra's swim class — cozy night in",
+    "title": "Sunday evening: family movie night",
+    "type": "send_message"
+   }
+  ],
+  "subtitle": "Tap one to pick it",
+  "title": "Weekend ideas"
+ }
+}

@@ -56,6 +56,7 @@ typedef struct {
     esp_err_t (*wifi_scan)(void);
     bool (*wifi_scanning)(void);
     int (*wifi_scan_results)(muse_wifi_ap_t *out, int max, uint32_t *gen);
+    int (*wifi_bssids)(muse_wifi_bssid_t *out, int max, uint32_t *gen);   /* the last scan's, per BSSID */
     void (*ble_apply)(void);                      /* BLE phone setup setting changed */
     bool (*ble_started)(void);
     bool (*hatch_linked)(void);                   /* paired to a Hatch account */

@@ -78,7 +78,9 @@ class MuseWidgetTest(unittest.TestCase):
              "-Wno-deprecated-declarations",   # cJSON.c's sprintf, on macOS
              "-I", str(ROOT / "components/muse"), "-I", str(JSON),
              str(ROOT / "tests/muse_widget_harness.c"), str(ROOT / "components/muse/muse_widget.c"),
-             str(ROOT / "components/muse/muse_text.c"), str(JSON / "cJSON.c"),
+             str(ROOT / "components/muse/muse_widget_html.c"), str(ROOT / "components/muse/muse_browse.c"),
+             str(ROOT / "components/muse/muse_map.c"),
+             str(ROOT / "components/muse/muse_text.c"), str(JSON / "cJSON.c"), "-lm",
              "-o", str(cls.binary)],
             capture_output=True, text=True,
         )
@@ -121,9 +123,13 @@ class MuseWidgetTest(unittest.TestCase):
         rows = w["rows"]
         self.assertEqual([r["type"] for r in rows], ["send", "link", "calendar"])
         self.assertEqual(rows[0]["send"], "Let's hike Rattlesnake Ledge this weekend")
-        self.assertEqual((rows[1]["meta"], rows[1]["send"]), ("pikeplacemarket.org", ""))
-        self.assertEqual((rows[2]["title"], rows[2]["sub"], rows[2]["send"]),
-                         ("Block Saturday morning", "Glyph-only row", ""))
+        # Every row does something: a link's card asks Muse to sum it up, the rest ask about them.
+        self.assertEqual((rows[1]["meta"], rows[1]["url"], rows[1]["send"], rows[1]["send2"]),
+                         ("pikeplacemarket.org", "https://www.pikeplacemarket.org/",
+                          "Summarise https://www.pikeplacemarket.org/ for me", "Tell me more about Pike Place Market"))
+        self.assertEqual((rows[2]["title"], rows[2]["sub"], rows[2]["button"], rows[2]["send"]),
+                         ("Block Saturday morning", "Glyph-only row", "Tell me more",
+                          "Tell me more about Block Saturday morning"))
         # The tool's own name for it, and its record's data_json string.
         record = {"widget_id": "w-2", "kind": "list", "data_json": json.dumps(GENERIC_LIST["data"])}
         self.assertEqual(len(self.parse(record)["rows"]), 3)
@@ -150,13 +156,19 @@ class MuseWidgetTest(unittest.TestCase):
         self.assertEqual(w["kind"], "shopping")
         shoes, socks = w["rows"]
         self.assertEqual((shoes["meta"], shoes["extra"], shoes["button"], shoes["sub"]),
-                         ("$99.99", "$129.99", "Add", "REI"))
+                         ("$99.99", "$129.99", "Add to cart", "REI"))
         self.assertEqual(shoes["send"], "Add one more Trail running shoes to my cart")
-        self.assertEqual((socks["button"], socks["send"], socks["meta"]), ("", "", "$24.00"))
+        self.assertEqual(shoes["image"], "https://www.rei.com/media/product/2286170001")
+        self.assertEqual(shoes["send2"], "Tell me more about the Trail running shoes")
+        # One that can't go in the cart: its card asks about it, or for more like it.
+        self.assertEqual((socks["button"], socks["send"], socks["meta"], socks["button2"]),
+                         ("Tell me more", "Tell me more about the Merino wool socks, 3 pack from Amazon", "$24.00",
+                          "Find similar"))
         # A cart with nothing to list: a card.
         self.assertEqual(self.parse({"kind": "shopping_cart", "data": {"cart_ref": "c1"}})["kind"], "card")
 
     def test_cards_and_unknown_kinds(self):
+        # An HTML page with nothing to answer here: a card, with its fallback words.
         w = self.parse({"id": "x", "kind": "html", "display_text": "Packing list",
                         "data": {"html": "<b>hi</b>", "fallback_text": "12 things, 4 packed"}})
         self.assertEqual((w["kind"], w["title"], w["text"], w["rows"]), ("card", "Packing list", "12 things, 4 packed", []))
@@ -207,11 +219,144 @@ class MuseWidgetTest(unittest.TestCase):
         self.assertEqual(self.text(1, "abc"), "")
 
     def test_every_sample_parses(self):
-        for name in ("option", "options", "list", "map", "shopping", "card"):
+        for name in ("option", "options", "list", "map", "localmap", "shopping", "text", "multi", "card"):
             w = json.loads(self.run_harness("sample", name))
             self.assertTrue(w["rows"] or w["kind"] == "card", name)
             for r in w["rows"]:
-                self.assertTrue(r["title"], name)
+                self.assertTrue(r["title"] or r["type"] == "field", name)
+
+    # ---- HTML widgets: read for their controls (muse_widget_html.c) ----
+
+    def fixture(self, name):
+        return json.loads((ROOT / 'tests/widget_fixtures' / name).read_text())
+
+    def test_html_text_input_is_a_form(self):
+        # Captured: "What's your favorite book?", a text input with a placeholder, a Submit button.
+        w = self.parse(self.fixture('html_text.json'))
+        self.assertEqual((w["kind"], w["title"], w["action"]), ("form", "What's your favorite book?", "Submit"))
+        self.assertEqual([(r["type"], r["title"], r["sub"]) for r in w["rows"]], [("field", "", "Type the title...")])
+
+    def test_html_multi_select_from_its_script(self):
+        # Captured: the choices are made by the page's script from a list of words, as checkboxes.
+        w = self.parse(self.fixture('html_multi.json'))
+        self.assertEqual((w["kind"], w["title"], w["action"], w["lead"]),
+                         ("checks", "Pick your pizza toppings (as many as you want):", "Done", "Pizza toppings"))
+        self.assertEqual([r["send"] for r in w["rows"]],
+                         ["Pepperoni", "Sausage", "Mushrooms", "Bell peppers", "Onions", "Olives", "Extra cheese",
+                          "Pineapple", "Jalapeños", "Basil"])
+        self.assertEqual(w["rows"][8]["title"], "Jalapenos")   # shown in the face's characters
+        self.assertTrue(all(r["type"] == "check" for r in w["rows"]))
+
+    def page(self, html, **data):
+        return self.parse({"id": "h", "kind": "html", "fallback_text": "Fallback", "data": {"html": html, **data}})
+
+    def test_html_static_controls(self):
+        # Radios with their labels: one-of options, each sending its words.
+        w = self.page('<h3>Crust?</h3><label><input type="radio" name="c" value="thin"> Thin &amp; crispy</label>'
+                      '<label><input type=radio name=c> Deep dish</label><button>OK</button>')
+        self.assertEqual((w["kind"], w["title"]), ("options", "Crust?"))
+        self.assertEqual([(r["type"], r["send"]) for r in w["rows"]],
+                         [("option", "Thin & crispy"), ("option", "Deep dish")])
+        # A select's options.
+        w = self.page('<p>Size</p><select id=s><option value=1>Small</option><option>Large</option></select>')
+        self.assertEqual([r["send"] for r in w["rows"]], ["Small", "Large"])
+        # Static checkboxes; the button names the answer's button.
+        w = self.page('<div>Choose your sides:</div><input type=checkbox id=a><label for=a>Fries</label>'
+                      '<input type="checkbox" value="Salad"><input type=submit value="Order">')
+        self.assertEqual((w["kind"], w["action"], w["lead"]), ("checks", "Order", "Sides"))
+        self.assertEqual([r["send"] for r in w["rows"]], ["Fries", "Salad"])
+        # Several fields, each with its label; a textarea too.
+        w = self.page('<div>Tell me about the trip</div><label for=d>Destination</label><input id=d type=text>'
+                      '<span>Dates</span><input type=date><textarea placeholder="Anything else?"></textarea>'
+                      '<button>Plan it</button>')
+        self.assertEqual((w["kind"], w["title"], w["action"]), ("form", "Tell me about the trip", "Plan it"))
+        self.assertEqual([(r["title"], r["sub"]) for r in w["rows"]],
+                         [("Destination", ""), ("Dates", ""), ("", "Anything else?")])
+        # Buttons made by the script from objects with labels: options.
+        w = self.page('<div>Which one?</div><div id=b></div><script>var opts=[{id:1,label:"Red"},{id:2,label:"Blue"}];'
+                      'opts.forEach(function(o){var b=document.createElement("button");})</script>')
+        self.assertEqual((w["kind"], [r["send"] for r in w["rows"]]), ("options", ["Red", "Blue"]))
+        # Nothing to answer: a card with its fallback.
+        w = self.page('<div>Just a chart</div><canvas></canvas><script>var data=[1,2,3];</script>')
+        self.assertEqual((w["kind"], w["text"]), ("card", "Fallback"))
+
+    def test_lead_in(self):
+        for prompt, lead in (("Pick your pizza toppings (as many as you want):", "Pizza toppings"),
+                             ("Select the days you're free", "Days you're free"),
+                             ("Choose any snacks you like", "Snacks"),
+                             ("Which toppings do you want?", ""), ("Toppings:", "")):
+            self.assertEqual(self.run_harness("lead", prompt), lead, prompt)
+
+    # ---- Maps ----
+
+    def test_local_map(self):
+        # Captured: local_map's places are in its typed_data, its zoom in its page.
+        w = self.parse(self.fixture('local_map.json'))
+        self.assertEqual((w["kind"], w["title"], w["zoom"]), ("map", "Coffee shops near Pike Place Market", 16))
+        first = w["rows"][0]
+        self.assertEqual((first["type"], first["title"], first["sub"]),
+                         ("place", "Storyville Coffee", "94 Pike St -- cozy, bay views"))
+        self.assertAlmostEqual(first["lat"], 47.608882, places=4)
+        self.assertAlmostEqual(first["lon"], -122.340398, places=4)
+        self.assertEqual((first["button"], first["send"], first["button2"], first["send2"]),
+                         ("Tell me more", "Tell me more about Storyville Coffee", "Directions",
+                          "How do I get to Storyville Coffee?"))
+        self.assertEqual(len(w["rows"]), 4)
+
+    def test_map_arithmetic(self):
+        # Pike Place to Capitol Hill: about a mile and a quarter north-east; both fit at a street zoom.
+        m = json.loads(self.run_harness("map", "47.6097", "-122.3422", "47.6205", "-122.3212", "1"))
+        self.assertEqual((m["distance"], m["compass"]), ("1.2 mi", "NE"))
+        self.assertGreaterEqual(m["zoom"], 13)
+        m = json.loads(self.run_harness("map", "47.6097", "-122.3422", "47.6100", "-122.3422", "0"))
+        self.assertEqual((m["distance"], m["compass"], m["zoom"]), ("30 m", "N", 17))
+        m = json.loads(self.run_harness("map", "47.6", "-122.3", "45.5", "-122.7", "0"))
+        self.assertEqual((m["distance"], m["compass"]), ("236 km", "S"))
+
+    # ---- Muse's browser (muse_browse.c) ----
+
+    def browse(self, *names, turn=None):
+        steps = []
+        for n in names:
+            steps += self.fixture(n)
+        path = Path(self.temp.name) / 'browse.json'
+        path.write_text(json.dumps(steps))
+        return json.loads(self.run_harness("browse", str(path), *([str(turn)] if turn is not None else [])))
+
+    def test_browser_task_history(self):
+        # Captured: 23 updates of one task, one step a page, what it's at the latest.
+        b = self.browse('browser_q5.json')
+        self.assertEqual((b["task"], b["done"]), ("browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe", False))
+        self.assertEqual([(s["what"], s["site"], s["title"]) for s in b["steps"]], [
+            ("Checking site", "rei.com", "404 - Page Not Found | REI Co-op"),
+            ("Selecting option", "rei.com", "mens trail running shoes at REI | REI Co-op"),
+            ("Checking site", "rei.com", "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op"),
+            ("Opened page", "rei.com", "mens trail running shoes at REI | REI Co-op")])
+        # An older, finished task replayed among them (bestbuy) is passed over.
+        self.assertFalse(any("bestbuy" in s["site"] for s in b["steps"]))
+
+    def test_browser_task_of_the_turn(self):
+        # Captured: the next turn's updates have the last turn's task still going, and an old finished one;
+        # only the task the turn started is its own.
+        b = self.browse('browser_q5.json', 'browser_q6.json', turn=23)
+        self.assertEqual(b["task"], "browser-task:3cadd6fd-4a23-434b-8e81-6fcf875862d5")
+        self.assertEqual([(s["what"], s["site"]) for s in b["steps"]], [("Scrolling page", "spl.org")])
+        self.assertEqual(b["steps"][0]["title"], "Central Library | The Seattle Public Library")
+
+    def test_browser_task_done(self):
+        start = {"kind": "browser_task", "data": {"browser_task_id": "t1", "status": "Queued",
+                                                  "activity_title": "Starting browser..."}}
+        page = {"kind": "browser_task", "data": {"browser_task_id": "t1", "status": "Running",
+                                                 "current_site": {"domain": "www.spl.org", "page_title": "SPL",
+                                                                  "url": "https://www.spl.org/"}}}
+        done = {"kind": "browser_task", "data": {"browser_task_id": "t1", "status": "Completed",
+                                                 "activity_title": "Task completed", "display_state": "completed",
+                                                 "current_site": page["data"]["current_site"]}}
+        path = Path(self.temp.name) / 'done.json'
+        path.write_text(json.dumps([start, page, page, done]))
+        b = json.loads(self.run_harness("browse", str(path)))
+        self.assertEqual((b["done"], b["failed"]), (True, False))
+        self.assertEqual([(s["what"], s["site"], s["at"]) for s in b["steps"]], [("Task completed", "spl.org", 0)])
 
 
 if __name__ == "__main__":

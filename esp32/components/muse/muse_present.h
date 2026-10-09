@@ -116,6 +116,30 @@ void muse_present_up(void);
 uint32_t muse_present_up_seq(void);
 
 /*
+ * Other work for this task, which fetches over HTTPS with its stack in PSRAM
+ * (no flash, no NVS): a map's tiles, a product's picture, where the gadget
+ * is (muse_widget_map.c, muse_where.c). fn(arg) runs on it, after the image
+ * in hand if there is one. False if it couldn't be queued (busy: try again).
+ * Any task.
+ */
+bool muse_present_call(void (*fn)(void *arg), void *arg);
+
+/*
+ * On that task only (from a muse_present_call): GETs `url`, or POSTs `body`
+ * (JSON) to it, with no token or cookie, into PSRAM: at most `max` bytes, or
+ * NULL (and why in the log) if it couldn't. *status gets the HTTP status.
+ * heap_caps_free what it returns.
+ */
+uint8_t *muse_present_fetch(const char *url, const char *body, size_t max, size_t *len, int *status);
+
+/*
+ * A JPEG (baseline), or with CONFIG_MUSE_PRESENT_FORMATS a PNG or WebP, decoded
+ * to RGB565 in PSRAM fitting fit_w x fit_h (keeping its shape, never
+ * enlarged): *px (heap_caps_free it), *w, *h. False if it couldn't be.
+ */
+bool muse_present_decode(const uint8_t *data, size_t len, int fit_w, int fit_h, uint16_t **px, int *w, int *h);
+
+/*
  * The estimate behind it: Muse writes the image out as base64 before any of
  * it arrives, about a minute, so until bytes come it eases towards 90% over
  * that, then follows the bytes; 99% until it's shown.

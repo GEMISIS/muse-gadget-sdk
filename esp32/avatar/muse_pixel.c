@@ -87,6 +87,7 @@ enum {
     C_PJL,
     C_PJD,
     C_PJS,       /* the stripes */
+    C_SITE,      /* MUSE_ACT_BROWSE: the site's colour (pose->browse_site); set per frame */
     C_COUNT,
 };
 
@@ -172,7 +173,11 @@ static bool s_scheme_init;
 static uint16_t s_pal[C_COUNT];
 static uint16_t s_pal_dim[C_COUNT];
 
-static rgb_t s_batt;            /* C_BATT this frame */
+EXT_RAM_BSS_ATTR static rgb_t s_batt;   /* C_BATT this frame (PSRAM: read once a frame, and it pays for C_SITE's place) */
+EXT_RAM_BSS_ATTR static struct {
+    rgb_t site;                 /* C_SITE: the browser's site's colour, eased to a new one */
+    bool on;                    /* set once */
+} s_browse;
 
 static uint8_t s_fb[W * H];
 static uint8_t s_mask[W * H];
@@ -295,6 +300,7 @@ static void update_palette(const scheme_t *target, float dt)
     pal[C_HALO3] = scale_rgb(acc, 0.12f);
     pal[C_SPK] = mix(acc, pal[C_WHITE], 0.45f);
     pal[C_BATT] = s_batt;
+    pal[C_SITE] = s_browse.site;
 
     for (int i = 0; i < C_COUNT; i++) {
         s_pal[i] = to565(pal[i]);
@@ -2068,6 +2074,7 @@ static const int8_t WORK_SIDE[MUSE_ACT_COUNT - WORK_FIRST] = {
     [MUSE_ACT_MAIL - WORK_FIRST] = 6,     [MUSE_ACT_CALC - WORK_FIRST] = 2,     [MUSE_ACT_TOOLS - WORK_FIRST] = 6,
     [MUSE_ACT_WEATHER - WORK_FIRST] = 5,  [MUSE_ACT_MAP - WORK_FIRST] = 0,      [MUSE_ACT_MUSIC - WORK_FIRST] = 0,
     [MUSE_ACT_WRITE - WORK_FIRST] = 0,    [MUSE_ACT_MEMORY - WORK_FIRST] = 6,   [MUSE_ACT_RESPOND - WORK_FIRST] = 0,
+    [MUSE_ACT_BROWSE - WORK_FIRST] = 11,
 };
 
 typedef struct {
@@ -2258,6 +2265,262 @@ static void draw_note(int x, int y, uint8_t c, bool two)
     stamp(two ? PAIR : SINGLE, 5, x, y - 4, c, c);
 }
 
+static void work_paw(const work_t *w, const limb_t arms[2], int a);
+
+/*
+ * Browsing (MUSE_ACT_BROWSE): a laptop on a little desk at his right, its
+ * screen a browser window (the traffic lights, the address bar with the
+ * site's icon, a loading bar), a paw on the mouse beside it. Each page
+ * loads, its header first in the site's colour, then he scrolls down it,
+ * the pointer wandering as he reads, and it goes over to a button and
+ * clicks through to the next. Done (act_progress 0..1): a tick on the
+ * screen and a cheer, then he shuts the lid. All in fixed cells, `drop`
+ * lower as it pops in.
+ */
+#define BR_X0 42                /* the lid's outline: left, top, right, bottom */
+#define BR_Y0 23
+#define BR_X1 63
+#define BR_Y1 41
+#define BR_SX (BR_X0 + 2)       /* the screen's top left, inside the bezel */
+#define BR_SY (BR_Y0 + 2)
+#define BR_SW (BR_X1 - BR_X0 - 3)
+#define BR_PAGE_Y (BR_SY + 3)   /* under the window's top bar */
+#define BR_PAGE_H (BR_Y1 - 1 - BR_PAGE_Y)
+#define BR_DESK_Y (BR_Y1 + 2)   /* the desk's top */
+#define BR_MOUSE_X 41
+#define BR_P 4.4f               /* a page: loading, reading, clicking through */
+#define BR_LOAD 0.6f
+#define BR_CLICK 3.9f
+#define BR_BLANK 4.25f
+#define BR_BTN_V 18             /* the button's row on every page (its third block) */
+#define BR_SCROLL 11            /* rows down a page he reads, the button then on the screen */
+
+typedef struct {
+    int pg;                     /* which page */
+    float u;                    /* seconds into it */
+    float load;                 /* 0..1 loaded */
+    float scroll;               /* rows down it */
+    float x, y;                 /* the pointer's tip, in cells (before the drop) */
+    float click;                /* 0..1 through a click, else -1 */
+} br_t;
+
+static br_t br_at(float at)
+{
+    br_t b;
+    b.pg = (int)(at / BR_P);
+    b.u = at - b.pg * BR_P;
+    float u = b.u;
+    b.load = clampf(u / BR_LOAD, 0, 1);
+    b.scroll = 0;
+    for (int i = 0; i < 3; i++) {
+        b.scroll += BR_SCROLL / 3.0f * smooth(seg(u, 0.8f + i * 0.8f, 1.05f + i * 0.8f));   /* a flick of the wheel */
+    }
+    /* Off the last page's button to the right, wandering as he reads, then to this one's. */
+    float tx = BR_SX + 3.5f, ty = BR_PAGE_Y + BR_BTN_V - BR_SCROLL + 0.5f;
+    float rx = BR_SX + 13.0f + sinf(at * 1.7f) * 1.5f, ry = BR_PAGE_Y + 3.0f + sinf(at * 1.1f) * 2.5f;
+    float g0 = smooth(seg(u, 0.2f, 1.0f)), g1 = smooth(seg(u, 3.2f, BR_CLICK - 0.05f));
+    float x = tx + (rx - tx) * g0, y = ty + (ry - ty) * g0;
+    b.x = x + (tx - x) * g1;
+    b.y = y + (ty - y) * g1 - sinf(g1 * 3.1416f) * 2.0f;
+    b.click = u >= BR_CLICK && u < BR_CLICK + 0.4f ? (u - BR_CLICK) / 0.4f : -1.0f;
+    return b;
+}
+
+static uint32_t br_hash(int a, int b)
+{
+    uint32_t h = (uint32_t)a * 2654435761u ^ (uint32_t)(b + 7) * 40503u;
+    h ^= h >> 13;
+    h *= 0x5bd1e995u;
+    return h ^ (h >> 15);
+}
+
+/* Page pg's cell at row v (0 its top), column c (0..BR_SW-1): its colour (C_WHITE: nothing there). */
+static uint8_t br_cell(int pg, int v, int c)
+{
+    if (v < 3) {
+        /* The site's header: its name, and the menu. */
+        if (v == 1 && ((c >= 1 && c <= 3) || (c >= 10 && c <= BR_SW - 2 && c % 2 == 0))) {
+            return C_WHITE;
+        }
+        return C_SITE;
+    }
+    if (v == 4) {
+        return c >= 1 && c <= 9 + (int)(br_hash(pg, 0) % 6) ? C_OUT : C_WHITE;   /* the title */
+    }
+    if (v < 6) {
+        return C_WHITE;
+    }
+    int b = (v - 6) / 5, r = (v - 6) % 5;
+    uint32_t h = br_hash(pg, b + 1);
+    int type = b == 2 ? 2 : (int)(h % 2);
+    if (type == 0) {
+        /* A picture, words beside it. */
+        if (c >= 1 && c <= 6 && r < 4) {
+            if (r == 0 && c == 5) {
+                return C_PICSUN;
+            }
+            return r == 3 || (r == 2 && c >= 3 && c <= 5) ? C_PICHILL : C_PICSKY;
+        }
+        if ((r == 0 && c >= 8 && c <= 12 + (int)(h % 4)) || (r == 2 && c >= 8 && c <= 11 + (int)(h / 7 % 5))) {
+            return C_BUBBLED;
+        }
+        return C_WHITE;
+    }
+    if (type == 1) {
+        int end = r == 0 ? BR_SW - 2 - (int)(h % 3) : r == 2 ? BR_SW - 4 - (int)(h / 5 % 5) : -1;
+        return c >= 1 && c <= end ? C_BUBBLED : C_WHITE;
+    }
+    /* A link, and a button in the site's colour. */
+    if (r == 0) {
+        return c >= 1 && c <= 6 + (int)(h % 5) ? C_QUILT : C_WHITE;
+    }
+    return r >= 2 && r <= 3 && c >= 1 && c <= 6 ? C_SITE : C_WHITE;
+}
+
+/* The pointer, its tip at (x, y): dark, with a white edge. */
+static void br_pointer(int x, int y)
+{
+    static const char *const P[] = { "#o..", "##o.", "###o", "#ooo", "o..." };
+    stamp(P, 5, x, y, C_OUT, C_WHITE);
+}
+
+/* The screen's glow on his fur, on the side by it. */
+static void br_glow(const avatar_t *j, float k)
+{
+    int xr = iround(j->cx + j->a) + 1;
+    for (int y = iround(j->cy - j->b * 0.7f); y <= iround(j->cy + j->b * 0.6f); y++) {
+        for (int x = xr - 6; x <= xr; x++) {
+            uint8_t c = get_px(x, y);
+            bool fur = c == C_BD || c == C_BM || c == C_BL || c == C_RIM;
+            if (fur && bayer(x, y) < k * (1.0f - (xr - x) / 6.0f)) {
+                px(x, y, c == C_BD ? C_BM : c == C_BM ? C_BL : C_BH);
+            }
+        }
+    }
+}
+
+static void br_draw(const work_t *w, const limb_t arms[2], int drop, float *ax, float *ay)
+{
+    const avatar_t *j = w->j;
+    br_t b = br_at(w->at);
+    float fin = w->ap;   /* done: 0..1, else < 0 */
+    float shut = fin >= 0 ? smooth(seg(fin, 0.35f, 0.75f)) : 0.0f;
+    int x0 = BR_X0, x1 = BR_X1, y1 = BR_Y1 + drop;
+
+    /* The desk: its top, its edge, two legs. */
+    int dy = BR_DESK_Y + drop;
+    for (int x = BR_MOUSE_X - 5; x < W; x++) {
+        bool end = x == BR_MOUSE_X - 5;
+        px(x, dy, end ? C_OUT : C_WOOD);
+        px(x, dy + 1, end ? C_OUT : C_WOODD);
+        px(x, dy + 2, C_OUT);
+    }
+    for (int y = dy + 3; y <= 57; y++) {
+        px(BR_MOUSE_X - 3, y, C_OUT);
+        px(BR_MOUSE_X - 2, y, C_WOODD);
+        px(BR_X1 - 2, y, C_WOODD);
+        px(BR_X1 - 1, y, C_OUT);
+    }
+    /* The laptop's base on it, and the mouse under his paw (its button lit as it clicks). */
+    for (int x = x0 - 1; x <= x1; x++) {
+        px(x, y1 + 1, x == x0 - 1 || x == x1 ? C_OUT : C_PHONEL);
+    }
+    int hx, hy;
+    paw_of(&arms[1], w->srx, w->shy, &hx, &hy);
+    int mx = fin >= 0.35f ? BR_MOUSE_X : hx;
+    box_fill(mx - 2, dy - 3, mx + 2, dy - 1, C_WHITE, C_OUT);
+    px(mx, dy - 2, b.click >= 0 && b.click < 0.4f && fin < 0 ? C_ACC : C_BUBBLED);
+
+    if (shut > 0) {
+        /* The lid's back coming down over it, foreshortened, the site's dot on it. */
+        int top = BR_Y0 + drop + iround((BR_Y1 - BR_Y0 - 1) * shut);
+        box_fill(x0, top, x1, y1, C_PHONEL, C_OUT);
+        if (y1 - top > 4) {
+            int cy = (top + y1) / 2;
+            px((x0 + x1) / 2, cy, C_SITE);
+            px((x0 + x1) / 2 + 1, cy, C_SITE);
+        }
+        if (fin < 0.8f) {
+            work_paw(w, arms, 1);   /* pushing it down */
+        }
+        if (fin >= 0.75f && fin < 0.95f) {
+            draw_sparkle(x0 + 2, y1 - 1, 1.0f - seg(fin, 0.75f, 0.95f), true);   /* click */
+            draw_sparkle(x1 - 2, y1 - 2, 1.0f - seg(fin, 0.8f, 0.95f), true);
+        }
+        *ax = (x0 + x1) / 2.0f;
+        *ay = y1;
+        return;
+    }
+
+    /* The lid: an outline, the dark bezel, the screen. */
+    box_fill(x0, BR_Y0 + drop, x1, y1, C_PHONE, C_OUT);
+    int sy = BR_SY + drop, py = BR_PAGE_Y + drop;
+    /* The window's top bar: traffic lights, and the address with the site's icon. */
+    for (int x = BR_SX; x < BR_SX + BR_SW; x++) {
+        px(x, sy, C_BUBBLE);
+        px(x, sy + 1, x >= BR_SX + 7 && x <= BR_SX + BR_SW - 2 ? C_WHITE : C_BUBBLE);
+        px(x, sy + 2, C_BUBBLED);
+    }
+    px(BR_SX + 1, sy + 1, C_HEART);
+    px(BR_SX + 3, sy + 1, C_PICSUN);
+    px(BR_SX + 5, sy + 1, C_PICHILL);
+    px(BR_SX + 8, sy + 1, C_SITE);
+    for (int x = BR_SX + 10; x <= BR_SX + 12 + b.pg % 3; x++) {
+        px(x, sy + 1, C_BUBBLED);
+    }
+    if (fin < 0 && b.u < BR_LOAD + 0.15f) {
+        int n = iround(BR_SW * smooth(b.load));
+        for (int x = BR_SX; x < BR_SX + n; x++) {
+            px(x, sy + 2, C_ACC);   /* loading */
+        }
+    }
+    /* The page: loading in from the top; scrolled; white for a moment, clicked through. */
+    int scroll = iround(b.scroll);
+    bool blank = fin < 0 && b.u >= BR_BLANK;
+    for (int r = 0; r < BR_PAGE_H; r++) {
+        int v = r + (fin >= 0 ? 0 : scroll);
+        bool in = fin >= 0 || (!blank && (b.load >= 1 || v < b.load * 16.0f - 2.0f));
+        for (int c = 0; c < BR_SW; c++) {
+            uint8_t col = in ? br_cell(b.pg, v, c) : C_WHITE;
+            if (fin >= 0 && v >= 3) {
+                col = C_WHITE;   /* done: the tick, on its own */
+            }
+            px(BR_SX + c, py + r, col);
+        }
+    }
+    if (fin >= 0) {
+        static const char *const TICK[] = { ".......#", "......##", "#....##.", "##..##..", ".####...", "..##...." };
+        float k = ease_pop(fin / 0.15f);
+        if (fin > 0.02f) {
+            stamp(TICK, 6, BR_SX + 5, py + 3 + iround((1.0f - k) * 3.0f), C_PICHILL, C_PICHILL);
+        }
+        draw_sparkle(BR_X0 - 1, BR_Y0 + 3 + drop, 1.0f - seg(fin, 0.05f, 0.35f), true);
+        draw_sparkle(BR_X1 - 3, BR_Y0 - 2 + drop, 1.0f - seg(fin, 0.12f, 0.35f), true);
+        work_paw(w, arms, 1);
+    } else {
+        if (b.click >= 0 && b.click < 0.7f) {
+            /* The button pressed: a ring out from the tip. */
+            int cx = iround(b.x), cy = iround(b.y) + drop, rr = 1 + iround(b.click * 4.0f);
+            for (int a = 0; a < 12; a++) {
+                int x = cx + iround(cosf(a * 0.5236f) * rr), y = cy + iround(sinf(a * 0.5236f) * rr * 0.8f);
+                if (x >= BR_SX && x < BR_SX + BR_SW && y >= py && y < py + BR_PAGE_H && (a + (int)(b.click * 8)) % 2) {
+                    px(x, y, C_ACC);
+                }
+            }
+        }
+        br_pointer(iround(b.x), iround(b.y) + drop + (b.click >= 0 && b.click < 0.3f ? 1 : 0));
+        work_paw(w, arms, 1);
+    }
+    /* The bezel's bottom and the lid's edge, over the pointer where it ran into them. */
+    for (int x = x0 + 1; x < x1; x++) {
+        px(x, y1 - 1, C_PHONE);
+        px(x, y1, C_OUT);
+    }
+    br_glow(j, (blank ? 0.75f : 0.5f) * (fin >= 0 ? 1.0f - seg(fin, 0.3f, 0.5f) : 1.0f));
+    *ax = (x0 + x1) / 2.0f;
+    *ay = (BR_Y0 + y1) / 2.0f;
+}
+
 /* Where, about where, it looks (s_look_*), before he's placed. */
 static void work_look(muse_act_t a, float at, float ap, float *lx, float *ly)
 {
@@ -2308,6 +2571,17 @@ static void work_look(muse_act_t a, float at, float ap, float *lx, float *ly)
         *lx = sinf(at * 2.0f) * 0.3f;
         *ly = 0.8f;
         break;
+    case MUSE_ACT_BROWSE: {
+        if (ap >= 0) {
+            *lx = ap < 0.3f || ap >= 0.8f ? 0.0f : 0.9f;   /* at us, pleased; at the lid */
+            *ly = ap < 0.3f || ap >= 0.8f ? 0.1f : 0.6f;
+            break;
+        }
+        br_t b = br_at(at);   /* on the pointer */
+        *lx = 0.45f + 0.55f * clampf((b.x - BR_SX) / BR_SW, 0, 1);
+        *ly = -0.4f + 1.2f * clampf((b.y - BR_SY) / (BR_Y1 - BR_SY), 0, 1);
+        break;
+    }
     default:
         *lx = 0;
         *ly = 0;
@@ -2316,7 +2590,7 @@ static void work_look(muse_act_t a, float at, float ap, float *lx, float *ly)
 }
 
 /* How he bobs and leans at it. */
-static void work_body(muse_act_t a, float at, float t, float *bob, float *lean, float *hop)
+static void work_body(muse_act_t a, float at, float ap, float t, float *bob, float *lean, float *hop)
 {
     *bob = sinf(t * 2.4f) * 0.5f;
     *lean = 0;
@@ -2338,6 +2612,18 @@ static void work_body(muse_act_t a, float at, float t, float *bob, float *lean, 
     case MUSE_ACT_RESPOND:
         *hop += sinf(clampf(at / 0.35f, 0, 1) * 3.1416f) * 2.0f;   /* turning to us with a hop */
         break;
+    case MUSE_ACT_BROWSE: {
+        br_t b = br_at(at);
+        *bob = sinf(t * 2.0f) * 0.4f;
+        *lean = 0.6f;   /* into the screen */
+        if (ap >= 0) {
+            *hop += sinf(seg(ap, 0.0f, 0.3f) * 3.1416f) * 2.5f;   /* a hop for joy */
+            *lean = 0.2f;
+        } else if (b.click >= 0) {
+            *bob += sinf(b.click * 3.1416f) * 0.8f;   /* a nod with the click */
+        }
+        break;
+    }
     default:
         break;
     }
@@ -2451,6 +2737,27 @@ static void work_arms(const work_t *w, limb_t arms[2])
         arms[1] = k < 1.2f ? (limb_t){ j->cx + 7.5f, j->fy + j->fb + 3.5f, -1.1f }   /* a paw to his chin */
                 : arm_to(w->srx, w->shy, 46.0f, 38.0f);                              /* opening the drawer */
         break;
+    case MUSE_ACT_BROWSE: {
+        float ap = w->ap;
+        if (ap >= 0.35f) {
+            /* Shutting the lid; then paws on hips. */
+            float lid = BR_Y0 + (BR_Y1 - BR_Y0 - 1) * smooth(seg(ap, 0.35f, 0.75f));
+            arms[1] = ap < 0.8f ? arm_to(w->srx, w->shy, BR_X0 + 4.0f, lid + 1.0f) : hip_r;
+            arms[0] = hip_l;
+            break;
+        }
+        br_t b = br_at(ap >= 0 ? BR_P * 7 : at);
+        float mx = BR_MOUSE_X - 2.0f + (b.x - BR_SX - 9.0f) * 0.15f;
+        float my = BR_DESK_Y - 4.0f + (b.y - BR_PAGE_Y - 4.0f) * 0.1f + (b.click >= 0 && b.click < 0.3f ? 0.7f : 0.0f);
+        arms[1] = arm_to(w->srx, w->shy, mx, my);   /* on the mouse */
+        if (ap >= 0) {
+            float wig = sinf(t * 14.0f) * 0.25f;
+            arms[0] = (limb_t){ j->cx - j->a - 1.3f, j->cy - 4.0f, 2.4f + wig };   /* a cheer */
+        } else {
+            arms[0] = hip_l;
+        }
+        break;
+    }
     case MUSE_ACT_RESPOND:
         arms[0] = arm_to(w->slx, w->shy, j->cx - 4.0f, j->cy + 4.0f);   /* paws together */
         arms[1] = arm_to(w->srx, w->shy, j->cx + 4.0f, j->cy + 4.0f);
@@ -2532,6 +2839,26 @@ static void work_face(const work_t *w, float blink, eye_style_t *style, mouth_t 
         *mouth = k >= 2.2f && k < 3.0f ? MOUTH_GRIN : MOUTH_HMM;
         *brows = k < 1.2f ? 1 : 0;
         break;
+    case MUSE_ACT_BROWSE: {
+        if (w->ap >= 0) {
+            bool glee = w->ap < 0.35f || w->ap >= 0.8f;
+            *style = glee ? EYES_HAPPY : EYES_NORMAL;
+            *mouth = glee ? MOUTH_GRIN : MOUTH_SMILE;
+            *brows = glee ? 2 : 0;
+            break;
+        }
+        br_t b = br_at(at);
+        bool hmm = b.pg % 2 && b.u > 1.8f && b.u < 3.2f;   /* reading this one closely */
+        if (b.click >= 0 && b.click < 0.6f) {
+            *mouth = MOUTH_O;
+            *brows = 2;
+        } else {
+            *open = 0.9f * (1.0f - blink);
+            *mouth = hmm ? MOUTH_HMM : MOUTH_SMILE;
+            *brows = hmm ? 1 : b.u < BR_LOAD ? 2 : 0;
+        }
+        break;
+    }
     case MUSE_ACT_RESPOND:
         *style = EYES_WIDE;
         *mouth = fracf(at / 1.2f) < 0.5f ? MOUTH_O : MOUTH_SMILE;   /* a breath in */
@@ -3042,6 +3369,9 @@ static void work_draw(const work_t *w, const limb_t arms[2], float *ax, float *a
         *ay = fy + 10;
         break;
     }
+    case MUSE_ACT_BROWSE:
+        br_draw(w, arms, drop, ax, ay);
+        break;
     case MUSE_ACT_RESPOND:
         draw_typing(iround(j->fx + 9.0f), iround(j->cy - j->b) + 1, t);
         work_paw(w, arms, 0);
@@ -3262,6 +3592,12 @@ void muse_pixel_render(const muse_pose_t *p)
 
     if (p->battery) {
         s_batt = batt_colour(p);
+    }
+    if (p->act == MUSE_ACT_BROWSE || !s_browse.on) {
+        /* The site's colour, a grey till there's one; a new one blends in as its page loads. */
+        rgb_t site = hex_rgb(p->browse_site ? p->browse_site : 0x9a9aa6);
+        s_browse.site = s_browse.on ? mix(s_browse.site, site, 1.0f - expf(-dt * 6.0f)) : site;
+        s_browse.on = true;
     }
     update_palette(&SCHEMES[mode], dt);
 
@@ -3503,7 +3839,7 @@ void muse_pixel_render(const muse_pose_t *p)
         bob = sinf(t * 2.4f) * 0.5f;
         lean = 0;
     } else if (work) {
-        work_body(act, at, t, &bob, &lean, &hop);
+        work_body(act, at, p->act_progress, t, &bob, &lean, &hop);
     } else if (search) {
         bob = sinf(t * 2.0f) * 0.4f;
         lean = sp < 3.2f ? -1.4f * cosf(sp / 3.2f * 3.1416f) : sp < 3.6f ? 1.4f * (3.6f - sp) / 0.4f : 0.0f;
@@ -3954,6 +4290,10 @@ void muse_pixel_render(const muse_pose_t *p)
         brows = cloud_glance ? 0 : 2;
     } else if (work) {
         work_face(&wk, blink, &style, &mouth, &open, &brows);
+        if (act == MUSE_ACT_BROWSE && mode == MUSE_MODE_SPEAKING && p->act_progress < 0) {
+            mouth = MOUTH_TALK;   /* saying the reply while it browses on */
+            mouth_open = level * 1.3f + 0.1f * (0.5f + 0.5f * sinf(t * 22.0f));
+        }
     } else if (search) {
         style = EYES_NORMAL;
         open = 0.4f;   /* the other eye screwed up */

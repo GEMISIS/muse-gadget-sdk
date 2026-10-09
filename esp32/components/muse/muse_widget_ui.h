@@ -26,17 +26,22 @@
  * one to three short ones fit across, else rows like the rest; a list's
  * rows, places and products carry their own icon, price or button.
  *
- * A tap on something that answers (an option, a "send" row, a place, a
- * flight's or a product's button) sends its words to the widget's chat
- * (muse_hatch_reply_text): the sheet folds into a "sent" chip with them and
- * goes. The close button, or a swipe down, puts the sheet away, leaving a
- * chip over the page dots that brings it back, until the next turn. A talk
- * press answers by voice as ever, and the sheet goes with the turn.
+ * A tap on something that answers (an option, a "send" row, a flight's or a
+ * product's button, a card's, a form's or a multi-select's) sends its words
+ * to the widget's chat (muse_hatch_reply_text): the sheet folds into a
+ * "sent" chip with them and goes. Places, products, links and the like open
+ * a card of their own in the sheet first; text fields, a keyboard. A swipe
+ * down tucks the sheet away into a chip over the page dots that brings it
+ * back, until the next turn; the close button, the chip's x or a fling of
+ * the chip is done with it. A talk press answers by voice as ever, and the
+ * sheet goes with the turn. The browser's history, "What Muse did", is the
+ * same sheet, and the same chip after the turn.
  *
  * All of it runs in the LVGL task.
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "lvgl.h"
 #include "muse_state.h"
@@ -58,6 +63,12 @@ void muse_widget_ui_tick(muse_mode_t mode, float now, bool may_open);
 bool muse_widget_ui_sheet_up(void);
 /* The chip that brings it back is showing, where "up next" goes. */
 bool muse_widget_ui_chip_up(void);
+/* Muse's browser at work in the turn (muse_browse.h), for his act: *site the
+ * site's colour (0 none yet), *done -1 while it runs, then 0..1 through his
+ * flourish once it's done. False when there's none, or he's done with it. */
+bool muse_widget_ui_browsing(uint32_t *site, float *done);
+/* A tap on Muse: "What Muse did" up, if there's any of it. */
+bool muse_widget_ui_browse_open(void);
 #else
 #define MUSE_WIDGET_UI 0
 static inline void muse_widget_ui_build(lv_obj_t *face, int w, int h, int top)
@@ -75,6 +86,13 @@ static inline void muse_widget_ui_tick(muse_mode_t mode, float now, bool may_ope
 }
 static inline bool muse_widget_ui_sheet_up(void) { return false; }
 static inline bool muse_widget_ui_chip_up(void) { return false; }
+static inline bool muse_widget_ui_browsing(uint32_t *site, float *done)
+{
+    (void)site;
+    (void)done;
+    return false;
+}
+static inline bool muse_widget_ui_browse_open(void) { return false; }
 #endif
 
 #ifdef __cplusplus

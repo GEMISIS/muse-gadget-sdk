@@ -1,0 +1,458 @@
+[
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Starting browser...",
+"status": "Queued",
+"display_state": "starting",
+"display_status": "Starting",
+"step_count": 0,
+"updated_at_ms": 1791505731882
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Starting browser...",
+"status": "Queued",
+"display_state": "starting",
+"display_status": "Starting",
+"step_count": 0,
+"updated_at_ms": 1791505732043
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Starting browser...",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"step_count": 0,
+"updated_at_ms": 1791505732114
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Starting browser...",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"step_count": 0,
+"updated_at_ms": 1791505732114
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Starting browser...",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"step_count": 0,
+"updated_at_ms": 1791505732114
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Starting browser...",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"step_count": 0,
+"updated_at_ms": 1791505732114
+}
+},
+{
+"id": "browser-task:browser-task:2fa46b79-2738-443b-b3ea-a65150dbd830",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:2fa46b79-2738-443b-b3ea-a65150dbd830",
+"activity_title": "Task completed",
+"status": "Completed",
+"display_state": "completed",
+"display_status": "Completed",
+"current_site": {
+"domain": "www.bestbuy.com",
+"page_title": "Switch 2 System - Best Buy",
+"url": "https://www.bestbuy.com/product/switch-2-system/J7GSL57TGH/sku/6614313"
+},
+"latest_tab": {
+"title": "Switch 2 System - Best Buy",
+"url": "https://www.bestbuy.com/product/switch-2-system/J7GSL57TGH/sku/6614313"
+},
+"step_count": 17,
+"updated_at_ms": 1791505518876
+}
+},
+{
+"id": "browser-task:browser-task:2fa46b79-2738-443b-b3ea-a65150dbd830",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:2fa46b79-2738-443b-b3ea-a65150dbd830",
+"activity_title": "Task completed",
+"status": "Completed",
+"display_state": "completed",
+"display_status": "Completed",
+"current_site": {
+"domain": "www.bestbuy.com",
+"page_title": "Switch 2 System - Best Buy",
+"url": "https://www.bestbuy.com/product/switch-2-system/J7GSL57TGH/sku/6614313"
+},
+"latest_tab": {
+"title": "Switch 2 System - Best Buy",
+"url": "https://www.bestbuy.com/product/switch-2-system/J7GSL57TGH/sku/6614313"
+},
+"step_count": 17,
+"updated_at_ms": 1791505518876
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Checking site",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"step_count": 1,
+"updated_at_ms": 1791505733363
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "404 - Page Not Found | REI Co-op",
+"url": "https://www.rei.com/search-ui?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "404 - Page Not Found | REI Co-op",
+"url": "https://www.rei.com/search-ui?q=mens%20trail%20running%20shoes"
+},
+"step_count": 1,
+"updated_at_ms": 1791505736428
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "404 - Page Not Found | REI Co-op",
+"url": "https://www.rei.com/search-ui?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "404 - Page Not Found | REI Co-op",
+"url": "https://www.rei.com/search-ui?q=mens%20trail%20running%20shoes"
+},
+"step_count": 1,
+"updated_at_ms": 1791505736626
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Checking site",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "404 - Page Not Found | REI Co-op",
+"url": "https://www.rei.com/search-ui?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "404 - Page Not Found | REI Co-op",
+"url": "https://www.rei.com/search-ui?q=mens%20trail%20running%20shoes"
+},
+"step_count": 2,
+"updated_at_ms": 1791505737374
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"step_count": 2,
+"updated_at_ms": 1791505741102
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"step_count": 2,
+"updated_at_ms": 1791505742393
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Selecting option",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"step_count": 3,
+"updated_at_ms": 1791505743045
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"step_count": 3,
+"updated_at_ms": 1791505747983
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"step_count": 3,
+"updated_at_ms": 1791505748105
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Reading page",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"step_count": 4,
+"updated_at_ms": 1791505749891
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"step_count": 4,
+"updated_at_ms": 1791505751494
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"step_count": 4,
+"updated_at_ms": 1791505751711
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"activity_title": "Checking site",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"latest_tab": {
+"title": "Salomon Aero Glide 4 GRVL Trail-Running Shoes - Men's | REI Co-op",
+"url": "https://www.rei.com/product/C01444/salomon-aero-glide-4-grvl-trail-running-shoes-mens"
+},
+"step_count": 5,
+"updated_at_ms": 1791505753506
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"step_count": 5,
+"updated_at_ms": 1791505759275
+}
+},
+{
+"id": "browser-task:browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"kind": "browser_task",
+"session_id": "234da32c-75da-437b-900f-387739e0c67d",
+"data": {
+"browser_task_id": "browser-task:a269152d-ad5f-42ad-9f2c-37a308a77bfe",
+"status": "Running",
+"display_state": "working",
+"display_status": "Working",
+"current_site": {
+"domain": "www.rei.com",
+"page_title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"latest_tab": {
+"title": "mens trail running shoes at REI | REI Co-op",
+"url": "https://www.rei.com/search?q=mens%20trail%20running%20shoes"
+},
+"step_count": 5,
+"updated_at_ms": 1791505759607
+}
+}
+]

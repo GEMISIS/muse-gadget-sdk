@@ -626,6 +626,13 @@ static void photo_put_away(float now, const char *why);
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
+#if MUSE_WIDGET_UI
+    uint32_t site;
+    float done;
+    if (muse_widget_ui_browsing(&site, &done) && done < 0 && muse_widget_ui_browse_open()) {
+        return;   /* at his computer: what he's been doing on it */
+    }
+#endif
     if (photo_shown()) {
         /* Holding a photo up: a tap on him puts it away. */
         photo_put_away((float)esp_timer_get_time() / 1e6f, "tapped Muse");
@@ -3010,6 +3017,18 @@ static void pose_act(muse_pose_t *pose, muse_mode_t mode, float mode_t, float no
     want = unbox_act(now, &progress);   /* its bytes coming, or here: whatever the mode */
     float image;
     waiting = unbox_phase(now, &image) == MUSE_PRESENT_WAITING;
+#endif
+#if MUSE_WIDGET_UI
+    /* Muse's browser at work (a browser_task): at his computer, thinking or
+     * idle (it can outlast the reply), then a flourish as it's done. */
+    uint32_t site;
+    float done;
+    if (want == MUSE_ACT_NONE && (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_IDLE) && pose->reach <= 0.0f
+        && !pose->holding && muse_widget_ui_browsing(&site, &done)) {
+        want = MUSE_ACT_BROWSE;
+        progress = done;
+        pose->browse_site = site;
+    }
 #endif
     if (want == MUSE_ACT_NONE && mode == MUSE_MODE_THINKING && pose->reach <= 0.0f && !pose->holding) {
         muse_turn_t turn = muse_state_turn();

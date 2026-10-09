@@ -213,6 +213,7 @@ typedef enum {
     MUSE_CHAT_BG_FOR_UP_NEXT,   /* the face's "up next" line (muse_up_next.c) */
     MUSE_CHAT_BG_FOR_DELETE,    /* deleting a chat from Muse (muse_chat_delete.c) */
     MUSE_CHAT_BG_FOR_IMAGE,     /* asking Muse to push a reply's image (muse_present.c) */
+    MUSE_CHAT_BG_FOR_WHERE,     /* the phone's last known location, for a map (muse_where.c) */
 } muse_chat_bg_for_t;
 
 /* muse_chat_bg_ask for `who` (muse_chat_bg_ask_now for an image): false,

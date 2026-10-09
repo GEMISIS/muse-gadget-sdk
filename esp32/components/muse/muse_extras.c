@@ -36,6 +36,7 @@
 #include "muse_rtc.h"
 #include "muse_sd.h"
 #include "muse_up_next.h"
+#include "muse_where.h"
 
 static const char *TAG = "extras";
 
@@ -118,6 +119,9 @@ static void extras_task(void *arg)
 #endif
 #if CONFIG_MUSE_HATCH && CONFIG_MUSE_GADGET_CHATS
             muse_chat_delete_tick();   /* the Chats screen's deletes from Muse */
+#endif
+#if CONFIG_MUSE_HATCH
+            muse_where_tick();   /* where the gadget is, for a map */
 #endif
         }
         vTaskDelay(pdMS_TO_TICKS(wait_ms));
