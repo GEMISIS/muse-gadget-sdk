@@ -171,7 +171,19 @@ bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap)
     if (line < 0) {
         return false;
     }
+    int total = n;
+    while (next_line(&p, stop, cols, &start, &len)) {
+        total++;   /* the lines there are so far */
+    }
     int first = lines > 1 ? line / (lines - 1) * (lines - 1) : line;
+    /* Never a page past the last full one: text that fits stays on its page,
+     * and the last page is full, not the line it shares with the one before
+     * on its own (a page with nothing new). */
+    if (total > lines && first > total - lines) {
+        first = total - lines;
+    } else if (total <= lines) {
+        first = 0;
+    }
 
     size_t o = 0;
     out[0] = '\0';
