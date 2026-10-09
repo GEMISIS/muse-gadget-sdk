@@ -680,7 +680,7 @@ static void ask_tick(void)
     if (!muse_hatch_ready()) {
         return;   /* out of reach for now */
     }
-    char msg[PATH_MAX_LEN + LABEL_MAX + 512];
+    char msg[2 * PATH_MAX_LEN + LABEL_MAX + 1024];
     uint32_t hash = path_hash(path);
     unquote(path);
     unquote(label);
@@ -690,13 +690,25 @@ static void ask_tick(void)
     int n = 0;   /* nothing ahead of it: an earlier one's chat goes later (muse_present_stale_take) */
     /* A file in Muse's workspace (generated), or an image on the web it fetches first. */
     bool web = !strncmp(path, "http://", 7) || !strncmp(path, "https://", 8);
+    /* The command itself, ready to run: working out how to scale and encode it
+     * took Muse minutes, the push then timing out on the gadget's side. A web
+     * image (one the gadget couldn't fetch itself) is downloaded first. */
+#define ENCODE_PY "python3 -c \"import base64,io,sys;from PIL import Image;" \
+                  "im=Image.open(sys.argv[1]).convert('RGB');im.thumbnail((240,240));b=io.BytesIO();" \
+                  "im.save(b,'JPEG',quality=70);print(base64.b64encode(b.getvalue()).decode())\""
+    char cmd[2 * PATH_MAX_LEN + 400];
+    if (web) {
+        snprintf(cmd, sizeof(cmd), "curl -sL -o /tmp/gadget_img \"%s\" && " ENCODE_PY " /tmp/gadget_img", path);
+    } else {
+        snprintf(cmd, sizeof(cmd), ENCODE_PY " \"%s\"", path);
+    }
     snprintf(msg + n, sizeof(msg) - n,
-             "%s the image at \"%s\" (\"%s\") %sto this gadget with display.show_image, once, in one "
-             "chunk (offset 0, final=true): scaled to 240x240 (fit inside) as a baseline JPEG at 70%% "
-             "quality, under 14 KB. Make the base64 "
-             "with code and paste its output exactly; if the gadget says it arrived damaged, encode it again. "
-             "No test images. Don't create links. Reply with just: sent.",
-             web ? "Download" : "Send", path, label, web ? "and send it " : "");
+             "Send the image \"%s\" to this gadget, quickly: run exactly this, then pass its whole output "
+             "(a 240 px JPEG, under 14 KB) as data_b64 in one display.show_image call (offset 0, final=true, "
+             "label \"%s\"):\n%s\nNothing else first. If it arrives damaged, run it again. No test images. "
+             "Don't create links. Reply with just: sent.",
+             label, label, cmd);
+#undef ENCODE_PY
     new_sid(s_ask_sid);
     if (!muse_chat_bg_ask_for(MUSE_CHAT_BG_FOR_IMAGE, s_ask_sid, msg)) {
         return;   /* someone else's request is under way, or a turn: next time */
