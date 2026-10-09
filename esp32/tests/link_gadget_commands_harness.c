@@ -249,6 +249,7 @@ static void muse_present_chunk(size_t received, size_t size) {
 // esp_log.h's, as the commands use it.
 static const char *TAG = "link.gadget";
 #define ESP_LOGI(tag, ...) ((void)(tag))
+#define ESP_LOGW(tag, ...) do { (void)(tag); if (0) printf(__VA_ARGS__); } while (0)
 
 #include "gadget_commands.inc"
 

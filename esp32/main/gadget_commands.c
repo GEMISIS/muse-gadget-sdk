@@ -360,6 +360,28 @@ static bool jpeg_intact(const uint8_t *d, size_t len) {
     return false;
 }
 
+// Why jpeg_intact said no, for the log: where the structure breaks.
+static const char *jpeg_why(const uint8_t *d, size_t len) {
+    size_t i = 2;
+    bool frame = false;
+    for (int segs = 0;; segs++) {
+        if (i + 4 > len) return "ends inside the headers";
+        if (d[i] != 0xFF) return segs ? "a header segment's length runs wrong" : "no marker after SOI";
+        uint8_t m = d[i + 1];
+        if (m == 0xFF) { i++; continue; }
+        if (m == 0xDA) break;
+        if (m == 0xC0 || m == 0xC1) frame = true;
+        size_t seg = (size_t)d[i + 2] << 8 | d[i + 3];
+        if (seg < 2 || i + 2 + seg > len) return "a header segment runs past the end";
+        i += 2 + seg;
+    }
+    if (!frame) return "no baseline frame header";
+    for (size_t k = len; k >= 2 && len - k < 64; k--) {
+        if (d[k - 2] == 0xFF && d[k - 1] == 0xD9) return "intact";
+    }
+    return "no end marker at the end (cut short?)";
+}
+
 static uint32_t fnv1a(const uint8_t *d, size_t len) {
     uint32_t h = 2166136261u;
     for (size_t i = 0; i < len; i++) {
@@ -502,6 +524,11 @@ cJSON *gadget_show_image_command(const cJSON *params) {
         return push_error("unsupported", "progressive JPEG isn't supported: send a baseline one");
     }
     if (!jpeg_intact(s_push.buf, s_push.len)) {
+        const uint8_t *b = s_push.buf;
+        size_t n = s_push.len;
+        ESP_LOGW(TAG, "display.show_image: %u bytes damaged: %s (starts %02X%02X%02X%02X, ends %02X%02X%02X%02X)",
+                 (unsigned)n, jpeg_why(b, n), b[0], b[1], n > 2 ? b[2] : 0, n > 3 ? b[3] : 0,
+                 n > 3 ? b[n - 4] : 0, n > 2 ? b[n - 3] : 0, b[n - 2], b[n - 1]);
         return push_error("invalid_param", "the JPEG arrived damaged: send it again from offset 0");
     }
     uint32_t hash = fnv1a(s_push.buf, s_push.len);
