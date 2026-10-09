@@ -298,6 +298,7 @@ static void talk_button(unsigned ev)
                 set_asleep(false, muse_board->talk_button);   /* to the locked face */
             }
             muse_state_poke();
+            muse_ui_lock_prompt();   /* and the keypad, for the passcode */
             swallow = true;
         } else if (muse_state_asleep()) {
             set_asleep(false, muse_board->talk_button);

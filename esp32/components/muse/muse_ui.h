@@ -105,4 +105,7 @@ bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int
 void muse_ui_camera_hint(bool visible);
 
 /* Bench testing, from any task: streams the screen over USB serial. */
-void muse_ui_request_snapshot(void);
+void muse_ui_request_snapshot(void);/* Locked: the keypad comes up (the talk button's; any task). */
+void muse_ui_lock_prompt(void);
+
+
