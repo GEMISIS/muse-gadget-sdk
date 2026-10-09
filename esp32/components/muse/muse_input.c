@@ -44,6 +44,7 @@
 #include "muse_power_menu.h"
 #include "muse_settings.h"
 #include "muse_state.h"
+#include "muse_watchdog.h"
 #include "muse_ui.h"
 #include "muse_up_next.h"
 #include "muse_voice.h"
@@ -1014,6 +1015,10 @@ static bool console_command(char *line, bool whole)
         return true;
     }
 #endif
+    if (!strcmp(line, "crash")) {
+        muse_watchdog_print();   /* why the last boot ended */
+        return true;
+    }
     if (!strncmp(line, "face=", 5)) {
         set_face(line + 5);
         return true;
