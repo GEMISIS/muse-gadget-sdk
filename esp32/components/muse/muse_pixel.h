@@ -135,7 +135,10 @@ typedef struct {
      * a little desk, a hand on the mouse, a laptop's browser window loading
      * pages in the site's colour (browse_site), scrolling them and clicking
      * through, his eyes on the pointer (act_progress -1, as long as it
-     * runs); then, done, 0..1 through a cheer and shutting the lid. A
+     * runs); then, done, 0..1 through a cheer and shutting the lid. At
+     * something at his side (the laptop, the easel, the calendar...), he
+     * turns to it, three-quarters on, rather than posing with it at us; round
+     * to us for a look now and then, when patted, and when it's done. A
      * renderer may leave them alone. */
     muse_act_t act;
     float act_t;
