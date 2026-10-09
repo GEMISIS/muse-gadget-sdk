@@ -312,10 +312,11 @@ static lv_obj_t *s_power;
 static char shown[128];
 static struct { const char *power_button, *talk_button, *aux_button; } board = {"red bottom-left", "top-right", NULL}, *muse_board = &board;
 static void on_power_off(void *p) { (void)p; }
-static void on_back(void *p) { (void)p; }
-static void *page(void *tile, const char *title, bool back, void **list) { (void)tile; (void)title; (void)back; *list = (void *)1; return *list; }
+#define MUSE_BUTTON_DANGER 3
+static void *page(void *tile, const char *title, void **list) { (void)tile; (void)title; *list = (void *)1; return *list; }
 static void note(void *list, const char *text) { (void)list; strcpy(shown, text); }
-static void button(void *list, const char *text, int color, void (*cb)(void *), void *data) { (void)list; (void)text; (void)color; (void)cb; (void)data; }
+static void button(void *list, const char *text, int kind, void (*cb)(void *), void *data) { (void)list; (void)text; (void)kind; (void)cb; (void)data; }
+static void back_row(void *list, const char *text) { (void)list; (void)text; }
 ''' + function(source, 'build_power_page') + r'''
 int main(void) {
     build_power_page(NULL);
