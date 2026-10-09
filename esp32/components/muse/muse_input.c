@@ -47,6 +47,7 @@
 #include "muse_ui.h"
 #include "muse_up_next.h"
 #include "muse_voice.h"
+#include "muse_widget.h"
 #include "muse_wifi.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
@@ -988,6 +989,23 @@ static bool console_command(char *line, bool whole)
         }
         return true;
     }
+    if (!strncmp(line, "widget=", 7)) {
+        /* A sample widget (muse_widget_sample), as if the last reply had brought it; "none" takes it away. */
+        const char *json = muse_widget_sample(line + 7);
+        bool none = !strcmp(line + 7, "none");
+        muse_ui_bench_pose(MUSE_UI_BENCH_NONE);
+        muse_state_poke();
+        if (none) {
+            muse_widget_clear();
+        }
+        if (none || (json && muse_hatch_widget_bench(json))) {
+            printf("@widget {\"widget\":\"%s\"}\n", line + 7);
+        } else {
+            printf("@widget.error \"%s\": option, options, list, map, shopping, card or none\n", line + 7);
+        }
+        fflush(stdout);
+        return true;
+    }
 #endif
     if (!strncmp(line, "face=", 5)) {
         set_face(line + 5);
@@ -1044,7 +1062,9 @@ static bool console_command(char *line, bool whole)
  * (cheer_plugged), "brief" asks the Muse for the face's
  * "up next" line now and "brief?" prints it (muse_up_next.h), "face=" shows a face
  * (see set_face), "activity=TEXT" shows Muse at what he'd be at if he said
- * TEXT (muse_activity_of) and prints what it's taken for, "chat=" sends a typed message to Hatch (see chat_line
+ * TEXT (muse_activity_of) and prints what it's taken for, "widget=NAME" shows
+ * a sample widget (option, options, list, map, shopping, card; none takes it
+ * away) as if a reply had brought it, "chat=" sends a typed message to Hatch (see chat_line
  * and tools/muse/chat.py), and "chat_sid=", "chat_new=" and "chats" pick
  * the chat it goes to and list the named ones (see chat_sid_command).
  */

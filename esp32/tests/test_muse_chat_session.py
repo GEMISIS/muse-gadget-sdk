@@ -16,7 +16,11 @@ is asked for straight away, its background request going beside the turn.
 With on-device speech (CONFIG_MUSE_TTS_PICO, a second build against a fake
 muse_tts.h), Pico starts on the reply while it waits, and only its playing
 and captions are held. A turn starting sends a background request that's
-still subscribing back to waiting, so it never goes to Muse beside the turn."""
+still subscribing back to waiting, so it never goes to Muse beside the turn.
+A reply's widgets (muse_widget.h), in its done message or as a presentation
+that isn't an image, are parsed and handed to the face as the turn's chat's,
+another chat's left out, and a new turn empties the set; their tokens never
+reach the text."""
 import os
 from pathlib import Path
 import shlex
@@ -95,6 +99,7 @@ void test_set_mode(int mode) { s_mode = mode; }
 #include "minimp3.h"
 #include "muse_chat_priv.h"
 #include "muse_present.h"
+#include "muse_widget.h"
 #define ESP_LOGI(...) ((void)0)
 #define ESP_LOGW(tag, ...) ((void)snprintf(nullptr, 0, __VA_ARGS__))
 #define EXT_RAM_BSS_ATTR
@@ -206,6 +211,17 @@ static int img_progress() { return fake_progress; }
 /* What the face is told Muse is at (muse_state_set_activity). */
 static muse_activity_t face_activity = MUSE_ACTIVITY_COUNT;
 static void img_activity(muse_activity_t a) { face_activity = a; }
+/* The widget set the face takes (muse_widget.h's store): what came, from which chat. */
+static int widget_clears, widget_adds;
+static muse_widget_t widget_last;
+static char widget_sid[64];
+extern "C" void muse_widget_clear(void) { widget_clears++; }
+extern "C" bool muse_widget_add(const muse_widget_t *w, const char *sid) {
+    widget_adds++;
+    widget_last = *w;
+    strlcpy(widget_sid, sid, sizeof(widget_sid));
+    return true;
+}
 #if CONFIG_MUSE_TTS_PICO
 #include "muse_tts.h"
 /* Pico, faked: what it was asked to say, and speech made ready by the test. */
@@ -957,6 +973,41 @@ static void activities() {
     assert(face_activity == MUSE_ACTIVITY_RESPOND);
     s_turn.texts = nullptr;
 }
+static void line(const char *json) {
+    cJSON *root = cJSON_Parse(json);
+    assert(root);
+    on_event(root);
+    cJSON_Delete(root);
+}
+/* A reply's widgets: from its done message, and from a presentation of the turn's chat; never in its text. */
+static void widgets() {
+    static char texts[MAX_MSGS * TEXT_MAX];
+    int clears = widget_clears;
+    begin();
+    assert(widget_clears == clears + 1);   /* a new turn: the last one's go */
+    s_turn.texts = texts;
+    strlcpy(s_turn.sid, "chat-a", sizeof(s_turn.sid));
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "", "What's it going to be?\n\n[[hatch_wid");
+    event("delta.text_append", "reply", "", "get:widget-1]]");
+    assert(!strstr(texts, "[[") && !strncmp(texts, "What's it going to be?", 22));
+    line(R"J({"type":"event","event":"delta.message_done","payload":{"message_id":"reply","widgets":[
+        {"widget_id":"widget-1","kind":"option","display_text":"Pizza / Tacos",
+         "data":{"button_style":"center_aligned_filled","options":["Pizza","Tacos"]},"state":{"data":{},"version":0}}]}})J");
+    assert(widget_adds == 1 && widget_last.kind == MUSE_WIDGET_OPTIONS && widget_last.count == 2 && widget_last.filled);
+    assert(!strcmp(widget_last.rows[1].send, "Tacos") && !strcmp(widget_sid, "chat-a"));
+    /* A list presented in the turn's chat; an image isn't a widget; another chat's is left out. */
+    line(R"J({"type":"event","event":"delta.presentation","payload":{"id":"widget-2","kind":"generic_list",
+        "session_id":"chat-a","data":{"title":"Weekend","items":[{"type":"send_message","title":"Hike",
+        "data":{"text":"Let's hike"}}]}}})J");
+    assert(widget_adds == 2 && widget_last.kind == MUSE_WIDGET_LIST && !strcmp(widget_last.rows[0].send, "Let's hike"));
+    line(R"J({"type":"event","event":"delta.presentation","payload":{"id":"img-1","kind":"image","session_id":"chat-a",
+        "data":{"images":[]}}})J");
+    line(R"J({"type":"event","event":"delta.presentation","payload":{"id":"widget-3","kind":"map","session_id":"chat-b",
+        "data":{"elements":[{"kind":"rich_place","name":"Cafe"}]}}})J");
+    assert(widget_adds == 2);
+    s_turn.texts = nullptr;
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -973,6 +1024,7 @@ int main(int argc, char **argv) {
     case 10: progress(); break;
     case 11: held_turn_takes_the_request(); break;
     case 15: activities(); break;
+    case 16: widgets(); break;
 #if CONFIG_MUSE_TTS_PICO
     case 12: pico_ahead_of_the_grace(); break;
     case 13: pico_ahead_of_an_image(); break;
@@ -986,16 +1038,21 @@ int main(int argc, char **argv) {
         flags = ['-Wall', '-Wextra', '-Werror', '-I', str(JSON),
                  '-I', str(ROOT / 'tests'), '-I', str(ROOT / 'components/muse'),
                  '-I', str(ROOT / 'components/minimp3/include')]
+        objects = [str(out / 'cjson.o'), str(out / 'mode.o'), str(out / 'widget.o'), str(out / 'text.o')]
         commands = [
             [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
              '-c', str(JSON / 'cJSON.c'), '-o', str(out / 'cjson.o')],
+            [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
+             '-c', str(ROOT / 'components/muse/muse_widget.c'), '-o', str(out / 'widget.o')],
+            [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
+             '-c', str(ROOT / 'components/muse/muse_text.c'), '-o', str(out / 'text.o')],
             [*shlex.split(os.environ.get('CC', 'cc')), '-std=gnu11', *flags,
              '-c', str(out / 'mode.c'), '-o', str(out / 'mode.o')],
             [*shlex.split(os.environ.get('CXX', 'c++')), '-std=gnu++17', *flags,
-             str(out / 'session.cpp'), str(out / 'cjson.o'), str(out / 'mode.o'), '-o', str(out / 'session')],
+             str(out / 'session.cpp'), *objects, '-o', str(out / 'session')],
             # On-device speech: speak_early and pump_speech, against a fake Pico.
             [*shlex.split(os.environ.get('CXX', 'c++')), '-std=gnu++17', *flags, '-DCONFIG_MUSE_TTS_PICO=1',
-             str(out / 'session.cpp'), str(out / 'cjson.o'), str(out / 'mode.o'), '-o', str(out / 'session_pico')],
+             str(out / 'session.cpp'), *objects, '-o', str(out / 'session_pico')],
         ]
         for command in commands:
             result = subprocess.run(command, capture_output=True, text=True)
@@ -1048,6 +1105,9 @@ int main(int argc, char **argv) {
 
     def test_what_muse_says_hes_at_goes_to_the_face(self):
         self.run_case(15)
+
+    def test_reply_widgets_go_to_the_face_and_never_into_the_text(self):
+        self.run_case(16)
 
     def test_pico_starts_during_the_image_grace_and_plays_after_it(self):
         self.run_case(12, self.pico_binary)
