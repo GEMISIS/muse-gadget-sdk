@@ -93,7 +93,7 @@ class LinkGadgetCommandsTest(unittest.TestCase):
         noise = (ROOT / "main/noise_control.cpp").read_text()
         desc = noise[noise.index('add_command(commands, "display.show_image"'):]
         kib = int(re.search(r"chunks of up to (\d+) KiB", desc).group(1))
-        scratch = noise[noise.index("#if CONFIG_MUSE_HATCH\n#define SVC_FRAME_SCRATCH"):]
+        scratch = noise[noise.index("#elif CONFIG_MUSE_HATCH\n#define SVC_FRAME_SCRATCH"):]
         size = re.search(r"#define SVC_FRAME_SCRATCH \((\d+) \* 1024\)", scratch)
         self.assertGreaterEqual(int(size.group(1)) * 1024, (kib * 1024 + 2) // 3 * 4 + 2048)
         # The background request, the description and every mode's contract
