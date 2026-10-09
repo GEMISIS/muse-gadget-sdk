@@ -57,6 +57,8 @@ typedef enum {
     MUSE_EARCON_CHARGE,   /* plugged in to charge: a little rising arpeggio, half a second */
     MUSE_EARCON_TAP,      /* the screen touched (muse_style_click): a soft tick, 10 ms */
     MUSE_EARCON_TAP_PRIMARY,   /* the same for Send, Done, OK: a lower, rounder tock */
+    MUSE_EARCON_ARRIVED,  /* an image come after its reply: a gentle two-note ding, up a fifth */
+    MUSE_EARCON_SHARPER,  /* a sharper copy of the image shown, in its place: a soft three-note glint */
 } muse_earcon_t;
 
 void muse_voice_earcon(muse_earcon_t which);

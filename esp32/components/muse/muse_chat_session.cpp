@@ -156,12 +156,13 @@ static const char *TAG = "muse_chat_session";
 #define TEXT_BUSY_HOLD_US (5 * 60 * 1000000LL)
 #define PRESENT_LATE_US (30 * 1000000LL)   /* an image for the turn's chat may come this long after it */
 #define IMG_HOLD_CAP_US (120 * 1000000LL)  /* a reply's speech waits for its image this long at most */
+#define IMG_PUSH_HOLD_US (3 * 1000000LL)    /* and only this while Muse is to push it himself */
 #define IMG_GRACE_US (700 * 1000LL)        /* a reply ready to speak: an image event may still be this close behind (seen ~150 ms) */
 #define IMG_UP_CAP_US (15 * 1000000LL)     /* handed to the face: unboxed and held up (img_up) by then at the latest */
 #define IMG_CAPTION "GETTING THE IMAGE..."
 /* After the words of every message (and any mode contract): Muse forgets the contract's standing order. */
 /* And what its widgets can be here (muse_widget_ui.h): an HTML one is read for a few simple controls (muse_widget_html.c). */
-#define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: one 240px baseline JPEG under 14 KB. Show web images by a ~600px JPEG URL, not the original. This gadget shows options, lists, maps and shopping natively, and an HTML widget only as its question with text fields, checkboxes, radios or a select, and a button: keep forms that simple.)"
+#define IMG_REMINDER "(If you show me an image, also push it now with display.show_image: one 200px baseline JPEG under 10 KB. Show web images by a ~600px JPEG URL, not the original. This gadget shows options, lists, maps and shopping natively, and an HTML widget only as its question with text fields, checkboxes, radios or a select, and a button: keep forms that simple.)"
 /*
  * The VM's streaming dictation has no ASR behind it right now, so each press
  * goes to the chat as a voice note, the way the phone app sends them, and the
@@ -269,6 +270,7 @@ static uint32_t img_seq(void);         /* muse_present_seq: images handled */
 static uint32_t img_up(void);          /* muse_present_up_seq: images held up */
 static void img_wait(bool on);         /* muse_present_wait */
 static int img_progress(void);         /* muse_present_progress */
+static bool img_pushing(void);         /* muse_present_pushing: Muse to send it, not a download */
 static void img_activity(muse_activity_t a);   /* muse_state_set_activity: what Muse is at, for the face */
 static bool bg_chat(const char *sid);  /* the background request's chat (bg_t) */
 static void bg_yield(void);            /* a turn starts: a request not yet posted waits for it (bg_t) */
@@ -2000,6 +2002,10 @@ static bool speech_held(void)
             : t - s_turn.img_shown_us >= IMG_UP_CAP_US ? "the image is slow to go up" : nullptr;
     } else if (s_turn.img_none) {
         why = "no image after all";
+    } else if (img_pushing() && t - s_turn.img_hold_us >= IMG_PUSH_HOLD_US) {
+        /* Muse writes it out himself, a minute or more: said now, and the image
+         * comes after, with its chime (muse_ui.c), rather than all of it waited. */
+        why = "Muse is sending it: it shows when it comes";
     } else if (t - s_turn.img_hold_us >= IMG_HOLD_CAP_US) {
         why = "waited long enough; the image shows when it comes";
     }
@@ -3079,6 +3085,15 @@ static uint32_t img_up(void)
     return muse_present_up_seq();
 #else
     return 0;
+#endif
+}
+
+static bool img_pushing(void)
+{
+#if CONFIG_MUSE_ENABLED
+    return muse_present_pushing();
+#else
+    return false;
 #endif
 }
 

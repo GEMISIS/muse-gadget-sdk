@@ -242,7 +242,17 @@ static bool earcon_play(muse_earcon_t which)
          * keyboard's is; the primary one lower and a little longer. */
         [MUSE_EARCON_TAP] = { 10, 2100, 1700 },
         [MUSE_EARCON_TAP_PRIMARY] = { 16, 1400, 1050 },
+        [MUSE_EARCON_ARRIVED] = { 0, 0, 0 },   /* ARRIVED, below */
+        [MUSE_EARCON_SHARPER] = { 0, 0, 0 },   /* SHARPER, below */
     };
+    /* An image here after its reply: C6 then a G6 that rings on, softly. */
+    static const struct {
+        uint16_t ms, f;
+    } ARRIVED[] = { { 110, 1047 }, { 260, 1568 } };
+    /* A sharper copy in place of the one shown: a quick glint, C7 E7 G7, quietly. */
+    static const struct {
+        uint16_t ms, f;
+    } SHARPER[] = { { 45, 2093 }, { 45, 2637 }, { 120, 3136 } };
     /* Plugged in: E5 G#5 B5 plucked, up to an E6 that rings on, 0.5 s in all. */
     static const struct {
         uint16_t ms, f;
@@ -256,6 +266,18 @@ static bool earcon_play(muse_earcon_t which)
         for (size_t k = 0; k < sizeof(CHARGE) / sizeof(CHARGE[0]); k++) {
             /* A touch of upward glide on each, and softer than a key's: it goes on longer. */
             earcon_note(CHARGE[k].f, CHARGE[k].f * 1.01f, CHARGE[k].ms, level * 0.8f);
+        }
+        return true;
+    }
+    if (which == MUSE_EARCON_ARRIVED) {
+        for (size_t k = 0; k < sizeof(ARRIVED) / sizeof(ARRIVED[0]); k++) {
+            earcon_note(ARRIVED[k].f, ARRIVED[k].f, ARRIVED[k].ms, level * 0.7f);
+        }
+        return true;
+    }
+    if (which == MUSE_EARCON_SHARPER) {
+        for (size_t k = 0; k < sizeof(SHARPER) / sizeof(SHARPER[0]); k++) {
+            earcon_note(SHARPER[k].f, SHARPER[k].f, SHARPER[k].ms, level * 0.35f);
         }
         return true;
     }

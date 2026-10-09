@@ -212,6 +212,8 @@ static uint32_t img_seq() { return fake_seq; }
 static uint32_t img_up() { return fake_up; }
 static void img_wait(bool on) { waiting_on = on; }
 static int img_progress() { return fake_progress; }
+static bool fake_pushing;
+static bool img_pushing() { return fake_pushing; }
 /* What the face is told Muse is at (muse_state_set_activity). */
 static muse_activity_t face_activity = MUSE_ACTIVITY_COUNT;
 static void img_activity(muse_activity_t a) { face_activity = a; }
@@ -826,6 +828,21 @@ static void held_turn_takes_the_request() {
     s_bg_state = MUSE_CHAT_BG_NONE;
     s_turn.texts = nullptr;
 }
+/* Muse to push it (a generated image): spoken a moment in, and it comes when it comes. */
+static void push_released_early() {
+    hold_begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "", "Here's an owl! ![owl](sandbox://workspace/owl.jpg)");
+    event("delta.message_done", "reply");
+    assert(s_turn.img_hold && asks == 1);
+    fake_pushing = true;
+    tick();
+    assert(s_turn.img_hold && !pcm_sent);   /* a moment, for one quick to come */
+    for (int i = 0; i < 3; i++) tick();
+    assert(!s_turn.img_hold && pcm_sent);
+    fake_pushing = false;
+    s_turn.texts = nullptr;
+}
 static void not_held() {
     /* Muse pushed one by itself this turn already: not asked for, not waited for. */
     hold_begin();
@@ -1032,6 +1049,7 @@ int main(int argc, char **argv) {
     case 9: not_held(); break;
     case 10: progress(); break;
     case 11: held_turn_takes_the_request(); break;
+    case 17: push_released_early(); break;
     case 15: activities(); break;
     case 16: widgets(); break;
 #if CONFIG_MUSE_TTS_PICO
@@ -1108,6 +1126,9 @@ int main(int argc, char **argv) {
 
     def test_no_wait_once_pushed_typed_or_speaking(self):
         self.run_case(9)
+
+    def test_speech_goes_on_while_muse_pushes_the_image(self):
+        self.run_case(17)
 
     def test_progress_estimate_follows_time_then_bytes(self):
         self.run_case(10)

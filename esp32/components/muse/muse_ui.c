@@ -63,6 +63,7 @@
 #include "muse_settings_ui.h"
 #include "muse_state.h"
 #include "muse_watchdog.h"
+#include "muse_voice.h"
 #include "muse_logring.h"
 #include "muse_style.h"
 #include "muse_text.h"
@@ -280,6 +281,7 @@ typedef struct {
     uint16_t *full, *held;      /* RGB565, PSRAM: fitting the screen, and held up */
     int fw, fh, hw, hh;
     bool quiet;                 /* a sharper copy for one put away: into the pocket, not out */
+    bool sharper;               /* a sharper copy of the one before */
 } photo_px_t;
 
 EXT_RAM_BSS_ATTR static struct {
@@ -507,6 +509,7 @@ static void invalidate_muse(void)
 }
 
 static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t color);
+static float ease_in_out(float t);
 
 /* A microphone from primitives: LVGL's symbol font has none. */
 static lv_obj_t *make_mic(lv_obj_t *parent, int size)
@@ -1740,6 +1743,172 @@ static bool photo_full_shown(void)
     return s_photo_full && !lv_obj_has_flag(s_photo_full, LV_OBJ_FLAG_HIDDEN);
 }
 
+/*
+ * A sharper copy in place of the one being looked at, seen to sharpen: the
+ * soft one stays over it and fades off, a shine crosses it, and an "HD" pill
+ * pops up in its corner a moment. The soft one's pixels go once it's faded.
+ */
+#define SHARPEN_FADE_MS 800
+#define SHARPEN_SHINE_MS 700
+#define SHARPEN_BADGE_MS 1800
+
+EXT_RAM_BSS_ATTR static struct {
+    photo_px_t old;             /* the soft one, under the ghost */
+    lv_image_dsc_t dsc;
+    lv_obj_t *ghost, *shine, *badge;
+} s_sharpen;
+
+static void sharpen_stop(void)
+{
+    lv_obj_t **objs[] = { &s_sharpen.ghost, &s_sharpen.shine, &s_sharpen.badge };
+    for (size_t i = 0; i < sizeof(objs) / sizeof(objs[0]); i++) {
+        if (*objs[i]) {
+            lv_obj_delete(*objs[i]);   /* its animation with it */
+            *objs[i] = NULL;
+        }
+    }
+    photo_px_free(&s_sharpen.old);
+}
+
+static void sharpen_ghost_opa(void *o, int32_t v)
+{
+    lv_obj_set_style_image_opa(o, (lv_opa_t)v, 0);
+}
+
+static void sharpen_ghost_done(lv_anim_t *a)
+{
+    (void)a;
+    lv_obj_delete_async(s_sharpen.ghost);
+    s_sharpen.ghost = NULL;
+    photo_px_free(&s_sharpen.old);
+}
+
+static void sharpen_shine_x(void *o, int32_t v)
+{
+    int32_t pw = lv_obj_get_width(lv_obj_get_parent(o)), sw = lv_obj_get_width(o);
+    lv_obj_set_x(o, -sw + (pw + sw) * v / 1000);
+}
+
+static void sharpen_shine_done(lv_anim_t *a)
+{
+    (void)a;
+    lv_obj_delete_async(s_sharpen.shine);
+    s_sharpen.shine = NULL;
+}
+
+/* In fast and a touch past its size, settled, held, then faded. */
+static void sharpen_badge_step(void *o, int32_t v)
+{
+    float t = v / 1000.0f * SHARPEN_BADGE_MS;
+    float scale = 1, opa = 1;
+    if (t < 180) {
+        scale = 0.5f + 0.65f * ease_in_out(t / 180);
+        opa = t / 180;
+    } else if (t < 300) {
+        scale = 1.15f - 0.15f * ease_in_out((t - 180) / 120);
+    } else if (t > SHARPEN_BADGE_MS - 350) {
+        opa = (SHARPEN_BADGE_MS - t) / 350;
+    }
+    lv_obj_set_style_transform_scale(o, (int32_t)lroundf(LV_SCALE_NONE * scale), 0);
+    lv_obj_set_style_opa(o, (lv_opa_t)lroundf(LV_OPA_COVER * (opa < 0 ? 0 : opa)), 0);
+}
+
+static void sharpen_badge_done(lv_anim_t *a)
+{
+    (void)a;
+    lv_obj_delete_async(s_sharpen.badge);
+    s_sharpen.badge = NULL;
+}
+
+static void sharpen_anim(lv_obj_t *o, lv_anim_exec_xcb_t step, int32_t from, int32_t to, uint32_t ms,
+                         lv_anim_path_cb_t path, lv_anim_completed_cb_t done)
+{
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, o);
+    lv_anim_set_exec_cb(&a, step);
+    lv_anim_set_values(&a, from, to);
+    lv_anim_set_duration(&a, ms);
+    lv_anim_set_path_cb(&a, path);
+    lv_anim_set_completed_cb(&a, done);
+    lv_anim_start(&a);
+}
+
+/* Shows p in place of what's being looked at (full size, else held up), sharpening into it. */
+static void photo_sharpen(photo_px_t *p)
+{
+    sharpen_stop();   /* one still going: done with */
+    bool full = photo_full_shown();
+    lv_obj_t *pic = full ? s_photo_full_pic : s_photo_pic;
+    photo_px_t old = s_photo.px;
+    s_photo.px = (photo_px_t){ 0 };
+    if (full) {
+        set_dsc(&s_sharpen.dsc, old.full, old.fw, old.fh);
+    } else {
+        set_dsc(&s_sharpen.dsc, old.held, old.hw, old.hh);
+    }
+    s_sharpen.old = old;   /* kept for the ghost, until it's faded */
+    photo_adopt(p);
+    ESP_LOGI(TAG, "photo sharpens %s: %dx%d now", full ? "full size" : "in his hands",
+             full ? s_photo.px.fw : s_photo.px.hw, full ? s_photo.px.fh : s_photo.px.hh);
+
+    s_sharpen.ghost = lv_image_create(pic);
+    lv_obj_remove_flag(s_sharpen.ghost, LV_OBJ_FLAG_CLICKABLE);
+    lv_image_set_src(s_sharpen.ghost, &s_sharpen.dsc);
+    lv_image_set_inner_align(s_sharpen.ghost, LV_IMAGE_ALIGN_STRETCH);   /* the same aspect, at its size */
+    lv_obj_set_size(s_sharpen.ghost, lv_pct(100), lv_pct(100));
+    lv_obj_center(s_sharpen.ghost);
+    sharpen_anim(s_sharpen.ghost, sharpen_ghost_opa, LV_OPA_COVER, LV_OPA_TRANSP, SHARPEN_FADE_MS,
+                 lv_anim_path_ease_in_out, sharpen_ghost_done);
+
+    /* A soft band of light, clear-white-clear, left to right over it. */
+    s_sharpen.shine = lv_obj_create(pic);
+    lv_obj_remove_style_all(s_sharpen.shine);
+    lv_obj_remove_flag(s_sharpen.shine, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(s_sharpen.shine, lv_pct(40), lv_pct(100));
+    lv_obj_set_flex_flow(s_sharpen.shine, LV_FLEX_FLOW_ROW);
+    for (int half = 0; half < 2; half++) {
+        lv_obj_t *h = lv_obj_create(s_sharpen.shine);
+        lv_obj_remove_style_all(h);
+        lv_obj_remove_flag(h, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_size(h, lv_pct(50), lv_pct(100));
+        lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(h, lv_color_white(), 0);
+        lv_obj_set_style_bg_grad_color(h, lv_color_white(), 0);
+        lv_obj_set_style_bg_grad_dir(h, LV_GRAD_DIR_HOR, 0);
+        lv_obj_set_style_bg_main_opa(h, half ? LV_OPA_50 : LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_grad_opa(h, half ? LV_OPA_TRANSP : LV_OPA_50, 0);
+    }
+    lv_obj_set_y(s_sharpen.shine, 0);
+    sharpen_anim(s_sharpen.shine, sharpen_shine_x, 0, 1000, SHARPEN_SHINE_MS, lv_anim_path_ease_in_out,
+                 sharpen_shine_done);
+
+    /* "HD", in the top right corner. */
+    s_sharpen.badge = lv_obj_create(pic);
+    lv_obj_remove_style_all(s_sharpen.badge);
+    lv_obj_remove_flag(s_sharpen.badge, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(s_sharpen.badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_hor(s_sharpen.badge, 8, 0);
+    lv_obj_set_style_pad_ver(s_sharpen.badge, 3, 0);
+    lv_obj_set_style_radius(s_sharpen.badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_sharpen.badge, lv_color_hex(0x201a35), 0);
+    lv_obj_set_style_bg_opa(s_sharpen.badge, LV_OPA_80, 0);
+    lv_obj_set_style_border_color(s_sharpen.badge, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_border_width(s_sharpen.badge, 1, 0);
+    lv_obj_t *hd = make_label(s_sharpen.badge, &lv_font_montserrat_14, 0xffffff);
+    lv_label_set_text(hd, "HD");
+    lv_obj_center(hd);
+    int inset = full ? 12 : 6;
+    lv_obj_align(s_sharpen.badge, LV_ALIGN_TOP_RIGHT, -inset, inset);
+    lv_obj_update_layout(s_sharpen.badge);
+    lv_obj_set_style_transform_pivot_x(s_sharpen.badge, lv_pct(50), 0);
+    lv_obj_set_style_transform_pivot_y(s_sharpen.badge, lv_pct(50), 0);
+    sharpen_badge_step(s_sharpen.badge, 0);
+    sharpen_anim(s_sharpen.badge, sharpen_badge_step, 0, 1000, SHARPEN_BADGE_MS, lv_anim_path_linear,
+                 sharpen_badge_done);
+    muse_voice_earcon(MUSE_EARCON_SHARPER);
+}
+
 static void photo_full_show(void)
 {
     if (!s_photo.px.full) {
@@ -1764,6 +1933,7 @@ static void photo_upped(void)
 /* All gone: the card, the arms, the full size view and the pixels. */
 static void photo_drop(void)
 {
+    sharpen_stop();
     if (s_photo.px.full) {
         photo_upped();   /* dropped before it went up: nothing to wait for */
     }
@@ -2325,7 +2495,9 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
         ESP_LOGI(TAG, "photo out: %dx%d held, %dx%d full (%s)", next.hw, next.hh, next.fw, next.fh,
                  !s_photo_card ? "full size" : s_photo.phase == PHOTO_NONE || s_photo.phase == PHOTO_STOW
                      ? "from the pocket" : "in place of the one held");
-        if (!s_photo_card) {
+        if (!s_photo_card && next.sharper && photo_full_shown()) {
+            photo_sharpen(&next);   /* compact: the one up full size, sharper */
+        } else if (!s_photo_card) {
             photo_drop();
             photo_adopt(&next);
             s_photo.upped = false;
@@ -2341,7 +2513,11 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
             muse_menu_close();
             muse_ui_show_face();
         } else {
-            photo_adopt(&next);   /* another, while one's out: shown in its place */
+            if (next.sharper && s_photo.phase == PHOTO_HOLD) {
+                photo_sharpen(&next);   /* the same, sharper: seen to sharpen */
+            } else {
+                photo_adopt(&next);   /* another, while one's out: shown in its place */
+            }
             s_photo.held_at = now;
             if (s_photo.phase == PHOTO_LOWER) {
                 s_photo.phase = PHOTO_RISE;
@@ -3887,10 +4063,13 @@ bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int
      * still to come out (being unboxed), it comes out in its place. */
     bool quiet = sharper && !s_photo_out && !s_photo.next.full;
     photo_px_free(&s_photo.next);   /* one not taken yet: this is newer */
-    s_photo.next = (photo_px_t){ full, held, fw, fh, hw, hh, quiet };
+    s_photo.next = (photo_px_t){ full, held, fw, fh, hw, hh, quiet, sharper };
     xSemaphoreGive(s_image_mutex);
     if (quiet) {
         return true;   /* nothing to wake for */
+    }
+    if (!sharper && muse_state_mode(NULL) == MUSE_MODE_IDLE) {
+        muse_voice_earcon(MUSE_EARCON_ARRIVED);   /* come after its reply: a ding, as it's unboxed */
     }
     muse_state_set_asleep(false);   /* to be seen */
     muse_state_poke();

@@ -149,6 +149,11 @@ static UINT jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
 /* Fits w x h inside bw x bh, keeping its shape. */
 static void fit(int w, int h, int bw, int bh, int *ow, int *oh)
 {
+    if (w <= bw && h <= bh) {
+        *ow = w;   /* never stretched: smaller than the box, it's shown as it is */
+        *oh = h;
+        return;
+    }
     if ((int64_t)w * bh > (int64_t)h * bw) {
         *ow = bw;
         *oh = (int)((int64_t)h * bw / w);
@@ -899,6 +904,8 @@ static int tcp_ms(const char *url)
 static void bench_fetch(void *arg)
 {
     char *url = arg;
+    bool sharper = url[0] == '+';   /* ">fetch=+URL": as the sharper copy of the one shown */
+    url += sharper;
     int64_t t0 = esp_timer_get_time();
     char *small = heap_caps_malloc(WEB_URL_MAX, MUSE_BIG_CAPS);
     bool smaller = small && muse_img_url_smaller(url, MUSE_IMG_URL_PX, small, WEB_URL_MAX);
@@ -927,7 +934,7 @@ static void bench_fetch(void *arg)
 #endif
         if (got && can_show(data, len)) {
             int64_t t1 = esp_timer_get_time();
-            job_t job = { .data = data, .len = len };
+            job_t job = { .data = data, .len = len, .sharper = sharper };
             strlcpy(job.label, "fetch", sizeof(job.label));
             decoding(1);
             shown = run(&job);
@@ -948,12 +955,13 @@ static void bench_fetch(void *arg)
     fflush(stdout);
     heap_caps_free(data);
     heap_caps_free(small);
-    heap_caps_free(url);
+    heap_caps_free(url - sharper);
 }
 
 bool muse_present_bench_fetch(const char *url)
 {
-    if (!url || (strncmp(url, "https://", 8) && strncmp(url, "http://", 7)) || strlen(url) >= WEB_URL_MAX) {
+    const char *bare = url && url[0] == '+' ? url + 1 : url;
+    if (!url || (strncmp(bare, "https://", 8) && strncmp(bare, "http://", 7)) || strlen(bare) >= WEB_URL_MAX) {
         return false;
     }
     char *copy = heap_caps_malloc(strlen(url) + 1, MUSE_BIG_CAPS);
@@ -1235,7 +1243,7 @@ static void ask_tick(void)
      * took Muse minutes, the push then timing out on the gadget's side. A web
      * image (one the gadget couldn't fetch itself) is downloaded first. */
 #define ENCODE_PY "python3 -c \"import base64,io,sys;from PIL import Image;" \
-                  "im=Image.open(sys.argv[1]).convert('RGB');im.thumbnail((240,240));b=io.BytesIO();" \
+                  "im=Image.open(sys.argv[1]).convert('RGB');im.thumbnail((200,200));b=io.BytesIO();" \
                   "im.save(b,'JPEG',quality=70);print(base64.b64encode(b.getvalue()).decode())\""
     char cmd[2 * PATH_MAX_LEN + 400];
     if (web) {
@@ -1245,7 +1253,7 @@ static void ask_tick(void)
     }
     snprintf(msg + n, sizeof(msg) - n,
              "Send the image \"%s\" to this gadget, quickly: run exactly this, then pass its whole output "
-             "(a 240 px JPEG, under 14 KB) as data_b64 in one display.show_image call (offset 0, final=true, "
+             "(a 200 px JPEG, under 10 KB) as data_b64 in one display.show_image call (offset 0, final=true, "
              "label \"%s\"):\n%s\nNothing else first. If it arrives damaged, run it again. No test images. "
              "Don't create links. Reply with just: sent.",
              label, label, cmd);
