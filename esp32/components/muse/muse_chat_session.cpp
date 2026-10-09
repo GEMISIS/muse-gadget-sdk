@@ -27,7 +27,8 @@
  *      the connection's long-lived POST /chat/subscribe stream: one or more
  *      assistant messages, each delta.message_start / text_append / message_done.
  *   3. Each finished message is shown at reading pace (see start_tts to
- *      speak it with a TTS API of your own; Muse doesn't speak gadget replies).
+ *      speak it with a TTS API of your own; Muse doesn't speak gadget replies),
+ *      or spoken on the device with CONFIG_MUSE_TTS_PICO (muse_tts.h).
  * A turn has no explicit end event; like Sidekick, it settles once every
  * message is done and nothing has arrived for a few seconds.
  *
@@ -39,6 +40,9 @@
  * A typed turn (muse_hatch_text_turn, from the serial console) skips steps 1
  * and 3: the text goes to /chat/stream and the reply streams back to the
  * console as "@chat" lines instead of to the voice task.
+ *
+ * Turns go to the main chat, or to the side chat picked in the settings
+ * (muse_settings_chat_sid) as their session_id.
  */
 
 #include <atomic>
@@ -70,6 +74,9 @@ extern "C" {
 #include "muse_link.h"
 #include "muse_settings.h"
 #include "muse_wifi.h"
+#if CONFIG_MUSE_TTS_PICO
+#include "muse_tts.h"
+#endif
 }
 #include "muse_chat_priv.h"
 
@@ -169,6 +176,22 @@ static char s_host[MUSE_HOST_MAX + 1];
  * if that fails or the connection drops, not after an idle close. */
 static int64_t s_auto_next_us;
 static int64_t s_auto_backoff_us = AUTO_RETRY_MIN_US;
+/*
+ * The chat (muse_settings_chat_sid): each turn names it in its session_id,
+ * and the subscription names the one it was opened for (s_sub_sid), unless
+ * s_sub_with_sid is off. A change sets s_chat_check; once no turn runs, a
+ * subscription for another chat is dropped and opened again.
+ */
+#if CONFIG_MUSE_CHAT_SUBSCRIBE_SESSION
+static std::atomic<bool> s_sub_with_sid{true};
+#else
+static std::atomic<bool> s_sub_with_sid{false};
+#endif
+static std::atomic<bool> s_chat_check{false};
+static char s_sub_sid[MUSE_CHAT_SID_MAX + 1];
+/* The subscription for s_sub_sid came back 404: a side chat the Muse only
+ * starts with its first message. It's opened again once one is taken. */
+static bool s_sub_missing;
 
 /* ---- Streams on the connection ---- */
 
@@ -202,6 +225,7 @@ struct msg_t {
     tts_t tts;
     uint32_t pcm_start;      /* where its speech starts in the reply audio */
     uint32_t pcm_frames;     /* how long it is; 0 until the MP3 has all arrived */
+    bool streaming;          /* spoken sentence by sentence while it arrives (speak_early) */
 };
 
 struct resampler_t {
@@ -237,6 +261,7 @@ struct turn_t {
     /* TTS */
     int tts_msg;             /* message being fetched (or shown, speaker off), or -1 */
     bool silent;             /* speaker off: tts_msg is paced by silence, not fetched */
+    bool pico;               /* tts_msg is spoken on the device (muse_tts.h) */
     uint8_t *mp3;            /* MP3_BUF */
     size_t mp3_len;
     bool mp3_ended;
@@ -799,10 +824,43 @@ static bool resolve_vm(char *err, size_t err_cap)
     return false;
 }
 
+/* The chat the subscription should name: "" for none (the main chat, or s_sub_with_sid off). */
+static void wanted_sub_sid(char out[MUSE_CHAT_SID_MAX + 1])
+{
+    out[0] = '\0';
+    if (s_sub_with_sid) {
+        muse_settings_chat_sid(out);
+    }
+}
+
+/* Connected, and subscribed for another chat than the chosen one. */
+static bool subscription_stale(void)
+{
+    char want[MUSE_CHAT_SID_MAX + 1];
+    wanted_sub_sid(want);
+    return s_connected && strcmp(want, s_sub_sid) != 0;
+}
+
 static bool open_subscription(void)
 {
     s_last_seq = 0;
-    s_conn.sub_id = open_stream(K_SUB, "POST", "/chat/subscribe", "application/json", "application/x-ndjson", "{}",
+    s_sub_missing = false;
+    char sid[MUSE_CHAT_SID_MAX + 1], body[MUSE_CHAT_SUB_BODY_MAX];
+    wanted_sub_sid(sid);
+    if (!muse_chat_sub_body(sid, body, sizeof(body))) {
+        return false;
+    }
+    strlcpy(s_sub_sid, sid, sizeof(s_sub_sid));
+    char chosen[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(chosen);
+    if (sid[0]) {
+        ESP_LOGI(TAG, "subscribing to replies in chat %s", sid);
+    } else if (chosen[0]) {
+        ESP_LOGI(TAG, "subscribing to replies with {} (chat %s is picked, subscribe leaves it out)", chosen);
+    } else {
+        ESP_LOGI(TAG, "subscribing to replies in the main chat");
+    }
+    s_conn.sub_id = open_stream(K_SUB, "POST", "/chat/subscribe", "application/json", "application/x-ndjson", body,
                                 true);
     return s_conn.sub_id != 0;
 }
@@ -959,6 +1017,12 @@ static void turn_finish(void)
     s_turn.tts_msg = -1;
     s_turn.silent = false;
     s_turn.mp3_len = 0;
+#if CONFIG_MUSE_TTS_PICO
+    if (s_turn.pico) {
+        muse_tts_stop();   /* cancelled, interrupted or failed mid-sentence */
+    }
+#endif
+    s_turn.pico = false;
 }
 
 static void turn_fail(const char *why)
@@ -1006,6 +1070,9 @@ static bool turn_start(uint32_t gen, bool text)
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
     resampler_init(&s_turn.up, MIC_RATE, DICT_RATE);
+    if (subscription_stale()) {
+        disconnect("chat changed");   /* subscribe again for the chat this turn goes to */
+    }
     if (!ensure_connected()) {
         turn_fail(muse_hatch_configured() ? "CAN'T REACH MUSE" : "MUSE NOT SET UP");
         return false;
@@ -1119,8 +1186,14 @@ static bool open_note(void)
     if (!s_turn.chat_id) {
         return false;
     }
-    s_turn.body_sent = sizeof(MUSE_HATCH_NOTE_HEAD) - 1;
-    if (!send_body(s_turn.chat_id, reinterpret_cast<const uint8_t *>(MUSE_HATCH_NOTE_HEAD), sizeof(MUSE_HATCH_NOTE_HEAD) - 1, false)) {
+    char sid[MUSE_CHAT_SID_MAX + 1], head[MUSE_CHAT_NOTE_HEAD_MAX];
+    muse_settings_chat_sid(sid);
+    size_t n = muse_chat_note_head(sid, head, sizeof(head));
+    if (sid[0]) {
+        ESP_LOGI(TAG, "voice note to chat %s", sid);
+    }
+    s_turn.body_sent = n;
+    if (!n || !send_body(s_turn.chat_id, reinterpret_cast<const uint8_t *>(head), n, false)) {
         return false;
     }
     muse_hatch_wav_header(s_turn.note, MIC_RATE);
@@ -1175,6 +1248,12 @@ static void send_chat(const char *text, const char *modality)
     cJSON *body = cJSON_CreateObject();
     cJSON_AddStringToObject(body, "message", text);
     cJSON_AddStringToObject(body, "output_modality", modality);
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(sid);
+    if (sid[0]) {
+        cJSON_AddStringToObject(body, "session_id", sid);
+        ESP_LOGI(TAG, "message to chat %s", sid);
+    }
     char *json = cJSON_PrintUnformatted(body);
     cJSON_Delete(body);
     size_t len = json ? strlen(json) : 0;
@@ -1227,7 +1306,10 @@ static void text_begin(const char *text)
     send_chat(text, "text");
     if (s_turn.phase == P_WAIT_REPLY) {
         mark(M_SENT);
-        muse_hatch_console("sent", nullptr, "\"bytes\":%u", (unsigned)strlen(text));
+        char sid[MUSE_CHAT_SID_MAX + 1];
+        muse_settings_chat_sid(sid);
+        muse_hatch_console("sent", nullptr, "\"bytes\":%u,\"chat\":\"%s\"", (unsigned)strlen(text),
+                           sid[0] ? sid : "main");
     }
 }
 
@@ -1390,11 +1472,78 @@ static void message_done(int i, const char *final_text)
     if (!m.len && final_text && final_text[0]) {
         append_text(m, final_text);
     }
+#if CONFIG_MUSE_TTS_PICO
+    if (m.streaming) {
+        m.streaming = false;
+        if (s_turn.pico && s_turn.tts_msg == i && s_turn.texts) {
+            const char *full = s_turn.texts + i * TEXT_MAX;
+            muse_tts_more(full, true);
+            muse_tts_remember(full, i > 0);
+        }
+    }
+#endif
     if (m.len && m.tts == TTS_NONE) {
         m.tts = TTS_QUEUED;
     }
     ESP_LOGI(TAG, "message %s done (%u chars)", m.id, (unsigned)m.len);
 }
+
+#if CONFIG_MUSE_TTS_PICO
+/* Where text's last whole sentence ends: after . ! or ? and a space, or a line break. 0 if none yet. */
+static size_t sentence_end(const char *t)
+{
+    size_t end = 0;
+    for (size_t k = 0; t[k]; k++) {
+        char c = t[k];
+        if (c == '\n' || ((c == '.' || c == '!' || c == '?') && (t[k + 1] == ' ' || t[k + 1] == '\n'))) {
+            end = k + 1;
+        }
+    }
+    return end;
+}
+
+/*
+ * Speaks a reply while it streams in, a sentence at a time, rather than once
+ * it's all here: Pico starts on the first sentence while the rest arrives.
+ * Only the first message to be spoken, with nothing ahead of it.
+ */
+static void speak_early(int i)
+{
+    msg_t &m = s_turn.msgs[i];
+    if (s_turn.text || !s_turn.texts || m.done) {
+        return;
+    }
+    char *full = s_turn.texts + i * TEXT_MAX;
+    size_t cut = sentence_end(full);
+    if (!cut) {
+        return;
+    }
+    char keep = full[cut];
+    full[cut] = '\0';
+    if (m.streaming) {
+        if (s_turn.pico && s_turn.tts_msg == i) {
+            muse_tts_more(full, false);
+        }
+    } else if (m.tts == TTS_NONE && s_turn.tts_msg < 0 && muse_tts_wanted()) {
+        bool queued = false;
+        for (int k = 0; k < s_turn.nmsgs; k++) {
+            queued |= s_turn.msgs[k].tts == TTS_QUEUED;
+        }
+        if (!queued && muse_tts_start(full, false)) {
+            m.pcm_start = s_turn.pcm_out;
+            m.pcm_frames = 0;
+            m.tts = TTS_ACTIVE;
+            m.streaming = true;
+            s_turn.tts_msg = i;
+            s_turn.silent = false;
+            s_turn.pico = true;
+            mark(M_TTS);
+            ESP_LOGI(TAG, "speaking message %s as it arrives", m.id);
+        }
+    }
+    full[cut] = keep;
+}
+#endif
 
 static const char *msg_id(cJSON *payload, cJSON *event)
 {
@@ -1466,6 +1615,9 @@ static void on_event(cJSON *line)
             mark(M_TEXT);
             append_text(m, text);
             show_reply_start(m);   /* ignored once the speech starts */
+#if CONFIG_MUSE_TTS_PICO
+            speak_early(i);
+#endif
         }
     } else if (done || full) {
         const char *text = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "display_text"));
@@ -1526,6 +1678,25 @@ static void start_tts(void)
          * end. decode() plays it at the speaker's volume, captions following,
          * and finishes the message once it's drained.
          */
+#if CONFIG_MUSE_TTS_PICO
+        /* On-device speech (muse_tts.h): its PCM goes where decoded MP3 would. */
+        if (!s_turn.text && s_turn.texts) {
+            const char *text = s_turn.texts + i * TEXT_MAX;
+            muse_tts_remember(text, i > 0);
+            if (muse_tts_wanted() && muse_tts_say(text)) {
+                m.pcm_start = s_turn.pcm_out;
+                m.pcm_frames = 0;
+                m.tts = TTS_ACTIVE;
+                s_turn.tts_msg = i;
+                s_turn.silent = false;
+                s_turn.pico = true;
+                mark(M_TTS);
+                ESP_LOGI(TAG, "speaking message %s (%u chars)", m.id, (unsigned)m.len);
+                show_reply_start(m);
+                return;
+            }
+        }
+#endif
         m.pcm_start = s_turn.pcm_out;
         m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
         m.tts = TTS_ACTIVE;
@@ -1581,6 +1752,43 @@ static void pace_silently(void)
     }
 }
 
+#if CONFIG_MUSE_TTS_PICO
+/* On-device speech: moves what's synthesized into the reply audio while there's room. */
+static void pump_speech(void)
+{
+    enum { CHUNK = 256, LEAD = MIC_RATE / 5 };
+    msg_t &m = s_turn.msgs[s_turn.tts_msg];
+    muse_tts_status_t st = muse_tts_status();
+    /* A fifth of a second ahead before the first word: Pico runs faster than
+     * real time, so that's enough to keep the first sentence from stuttering. */
+    if (s_turn.pcm_out == m.pcm_start && st == MUSE_TTS_SPEAKING && muse_tts_buffered() < LEAD) {
+        return;
+    }
+    size_t n;
+    while (xStreamBufferSpacesAvailable(s_out) >= CHUNK * sizeof(int16_t) && (n = muse_tts_read(s_pcm16, CHUNK)) > 0) {
+        if (s_turn.gen == s_gen.load()) {
+            mark(M_AUDIO);
+            xStreamBufferSend(s_out, s_pcm16, n * sizeof(int16_t), 0);
+        }
+        s_turn.pcm_out += n;
+    }
+    st = muse_tts_status();
+    if (st == MUSE_TTS_SPEAKING) {
+        return;
+    }
+    s_turn.pico = false;
+    if (st == MUSE_TTS_FAILED && s_turn.pcm_out == m.pcm_start) {
+        /* Nothing was said: show it at reading pace instead. */
+        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
+        s_turn.silent = true;
+        return;
+    }
+    m.pcm_frames = s_turn.pcm_out - m.pcm_start;
+    m.tts = TTS_FINISHED;
+    s_turn.tts_msg = -1;
+}
+#endif
+
 /* Decodes buffered MP3 while the reply buffer has room. */
 static void decode(void)
 {
@@ -1591,6 +1799,12 @@ static void decode(void)
         pace_silently();
         return;
     }
+#if CONFIG_MUSE_TTS_PICO
+    if (s_turn.pico) {
+        pump_speech();
+        return;
+    }
+#endif
     /*
      * minimp3 only takes a frame once it can see the next one's header. Given
      * less, it resets and says to skip all of it, which drops speech and clicks.
@@ -1780,6 +1994,8 @@ static bool stream_end(stream_t *s, bool ok)
         s_turn.chat_id = 0;
         if (!ok) {
             turn_fail("MUSE DIDN'T TAKE IT");
+        } else if (s_sub_missing && !open_subscription()) {
+            return false;   /* the chat exists now: its replies need the subscription */
         }
         break;
     case K_TTS:
@@ -1798,6 +2014,18 @@ static bool on_http_error(stream_t *s, const ApplicationResponseView &resp)
     memcpy(body, resp.body.data(), n);
     body[n] = '\0';
     ESP_LOGW(TAG, "stream %lld: HTTP %d %s", (long long)s->id, (int)resp.status, body);
+    if (s->kind == K_SUB && resp.status == 404 && s_sub_sid[0]) {
+        /* Not there until a message starts it: keep the connection, and
+         * subscribe once the next one (the mode's, or the user's) is taken. */
+        ESP_LOGI(TAG, "chat %s isn't on the Muse yet: subscribing after its first message", s_sub_sid);
+        close_stream(s);
+        s_conn.sub_id = 0;
+        s_sub_missing = true;
+        return true;
+    }
+    /* No falling back to a subscription with {} on a refusal: a side chat's
+     * replies only arrive on one that names it, so that would lose them all
+     * (">chat_sub=0" still switches it by hand). */
     return stream_end(s, false);
 }
 
@@ -1971,6 +2199,14 @@ static void hatch_task(void *arg)
             continue;
         }
 
+        /* The chat changed: subscribe for the new one once no turn needs this subscription. */
+        if (s_turn.phase == P_IDLE && s_chat_check.exchange(false) && subscription_stale()) {
+            disconnect("chat changed");
+            muse_hatch_report(MUSE_HATCH_UNTESTED, "");
+            s_auto_next_us = 0;   /* and connect again straight away */
+            continue;
+        }
+
         /* Resting, Wi-Fi may nap; don't wait for the server to go quiet. */
         if (s_resting && !muse_wifi_connected()) {
             drop_connection("Wi-Fi down");
@@ -2068,6 +2304,9 @@ extern "C" void muse_hatch_start(void)
                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
         ESP_LOGE(TAG, "start failed");
     }
+#if CONFIG_MUSE_TTS_PICO
+    muse_tts_init();
+#endif
 }
 
 extern "C" void muse_hatch_chat_connect(void)
@@ -2078,6 +2317,24 @@ extern "C" void muse_hatch_chat_connect(void)
 extern "C" void muse_hatch_chat_forget(void)
 {
     post(CMD_FORGET, 0);
+}
+
+extern "C" void muse_chat_changed(void)
+{
+    s_chat_check = true;
+    post(CMD_WAKE, 0);   /* a resting task looks now */
+}
+
+extern "C" void muse_chat_set_subscribe_session(bool on)
+{
+    ESP_LOGI(TAG, "subscribe %s", on ? "names the picked chat" : "with {}");
+    s_sub_with_sid = on;
+    muse_chat_changed();
+}
+
+extern "C" bool muse_chat_subscribe_session(void)
+{
+    return s_sub_with_sid;
 }
 
 extern "C" bool muse_hatch_ready(void)

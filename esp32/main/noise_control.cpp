@@ -1376,6 +1376,44 @@ static char *build_register_json(void) {
     }
 #endif
 
+#if CONFIG_MUSE_ENABLED
+    cJSON *text_required = cJSON_CreateObject();
+    cJSON_AddItemToObject(text_required, "text",
+                          string_param("Text to show, up to 400 bytes."));
+    add_command(commands, "show_text",
+                "Show text as the caption under the avatar, waking the "
+                "screen. Two short lines fit; longer text is cut off.",
+                text_required, nullptr);
+    cJSON *mode_required = cJSON_CreateObject();
+    cJSON_AddItemToObject(mode_required, "mode",
+                          string_param("desk, night or on_the_go."));
+    add_command(commands, "set_mode",
+                "Switch the gadget mode: desk (full detail, replies spoken), "
+                "night (dim screen, nothing spoken) or on_the_go (bright "
+                "screen, captions only). Holds until the next scheduled "
+                "switch, at 05:00 or 21:00.",
+                mode_required, nullptr);
+    cJSON *chat_optional = cJSON_CreateObject();
+    cJSON_AddItemToObject(chat_optional, "session_id",
+                          string_param("main (or empty) for the main chat, "
+                                       "gadget for this gadget's own chat, or "
+                                       "a chat's UUID."));
+    cJSON_AddItemToObject(chat_optional, "name",
+                          string_param("A named chat kept on the gadget, up to "
+                                       "32 bytes; made if none has the name. "
+                                       "Not with session_id."));
+    add_command(commands, "set_chat",
+                "Pick which chat the gadget's messages and voice notes go "
+                "to. A new chat shows up in the Muse app once it gets a "
+                "message. Returns chat (main, gadget, named or custom), "
+                "session_id, and name and created for a named chat.",
+                nullptr, chat_optional);
+    add_command(commands, "list_chats",
+                "List the named chats kept on the gadget (name, session_id) "
+                "and the current chat, as set_chat returns it.",
+                nullptr, nullptr);
+#endif
+
 #if CONFIG_HOMEHUB_VOICE
     cJSON *volume_optional = cJSON_CreateObject();
     cJSON *volume_param = cJSON_CreateObject();

@@ -244,6 +244,9 @@ static int64_t open_stream(kind_t kind, const char *verb, const char *path, cons
     CHECK(!strcmp(content_type, "application/json") && !accept && !body && !end_body);
     return 7;
 }
+/* muse_settings.h: notes go to the main chat, so the head has no session_id. */
+#define MUSE_CHAT_SID_MAX 36
+static void muse_settings_chat_sid(char out[MUSE_CHAT_SID_MAX + 1]) { out[0] = 0; }
 static void mark(mark_t) {}
 static int64_t now_us(void) { return 4242; }
 static const char *failed = "-";

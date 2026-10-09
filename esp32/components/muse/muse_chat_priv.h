@@ -21,6 +21,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "muse_chat.h"
@@ -72,6 +73,27 @@ static inline void muse_chat_reject(muse_chat_rejected_t *rejected, const char *
     "{\"message\":\"\",\"output_modality\":\"text\",\"items\":[{\"type\":\"file\"," \
     "\"mime_type\":\"audio/wav\",\"filename\":\"voice_note.wav\",\"data_base64\":\""
 #define MUSE_HATCH_NOTE_TAIL "\"}]}"
+/* Room for NOTE_HEAD with a session_id (muse_chat_note_head), and for a subscribe body. */
+#define MUSE_CHAT_NOTE_HEAD_MAX (sizeof(MUSE_HATCH_NOTE_HEAD) + 96)
+#define MUSE_CHAT_SUB_BODY_MAX 96
+
+/*
+ * NOTE_HEAD for a note to the chat `sid` (a valid session_id, or "" for the
+ * main chat, which leaves it out). Returns the length, 0 if it doesn't fit.
+ */
+static inline size_t muse_chat_note_head(const char *sid, char *out, size_t cap)
+{
+    int n = sid[0] ? snprintf(out, cap, "{\"session_id\":\"%s\",%s", sid, &MUSE_HATCH_NOTE_HEAD[1])
+                   : snprintf(out, cap, "%s", MUSE_HATCH_NOTE_HEAD);
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
+
+/* POST /chat/subscribe's body: {} or {"session_id":"<sid>"}. Returns the length, 0 if it doesn't fit. */
+static inline size_t muse_chat_sub_body(const char *sid, char *out, size_t cap)
+{
+    int n = sid[0] ? snprintf(out, cap, "{\"session_id\":\"%s\"}", sid) : snprintf(out, cap, "{}");
+    return n > 0 && (size_t)n < cap ? (size_t)n : 0;
+}
 #define MUSE_HATCH_WAV_HEADER 44
 
 /* Voice note helpers (muse_chat_text.c). The note's length isn't known until

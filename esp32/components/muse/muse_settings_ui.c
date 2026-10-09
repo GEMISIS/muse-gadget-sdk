@@ -29,6 +29,8 @@
 #include "muse_ble.h"
 #include "muse_board.h"
 #include "muse_chat.h"
+#include "muse_gadget_mode.h"
+#include "muse_home_extras.h"
 #include "muse_input.h"
 #include "muse_keypad.h"
 #include "muse_link.h"
@@ -61,6 +63,7 @@ static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
 static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
+static lv_obj_t *s_mode;
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -74,6 +77,7 @@ typedef struct {
 
 /* Home values. */
 static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home_sleep, *s_home_battery, *s_about;
+static lv_obj_t *s_home_mode;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -102,6 +106,11 @@ static const int SLEEP_CHOICES[] = { 0, 30, 60, 120, 300, 600 };
 static const char *const SLEEP_NAMES[] = { "Never", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes" };
 #define SLEEP_COUNT (int)(sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]))
 static lv_obj_t *s_sleep_checks[SLEEP_COUNT];
+
+/* Mode */
+static lv_obj_t *s_mode_checks[MUSE_GADGET_MODE_COUNT], *s_mode_home, *s_mode_away, *s_mode_note;
+static lv_obj_t *s_mode_pick[2];   /* under the Home and On-the-go rows: the saved networks to pick from */
+static muse_wifi_saved_t s_mode_nets[MUSE_WIFI_SAVED_MAX];
 
 /* Battery page. */
 static lv_obj_t *s_batt_status, *s_batt_level, *s_batt_drain, *s_batt_full, *s_batt_off, *s_batt_slept, *s_batt_wakes,
@@ -359,7 +368,8 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text,
+                                 &s_mode };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -1106,6 +1116,129 @@ static void tick_sleep(void)
     }
 }
 
+/* ---------- Mode ---------- */
+
+static void on_mode_choice(lv_event_t *e)
+{
+    muse_gadget_mode_pick((muse_gadget_mode_t)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void on_mode_home(lv_event_t *e)
+{
+    (void)e;
+    set_text(s_mode_note, muse_gadget_mode_set_home() ? "Saved." : "Join a Wi-Fi network first.");
+}
+
+static void on_clock_24h_sw(lv_event_t *e)
+{
+    muse_home_extras_set_24h(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
+static void on_mode_away(lv_event_t *e)
+{
+    (void)e;
+    set_text(s_mode_note, muse_gadget_mode_set_away() ? "Saved: joining it switches to On-the-go."
+                                                      : "Join a Wi-Fi network first.");
+}
+
+enum { PICK_HOME, PICK_AWAY };
+
+static void set_mode_net(int which, const char *ssid)
+{
+    if (which == PICK_HOME) {
+        muse_settings_set_home_ssid(ssid);
+    } else {
+        muse_settings_set_away_ssid(ssid);
+    }
+}
+
+static void on_mode_net(lv_event_t *e)
+{
+    intptr_t v = (intptr_t)lv_event_get_user_data(e);
+    int which = (int)(v >> 8), i = (int)(v & 0xff);
+    set_mode_net(which, i == 0xff ? "" : s_mode_nets[i].ssid);
+    lv_obj_add_flag(s_mode_pick[which], LV_OBJ_FLAG_HIDDEN);
+    set_text(s_mode_note, i == 0xff ? "Cleared." : "Saved.");
+}
+
+/* Opens (or closes) the saved networks under a row, filled in fresh. */
+static void on_mode_pick(lv_event_t *e)
+{
+    int which = (int)(intptr_t)lv_event_get_user_data(e);
+    lv_obj_t *box = s_mode_pick[which];
+    lv_obj_add_flag(s_mode_pick[!which], LV_OBJ_FLAG_HIDDEN);
+    if (!lv_obj_has_flag(box, LV_OBJ_FLAG_HIDDEN)) {
+        lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clean(box);
+    int n = muse_wifi_saved(s_mode_nets, MUSE_WIFI_SAVED_MAX);
+    if (!n) {
+        note(box, "No saved networks yet: add one on the Wi-Fi page.");
+    }
+    for (int i = 0; i < n; i++) {
+        row(box, LV_SYMBOL_WIFI, s_mode_nets[i].ssid, NULL, on_mode_net, (void *)(intptr_t)((which << 8) | i));
+    }
+    row(box, LV_SYMBOL_CLOSE, "None", NULL, on_mode_net, (void *)(intptr_t)((which << 8) | 0xff));
+    lv_obj_remove_flag(box, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_scroll_to_view(box, LV_ANIM_ON);
+}
+
+/* A row showing a network, tapped for the list of saved ones beneath it. */
+static lv_obj_t *mode_net_row(lv_obj_t *list, const char *text, int which)
+{
+    lv_obj_t *value;
+    row(list, NULL, text, &value, on_mode_pick, (void *)(intptr_t)which);
+    lv_obj_set_style_text_color(value, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_t *box = lv_obj_create(list);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_size(box, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(box, 10, 0);
+    lv_obj_set_style_pad_left(box, 24, 0);   /* indented under its row */
+    lv_obj_remove_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(box, LV_OBJ_FLAG_HIDDEN);
+    s_mode_pick[which] = box;
+    return value;
+}
+
+static void build_mode_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_mode = page(tile, "MODE", true, &list);
+    for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
+        row(list, NULL, muse_gadget_mode_name((muse_gadget_mode_t)m), &s_mode_checks[m], on_mode_choice,
+            (void *)(intptr_t)m);
+        lv_obj_set_style_text_color(s_mode_checks[m], lv_color_hex(COLOR_ACCENT), 0);
+    }
+    note(list, "Night runs 21:00 to 05:00 and Desk the rest of the day, once the clock is set. "
+               "A mode picked here holds until the next switch.");
+    s_mode_home = mode_net_row(list, "Home Wi-Fi", PICK_HOME);
+    button(list, LV_SYMBOL_WIFI "  Set current as home", COLOR_ACCENT, on_mode_home, NULL);
+    s_mode_away = mode_net_row(list, "On-the-go Wi-Fi", PICK_AWAY);
+    button(list, LV_SYMBOL_GPS "  Set current as on-the-go", COLOR_ACCENT, on_mode_away, NULL);
+    s_mode_note = note(list, "On the on-the-go Wi-Fi (your phone's hotspot, say), Muse switches to "
+                             "On-the-go by itself. Without one, other networks away from home offer it. "
+                             "Tap a Wi-Fi row to pick from the saved networks.");
+#if CONFIG_MUSE_GADGET_HOME_EXTRAS
+    switch_row(list, "24-hour clock", muse_home_extras_24h(), on_clock_24h_sw);
+    note(list, "Off shows the 12-hour clock, as 9:30 PM.");
+#endif
+}
+
+static void tick_mode(void)
+{
+    muse_gadget_mode_t cur = muse_gadget_mode();
+    for (int m = 0; m < MUSE_GADGET_MODE_COUNT; m++) {
+        set_text(s_mode_checks[m], (int)cur == m ? LV_SYMBOL_OK : "");
+    }
+    char home[MUSE_SSID_MAX + 1];
+    muse_settings_home_ssid(home);
+    set_text(s_mode_home, home[0] ? home : "Not set");
+    muse_settings_away_ssid(home);
+    set_text(s_mode_away, home[0] ? home : "Not set");
+}
+
 /* ---------- Battery ---------- */
 
 static void on_battery_reset(lv_event_t *e)
@@ -1245,6 +1378,7 @@ static const page_t SOUND = { &s_sound, build_sound_page };
 static const page_t SLEEP = { &s_sleep, build_sleep_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
+static const page_t MODE = { &s_mode, build_mode_page };
 
 static void build_home(lv_obj_t *tile)
 {
@@ -1255,6 +1389,7 @@ static void build_home(lv_obj_t *tile)
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
+    row(list, LV_SYMBOL_SHUFFLE, "Mode", &s_home_mode, on_nav, (void *)&MODE);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
     s_about = note(list, "");
@@ -1281,6 +1416,7 @@ static void tick_home(void)
         set_text(s_home_sound, "Muted");
     }
     set_text(s_home_sleep, sleep_name(muse_settings_sleep_s()));
+    set_text(s_home_mode, muse_gadget_mode_name(muse_gadget_mode()));
 
     muse_power_t p = muse_state_power();
     char buf[96];
@@ -1333,6 +1469,8 @@ void muse_settings_ui_tick(bool visible)
         tick_sleep();
     } else if (s_current == s_battery) {
         tick_battery();
+    } else if (s_current == s_mode) {
+        tick_mode();
     }
 }
 

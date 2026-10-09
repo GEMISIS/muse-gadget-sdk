@@ -38,6 +38,11 @@ typedef struct {
     float mode_t;    /* seconds in current mode */
     float level;     /* 0..1 live audio level */
     float happy;     /* 0..1 pet reaction */
+    /* The Night face (CONFIG_MUSE_GADGET_NIGHT_FACE): tucked up in bed, and
+     * asleep there (eyes shut, slow breaths, z's) unless sitting up to listen
+     * or answer. A renderer that doesn't draw a bed may leave both alone. */
+    bool bed;
+    bool sleepy;
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */

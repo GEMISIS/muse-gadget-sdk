@@ -26,7 +26,7 @@ static const char *TAG = "muse_pmu";
 #define REG_STATUS1 0x00        /* bit5 VBUS good, bit3 battery present */
 #define REG_STATUS2 0x01        /* bits[6:5] 01 = charging */
 #define REG_COMMON_CFG 0x10     /* bit0 = soft power-off */
-#define REG_IRQ_LEVEL 0x27      /* bits[3:2] power-key hold-to-off time */
+#define REG_IRQ_LEVEL 0x27      /* bits[5:4] long-press time, [3:2] power-key hold-to-off time */
 #define REG_ADC_ENABLE 0x30     /* bit0 = battery voltage */
 #define REG_VBAT_H 0x34         /* bits[4:0]; 1 mV per count with REG_VBAT_L */
 #define REG_VBAT_L 0x35
@@ -49,6 +49,7 @@ static const char *TAG = "muse_pmu";
 /* bits[3:2] = 11 -> 10 s: longer than the 8 s talk limit, and a hardware
  * fallback if the firmware is wedged. */
 #define PKEY_OFF_10S (3u << 2)
+#define PKEY_LONG_MASK (3u << 4)    /* 1 s, 1.5 s, 2 s or 2.5 s */
 
 static i2c_master_dev_handle_t s_dev;
 
@@ -117,6 +118,17 @@ esp_err_t muse_pmu_keep_rails(uint8_t dcdc, uint16_t ldo)
     ESP_RETURN_ON_ERROR(wr(REG_LDO_ONOFF1, ldo1_new), TAG, "ldo1 off");
     ESP_LOGI(TAG, "rails: DCDC %02x -> %02x, LDO %02x %02x -> %02x %02x", dc & 0x1F, dc_new & 0x1F, ldo0,
              ldo1 & 0x01, ldo0_new, ldo1_new & 0x01);
+    return ESP_OK;
+}
+
+esp_err_t muse_pmu_set_long_press_ms(int ms)
+{
+    uint8_t v;
+    ESP_RETURN_ON_FALSE(s_dev, ESP_ERR_INVALID_STATE, TAG, "no PMU");
+    int step = ms <= 1000 ? 0 : ms <= 1500 ? 1 : ms <= 2000 ? 2 : 3;
+    ESP_RETURN_ON_ERROR(rd(REG_IRQ_LEVEL, &v), TAG, "read irq level");
+    ESP_RETURN_ON_ERROR(wr(REG_IRQ_LEVEL, (v & ~PKEY_LONG_MASK) | step << 4), TAG, "set long-press time");
+    ESP_LOGI(TAG, "power-key long press: %d ms", 1000 + step * 500);
     return ESP_OK;
 }
 

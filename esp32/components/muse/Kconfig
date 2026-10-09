@@ -165,6 +165,8 @@ menu "Muse"
             Without it those characters show as boxes. Hangul isn't
             included.
 
+    rsource "Kconfig.gadget"
+
     config MUSE_JC3248W535_MIC_GPIO
         int "JC3248W535: GPIO for an external I2S mic's data (SD) line"
         depends on MUSE_BOARD_GUITION_JC3248W535
@@ -189,5 +191,33 @@ menu "Muse"
             muse_chat_session.cpp is where a TTS API of your own can speak
             them. Needs PSRAM. Without it, voice notes go over Home Link's own
             session to its paired VM and replies are shown as text.
+
+    config MUSE_CHAT_SUBSCRIBE_SESSION
+        bool "Name the chosen chat when subscribing to replies"
+        depends on MUSE_ENABLED
+        default y
+        help
+            With a chat other than the main one picked (the Chats screen, or
+            the set_chat command), turns carry its session_id. This also
+            names it in the reply subscription, {"session_id":"..."} instead
+            of {}: a subscription with {} doesn't carry a side chat's
+            replies. Leave it on unless Muse changes that. On boards
+            with Muse's own voice session, ">chat_sub=0" or "=1" on the
+            serial console switches it until the next restart.
+
+    config MUSE_TTS_PICO
+        bool "Speak replies on the device (SVOX Pico, en-US)"
+        depends on MUSE_HATCH && SPIRAM
+        default y if MUSE_BOARD_WAVESHARE_S3_216
+        default n
+        help
+            Replies are spoken by SVOX Pico running on the device, no network
+            service involved, when the speaker setting is on (and
+            muse_gadget_tts_allowed() agrees); otherwise they're shown at
+            reading pace as usual. The engine takes about 1.1 MB of PSRAM
+            while a reply is spoken and for a few minutes after. Its en-US
+            voice (1.4 MB) lives in the tts_ta and tts_sg partitions of
+            partitions_muse_tts.csv, which the board's overlay must select;
+            without them replies stay silent.
 
 endmenu

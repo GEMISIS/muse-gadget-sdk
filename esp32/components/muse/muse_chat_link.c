@@ -40,6 +40,7 @@
 #include "freertos/task.h"
 
 #include "muse_link.h"
+#include "muse_settings.h"
 #include "muse_wifi.h"
 
 static const char *TAG = "muse_chat_link";
@@ -797,6 +798,25 @@ void muse_hatch_config_changed(void)
 {
 }
 
+void muse_chat_changed(void)
+{
+    /* Each turn opens its own subscription, for the chat picked then. */
+}
+
+void muse_chat_set_subscribe_session(bool on)
+{
+    (void)on;   /* CONFIG_MUSE_CHAT_SUBSCRIBE_SESSION only */
+}
+
+bool muse_chat_subscribe_session(void)
+{
+#if CONFIG_MUSE_CHAT_SUBSCRIBE_SESSION
+    return true;
+#else
+    return false;
+#endif
+}
+
 void muse_hatch_set_resting(bool resting)
 {
     (void)resting;   /* Link's session does the polling */
@@ -831,8 +851,12 @@ void muse_hatch_turn_begin(void)
         fail("OUT OF MEMORY");
         return;
     }
-    if (!request(RX_NOTE, "POST", "/chat/stream", true, false)
-        || !muse_link_req_send(s_stream[RX_NOTE], MUSE_HATCH_NOTE_HEAD, sizeof(MUSE_HATCH_NOTE_HEAD) - 1, false, SEND_WAIT_MS)) {
+    /* The note's head, built in the chunk buffer before any audio needs it. */
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(sid);
+    size_t head = muse_chat_note_head(sid, (char *)s_turn.chunk, CHUNK_BYTES);
+    if (!head || !request(RX_NOTE, "POST", "/chat/stream", true, false)
+        || !muse_link_req_send(s_stream[RX_NOTE], s_turn.chunk, head, false, SEND_WAIT_MS)) {
         fail("CAN'T REACH MUSE");
         return;
     }
@@ -866,8 +890,13 @@ void muse_hatch_turn_end(void)
     }
     /* Subscribe only after recording: keep inbound reply traffic out of the
      * real-time audio upload. Queue it before the note's final body chunk. */
-    if (!request(RX_SUB, "POST", "/chat/subscribe", true, false)
-        || !muse_link_req_send(s_stream[RX_SUB], "{}", 2, true, SEND_WAIT_MS)) {
+    char sid[MUSE_CHAT_SID_MAX + 1] = "", body[MUSE_CHAT_SUB_BODY_MAX];
+#if CONFIG_MUSE_CHAT_SUBSCRIBE_SESSION
+    muse_settings_chat_sid(sid);
+#endif
+    size_t n = muse_chat_sub_body(sid, body, sizeof(body));
+    if (!n || !request(RX_SUB, "POST", "/chat/subscribe", true, false)
+        || !muse_link_req_send(s_stream[RX_SUB], body, n, true, SEND_WAIT_MS)) {
         fail("CAN'T SUBSCRIBE TO MUSE");
         return;
     }

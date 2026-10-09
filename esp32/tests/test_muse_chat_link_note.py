@@ -83,6 +83,10 @@ static bool muse_link_hatch_linked(void) { return true; }
 static bool muse_wifi_connected(void) { return true; }
 static bool muse_link_req_ready(void) { return true; }
 #define MUSE_LINK_REQ_TOO_LARGE (-2)   /* muse_link.h */
+/* muse_settings.h: notes go to the main chat, so the head has no session_id. */
+#define CONFIG_MUSE_CHAT_SUBSCRIBE_SESSION 1
+#define MUSE_CHAT_SID_MAX 36
+static void muse_settings_chat_sid(char *out) { out[0] = 0; }
 void muse_state_page(bool cjk, int *cols, int *lines) { (void)cjk; *cols = 16; *lines = 2; }
 
 /* The note's request: everything sent on /chat/stream, chunk by chunk. */
