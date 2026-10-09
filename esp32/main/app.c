@@ -996,6 +996,25 @@ static int fetch_vms_with_refresh_with_gate_held(vm_info_t *vms, int max) {
     return count;
 }
 
+#if CONFIG_MUSE_ENABLED || CONFIG_HOMEHUB_VOICE
+// The VM Link last connected to, for Muse's own session when its lookup
+// can't start (app_hatch_vm_credentials): that takes an 8 KB internal stack,
+// which a fragmented heap can't always give. Under s_vm_seen_lock.
+static portMUX_TYPE s_vm_seen_lock = portMUX_INITIALIZER_UNLOCKED;
+static char *s_vm_seen_id, *s_vm_seen_name, *s_vm_seen_token;
+
+static void remember_vm(const char *vm_id, const char *vm_name, const char *token) {
+    char *id = strdup(vm_id), *name = strdup(vm_name ? vm_name : ""), *tok = strdup(token);
+    portENTER_CRITICAL(&s_vm_seen_lock);
+    char *old[3] = { s_vm_seen_id, s_vm_seen_name, s_vm_seen_token };
+    s_vm_seen_id = id;
+    s_vm_seen_name = name;
+    s_vm_seen_token = tok;
+    portEXIT_CRITICAL(&s_vm_seen_lock);
+    for (int i = 0; i < 3; i++) free(old[i]);
+}
+#endif
+
 static bool connect_vm_target(const vm_info_t *target) {
     // vm_connect_params() owns the whole admission decision: it refuses an
     // entry that cannot supply both an id and its own token, and there is no
@@ -1014,6 +1033,9 @@ static bool connect_vm_target(const vm_info_t *target) {
         return false;
     }
     ESP_LOGI(TAG, "connecting to VM %s", vm_id);
+#if CONFIG_MUSE_ENABLED || CONFIG_HOMEHUB_VOICE
+    remember_vm(vm_id, target->vm_name, auth_token);
+#endif
     // The data-plane tunnel is multiplexed on the control session (stream 2);
     // no separate connection to start here.
     return true;
@@ -2345,7 +2367,33 @@ bool app_hatch_vm_credentials(const char *want_vm, char *vm_id, size_t id_cap,
         .waiter = xTaskGetCurrentTaskHandle(),
     };
     if (xTaskCreate(hatch_vm_task, "muse_vm", 8192, &req, 4, NULL) != pdPASS) {
-        return false;
+        // No 8 KB of internal RAM in one piece: the VM Link connected to will do.
+        bool ok = false;
+        portENTER_CRITICAL(&s_vm_seen_lock);
+        bool match = s_vm_seen_id && s_vm_seen_token
+                     && (!want_vm || !want_vm[0] || strcmp(want_vm, s_vm_seen_id) == 0);
+        size_t tok_len = match ? strlen(s_vm_seen_token) : 0;
+        portEXIT_CRITICAL(&s_vm_seen_lock);
+        char *tok = match ? malloc(tok_len + 1) : NULL;
+        if (tok) {
+            portENTER_CRITICAL(&s_vm_seen_lock);
+            if (s_vm_seen_token && strlen(s_vm_seen_token) == tok_len) {
+                memcpy(tok, s_vm_seen_token, tok_len + 1);
+                strlcpy(vm_id, s_vm_seen_id, id_cap);
+                strlcpy(vm_name, s_vm_seen_name, name_cap);
+                ok = true;
+            }
+            portEXIT_CRITICAL(&s_vm_seen_lock);
+        }
+        if (!ok) {
+            free(tok);
+            tok = NULL;
+        }
+        ESP_LOGW(TAG, "Muse VM lookup couldn't start (internal heap %u/%u): %s", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 ok ? "using the VM Link connected to" : "none known");
+        *vm_token = tok;
+        return ok;
     }
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     *vm_token = req.vm_token;

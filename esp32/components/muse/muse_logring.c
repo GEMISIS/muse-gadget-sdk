@@ -26,6 +26,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 
 #define RING_BYTES (96 * 1024)
 #define RING_LINE_MAX 320
@@ -99,12 +100,16 @@ void muse_logring_print(void)
         return;
     }
     printf("\n@log begin %u\n", (unsigned)n);
+    for (size_t i = 0; i < n; i++) {
+        copy[i] = copy[i] ? copy[i] : ' ';   /* a stray NUL would end it early */
+    }
     const char *p = s_wrapped ? strchr(copy, '\n') : copy;   /* from a whole line */
     for (p = p ? p + (s_wrapped ? 1 : 0) : copy; *p;) {
-        size_t k = strnlen(p, 256);
+        size_t k = strnlen(p, 128);
         fwrite(p, 1, k, stdout);
         fflush(stdout);
         p += k;
+        vTaskDelay(pdMS_TO_TICKS(4));   /* the USB console drops what comes faster than it goes */
     }
     printf("\n@log end\n");
     fflush(stdout);
