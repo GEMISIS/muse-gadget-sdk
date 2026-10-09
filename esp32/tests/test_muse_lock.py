@@ -137,6 +137,18 @@ class MuseLockContractTest(unittest.TestCase):
         self.assertLess(body.index("muse_lock_policy_wrong(&s_policy)"), body.index("save_state()"))
         self.assertLess(body.index("save_state()"), body.index("muse_lock_hash_check("))
 
+    def test_right_one_saves_its_reset(self):
+        # The attempt was saved as wrong before the check, so the right one's
+        # reset must be saved too, whatever came before: else a stale miss
+        # comes back after a restart.
+        src = self.read("components/muse/muse_lock.c")
+        body = src[src.index("muse_lock_result_t muse_lock_try("):]
+        body = body[:body.index("\n}\n")]
+        right = body[body.index("if (right) {"):]
+        right = right[:right.index("return MUSE_LOCK_RIGHT;")]
+        self.assertLess(right.index("muse_lock_policy_reset(&s_policy);"), right.index("save_state();"))
+        self.assertNotIn("if (before", right)
+
     def test_no_pin_kept(self):
         src = self.read("components/muse/muse_lock.c")
         self.assertNotIn("KEY_PIN, pin", src)

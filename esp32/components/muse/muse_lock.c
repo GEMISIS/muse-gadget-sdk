@@ -261,7 +261,6 @@ muse_lock_result_t muse_lock_try(const char *pin)
     }
     /* Counted as wrong, and saved, before it's checked: cutting the power
      * while the hash runs can't make it not have happened. */
-    muse_lock_policy_t before = s_policy;
     muse_lock_result_t r = muse_lock_policy_wrong(&s_policy);
     save_state();
     s_lockout_at_us = esp_timer_get_time();
@@ -269,10 +268,9 @@ muse_lock_result_t muse_lock_try(const char *pin)
     bool right = valid_pin(pin) && muse_lock_hash_check(&s_rec, pin, strlen(pin));
     ESP_LOGI(TAG, "checked in %d ms", (int)((esp_timer_get_time() - t0) / 1000));
     if (right) {
+        /* Saved whatever came before: the attempt was saved as wrong above. */
         muse_lock_policy_reset(&s_policy);
-        if (before.failed || before.round || before.lockout_s) {
-            save_state();
-        }
+        save_state();
         set_locked(false, "passcode");
         return MUSE_LOCK_RIGHT;
     }
