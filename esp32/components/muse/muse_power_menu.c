@@ -19,12 +19,14 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
 #include "muse_input.h"
+#include "muse_lock.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_style.h"
@@ -43,9 +45,11 @@ static const char *TAG = "muse_power_menu";
 #define FONT_HINT (&lv_font_montserrat_14)
 #endif
 
-enum { ITEM_SLEEP, ITEM_POWER_OFF, ITEM_RESTART, ITEM_CANCEL, ITEM_COUNT };
+/* Lock now only with a passcode, and not locked already (muse_lock.h). */
+enum { ITEM_LOCK, ITEM_SLEEP, ITEM_POWER_OFF, ITEM_RESTART, ITEM_CANCEL, ITEM_COUNT };
 
 static const char *const ITEM_TEXT[ITEM_COUNT] = {
+    [ITEM_LOCK] = "Lock now",
     [ITEM_SLEEP] = LV_SYMBOL_EYE_CLOSE "  Sleep",
     [ITEM_POWER_OFF] = LV_SYMBOL_POWER "  Power off",
     [ITEM_RESTART] = LV_SYMBOL_REFRESH "  Restart",
@@ -53,6 +57,7 @@ static const char *const ITEM_TEXT[ITEM_COUNT] = {
 };
 
 static const uint32_t ITEM_COLOR[ITEM_COUNT] = {
+    [ITEM_LOCK] = MUSE_COLOR_ACCENT,
     [ITEM_SLEEP] = MUSE_COLOR_ACCENT,
     [ITEM_POWER_OFF] = MUSE_COLOR_DANGER,
     [ITEM_RESTART] = MUSE_COLOR_TEXT,
@@ -67,7 +72,7 @@ static volatile uint32_t s_volume_seq;
 
 /* LVGL task only. */
 static lv_obj_t *s_backdrop;
-static lv_obj_t *s_items[ITEM_COUNT];
+EXT_RAM_BSS_ATTR static lv_obj_t *s_items[ITEM_COUNT];   /* PSRAM: Lock now made it longer */
 static lv_obj_t *s_volume, *s_volume_lbl, *s_volume_bar;
 static lv_obj_t *s_hint;
 static int s_sel;
@@ -110,6 +115,22 @@ static void highlight(void)
     }
 }
 
+static bool item_shown(int i)
+{
+    return i != ITEM_LOCK || (muse_lock_has_pin() && !muse_lock_locked());
+}
+
+/* The next item shown, `step` (+1 or -1) on from s_sel, round the ends. */
+static void step_sel(int step)
+{
+    for (int n = 0; n < ITEM_COUNT; n++) {
+        s_sel = (s_sel + step + ITEM_COUNT) % ITEM_COUNT;
+        if (item_shown(s_sel)) {
+            return;
+        }
+    }
+}
+
 static void close_menu(void)
 {
     lv_obj_add_flag(s_backdrop, LV_OBJ_FLAG_HIDDEN);
@@ -119,7 +140,10 @@ static void close_menu(void)
 
 static void open_menu(float now)
 {
-    s_sel = ITEM_SLEEP;
+    for (int i = 0; i < ITEM_COUNT; i++) {
+        lv_obj_set_flag(s_items[i], LV_OBJ_FLAG_HIDDEN, !item_shown(i));
+    }
+    s_sel = item_shown(ITEM_LOCK) ? ITEM_LOCK : ITEM_SLEEP;
     highlight();
     lv_obj_remove_flag(s_backdrop, LV_OBJ_FLAG_HIDDEN);
     s_shown = true;
@@ -130,10 +154,13 @@ static void open_menu(float now)
 
 static void select_item(int item)
 {
-    static const char *const NAMES[ITEM_COUNT] = { "sleep", "power off", "restart", "cancel" };
+    static const char *const NAMES[ITEM_COUNT] = { "lock", "sleep", "power off", "restart", "cancel" };
     ESP_LOGI(TAG, "%s", NAMES[item]);
     close_menu();
     switch (item) {
+    case ITEM_LOCK:
+        muse_lock_now("power menu");
+        break;
     case ITEM_SLEEP:
         muse_state_set_asleep(true);
         break;
@@ -177,6 +204,10 @@ static void build_menu(lv_obj_t *layer, int w)
         lv_obj_set_flex_align(b, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_border_color(b, lv_color_hex(MUSE_COLOR_ACCENT), 0);
         lv_obj_add_event_cb(b, on_item, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_set_style_pad_column(b, 10, 0);
+        if (i == ITEM_LOCK) {
+            muse_style_padlock(b, 18, ITEM_COLOR[i]);   /* as the others' symbols, before the words */
+        }
         muse_style_label(b, MUSE_FONT_BUTTON, ITEM_COLOR[i], ITEM_TEXT[i]);
         s_items[i] = b;
     }
@@ -280,7 +311,7 @@ void muse_power_menu_tick(float now)
         case MUSE_POWER_MENU_UP:
         case MUSE_POWER_MENU_DOWN:
             if (s_shown) {
-                s_sel = (s_sel + (k == MUSE_POWER_MENU_UP ? ITEM_COUNT - 1 : 1)) % ITEM_COUNT;
+                step_sel(k == MUSE_POWER_MENU_UP ? -1 : 1);
                 highlight();
             }
             break;

@@ -28,6 +28,7 @@
 #include "muse_gadget_mode.h"
 #include "muse_extras.h"
 #include "muse_input.h"
+#include "muse_lock.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_ui.h"
@@ -71,6 +72,7 @@ void muse_app_run(const muse_board_t *board)
     ESP_LOGI(TAG, "board: %s", board->name);
     ESP_ERROR_CHECK(board->init());
     ESP_ERROR_CHECK(muse_settings_init());
+    muse_lock_init();   /* locked from the start, with a passcode */
     muse_settings_set_listener(on_setting);
     muse_state_init();
     muse_battery_init();

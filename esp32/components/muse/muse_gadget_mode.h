@@ -100,6 +100,8 @@ int muse_gadget_mode_brightness(int pct);
 void muse_gadget_mode_build_chip(lv_obj_t *status);
 void muse_gadget_mode_build_toast(lv_obj_t *layer, int w);
 void muse_gadget_mode_ui_tick(float now);
+/* Locked (muse_lock.h): the offer goes; one made since shows once it's unlocked. */
+void muse_gadget_mode_hide_toast(void);
 /* Opens a dialog over the whole screen (muse_dialog.h, on the top layer) to
  * pick a mode, the current one ticked; its "?" says what each one does. */
 void muse_mode_dialog_open(void);
