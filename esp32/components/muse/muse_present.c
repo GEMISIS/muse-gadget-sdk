@@ -1235,13 +1235,33 @@ muse_present_phase_t muse_present_phase(float *progress)
     return waiting ? MUSE_PRESENT_WAITING : MUSE_PRESENT_NONE;
 }
 
+/* With s_ask_lock held: the wanted image is a web one, and *here, still to be (or being) fetched here. */
+static bool want_web(bool *here)
+{
+    bool web = !strncmp(s_want.path, "https://", 8) || !strncmp(s_want.path, "http://", 7);
+    *here = web && (!s_web_tried || s_dl.on || s_decoding > 0);
+    return web;
+}
+
 bool muse_present_pushing(void)
 {
     portENTER_CRITICAL(&s_ask_lock);
-    bool web = !strncmp(s_want.path, "https://", 8) || !strncmp(s_want.path, "http://", 7);
-    bool pushing = (s_guard && !s_guard_shown) || (s_want.want && !web);
+    bool here;
+    bool web = want_web(&here);
+    /* A web image that couldn't be fetched here is Muse's to push, as a file is. */
+    bool pushing = (s_guard && !s_guard_shown) || (s_want.want && (!web || !here));
     portEXIT_CRITICAL(&s_ask_lock);
     return pushing;
+}
+
+bool muse_present_found(void)
+{
+    portENTER_CRITICAL(&s_ask_lock);
+    bool here;
+    want_web(&here);
+    bool found = s_want.want && here;
+    portEXIT_CRITICAL(&s_ask_lock);
+    return found;
 }
 
 bool muse_present_sharper_pending(void)

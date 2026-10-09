@@ -2041,10 +2041,11 @@ static void draw_beret(int x, int y)
 
 /*
  * Looking something up (MUSE_ACT_SEARCH): a magnifying glass up to his eye,
- * centred on (x, y), the eye big in it, looking (gx, gy); its handle down to
- * his right, ending at (x + 9, y + 9).
+ * centred on (x, y), the eye big in it, looking (gx, gy), or wide (found
+ * it); or, `pic`, the picture found in it. Its handle down to his right,
+ * ending at (x + 9, y + 9).
  */
-static void draw_magnifier(float x, float y, float gx, float gy, float t)
+static void draw_magnifier(float x, float y, float gx, float gy, float t, bool wide, bool pic)
 {
     int cx = iround(x), cy = iround(y);
     for (int i = 4; i <= 9; i++) {
@@ -2059,14 +2060,23 @@ static void draw_magnifier(float x, float y, float gx, float gy, float t)
                 continue;
             }
             uint8_t col = d > 21 ? C_OUT : d > 13 ? (r < 0 && c < 2 ? C_BOLT : C_BOLTD) : C_SKINL;
-            if (col == C_SKINL && (c - r == 4 || c - r == 5) && r < 0) {
+            if (col == C_SKINL && pic) {
+                col = pic_col((int)clampf(r + 5, 0, PIC - 1), (int)clampf(c + 5, 0, PIC - 1));
+            }
+            if ((col == C_SKINL || pic) && d <= 21 && (c - r == 4 || c - r == 5) && r < 0) {
                 col = C_WHITE;   /* a gleam on the glass */
             }
             px(cx + c, cy + r, col);
         }
     }
+    if (pic) {
+        return;
+    }
     int ex = cx + iround(gx * 1.2f), ey = cy + iround(gy);
-    if (fracf(t * 0.31f) > 0.95f) {
+    if (wide) {
+        static const char *const WIDE[] = { ".###.", "#####", "##o##", "#####", ".###." };
+        stamp(WIDE, 5, ex - 2, ey - 2, C_IRIS, C_SHINE);   /* a pupil gone small: there it is */
+    } else if (fracf(t * 0.31f) > 0.95f) {
         for (int i = -2; i <= 2; i++) {
             px(ex + i, ey + 1, C_IRIS);   /* a blink, big */
         }
@@ -2107,6 +2117,99 @@ static void pt_canvas(float toss, const avatar_t *j, float *x, float *y)
     }
 }
 
+/*
+ * Found it (MUSE_ACT_SEARCH, act_progress 0..1): a start at the glass, a
+ * "!", the picture there in it as he lowers it; the glass gone in a puff and
+ * the photo popping out of it, held up, ta-da; then, as the canvas goes
+ * (MUSE_ACT_PAINT's toss), over his shoulder, a crouch, and up into the
+ * cloud coming down for it. Then the cloud (MUSE_ACT_CLOUD).
+ */
+#define FD_LOOK 0.1f            /* a start at the glass, then it lowered, the picture in it, */
+#define FD_SPOT 0.2f            /* the photo out of it, */
+#define FD_OUT 0.3f             /* held up, */
+#define FD_LIFT 0.5f            /* over his shoulder, crouching, */
+#define FD_THROW 0.58f          /* up it goes, */
+#define FD_IN 0.88f             /* into the cloud */
+#define PH_W (PIC + 6)          /* the photo: draw_picture's, framed */
+#define PH_H (PIC + 7)
+
+/* Photo cell (r, c) of PH_H x PH_W: outline, the white border (deeper at the bottom), the picture. */
+static uint8_t photo_col(int r, int c)
+{
+    bool er = r == 0 || r == PH_H - 1, ec = c == 0 || c == PH_W - 1;
+    if (er || ec) {
+        return er && ec ? C_BG : C_OUT;
+    }
+    int pr = r - 3, pc = c - 3;
+    if (pr >= 0 && pr < PIC && pc >= 0 && pc < PIC) {
+        return pic_col(pr, pc);
+    }
+    return pr >= PIC ? C_MUG : C_WHITE;
+}
+
+/* The photo, centred on (x, y), squeezed to sx, sy (0..1: flipping over, going off small). */
+static void draw_photo(float x, float y, float sx, float sy)
+{
+    int w = iround(PH_W * sx), h = iround(PH_H * sy);
+    w = w < 2 ? 2 : w;
+    h = h < 2 ? 2 : h;
+    int x0 = iround(x - w / 2.0f), y0 = iround(y - h / 2.0f);
+    for (int r = 0; r < h; r++) {
+        for (int c = 0; c < w; c++) {
+            int sr = r == h - 1 ? PH_H - 1 : r * PH_H / h;   /* outlined however small */
+            int sc = c == w - 1 ? PH_W - 1 : c * PH_W / w;
+            uint8_t col = photo_col(sr, sc);
+            if (col != C_BG) {
+                px(x0 + c, y0 + r, col);
+            }
+        }
+    }
+}
+
+/* Where the glass is, found 0..FD_SPOT: at his eye (ex, ey), then lowered in front of him. */
+static void fd_lens(float found, float ex, float ey, float *x, float *y)
+{
+    float k = clampf((found - FD_LOOK) / (FD_SPOT - FD_LOOK) * 1.6f, 0, 1);
+    k = k * k * (3 - 2 * k);
+    *x = ex + 3.0f * k;
+    *y = ey + 7.0f * k;
+}
+
+/* Where the photo is, its centre, and its size (*k, 0..1), found FD_SPOT..1. */
+static void fd_photo(float found, const avatar_t *j, float lx, float ly, float t, float *x, float *y, float *k)
+{
+    float hx = j->cx + 17.0f, hy = j->cy - 16.0f + (sinf(t * 5.0f) > 0.6f ? -1.0f : 0.0f);   /* held up, */
+    float wx = j->cx + 16.0f, wy = j->cy - 13.0f;                                             /* wound up */
+    float ix = CLOUD_X + CLOUD_W / 2.0f, iy = CLOUD_Y + CLOUD_H / 2.0f;                       /* in the cloud */
+    *k = 1.0f;
+    if (found < FD_OUT) {
+        float e = clampf((found - FD_SPOT) / (FD_OUT - FD_SPOT), 0, 1);
+        float u = ease_pop(e);
+        *x = lx + (hx - lx) * u;
+        *y = ly + (hy - ly) * u - sinf(e * 3.1416f) * 3.0f;
+        *k = 0.35f + 0.65f * u;
+    } else if (found < FD_LIFT - 0.06f) {
+        *x = hx;
+        *y = hy;
+    } else if (found < FD_THROW) {
+        float e = (found - FD_LIFT + 0.06f) / (FD_THROW - FD_LIFT + 0.06f);
+        e = e * e * (3 - 2 * e);
+        *x = hx + (wx - hx) * e;
+        *y = hy + (wy - hy) * e;
+    } else if (found < FD_IN) {
+        /* Up past the cloud and down into it. */
+        float e = (found - FD_THROW) / (FD_IN - FD_THROW), m = 1 - e;
+        float qx = wx + 6.0f, qy = -1.0f;
+        *x = m * m * wx + 2 * m * e * qx + e * e * ix;
+        *y = m * m * wy + 2 * m * e * qy + e * e * iy;
+        *k = 1 - 0.7f * e;
+    } else {
+        *x = ix;
+        *y = iy;
+        *k = 0.3f;
+    }
+}
+
 /* ---------------------------------------------------------------------------
  * What Muse says he's at work on (MUSE_ACT_NEWS .. MUSE_ACT_RESPOND): a prop
  * each, mostly on his right, clear of the top (the clock) and the bottom
@@ -2118,7 +2221,8 @@ static void pt_canvas(float toss, const avatar_t *j, float *x, float *y)
 /* In PSRAM, as all the acts' since: internal RAM is short. */
 EXT_RAM_BSS_ATTR static struct {
     float side;         /* eased: how far to the left he stands, for a prop */
-    bool tossed;        /* MUSE_ACT_CLOUD: the cloud's up already, the canvas tossed into it */
+    bool tossed;        /* MUSE_ACT_CLOUD: the cloud's up already, the canvas or the photo tossed into it */
+    bool lens_gone;     /* MUSE_ACT_SEARCH: the glass gone already (found it) */
     muse_act_t last;    /* last frame's act */
     float gone_t;       /* when its prop went (-1 none), */
     float gone_x, gone_y;   /* and where it was */
@@ -3766,6 +3870,7 @@ void muse_pixel_render(const muse_pose_t *p)
     bool paint = act == MUSE_ACT_PAINT, cloud = act == MUSE_ACT_CLOUD, search = act == MUSE_ACT_SEARCH;
     bool work = act >= WORK_FIRST && act < MUSE_ACT_COUNT;   /* a prop for what he's at */
     float toss = paint && p->act_progress >= 0 ? clampf(p->act_progress, 0, 1) : -1.0f;   /* PAINT: made, tossing it */
+    float found = search && p->act_progress >= 0 ? clampf(p->act_progress, 0, 1) : -1.0f;  /* SEARCH: found it, up it goes */
 
     /* Painting: the dab under way (and the patches on), the brush's tip
      * going to it, dabbing, and back. All on, he touches it up, now and
@@ -3828,9 +3933,12 @@ void muse_pixel_render(const muse_pose_t *p)
     float cp = cloud ? fmodf(at, 4.4f) : 0.0f;
     bool cloud_glance = cloud && cp >= 2.2f && cp < 3.0f, cloud_ready = cloud && cp >= 3.0f;
     /* Searching: peering through the glass to one side, the other, up, and out at us. */
-    float sp = search ? fmodf(at, 4.8f) : 0.0f;
+    float sp = search && found < 0 ? fmodf(at, 4.8f) : 4.4f;   /* found it: out at us */
     float lens_gx = sp < 1.6f ? -1.0f : sp < 3.2f ? 1.0f : sp < 4.0f ? -0.6f : 0.0f;
     float lens_gy = sp < 1.6f ? 0.2f : sp < 3.2f ? 0.4f : sp < 4.0f ? -1.0f : 0.0f;
+    bool fd_start = found >= 0 && found < FD_LOOK;   /* a start, the glass at his eye, */
+    bool fd_look = found >= FD_LOOK && found < FD_SPOT;   /* the picture in it, */
+    bool fd_held = found >= FD_SPOT && found < FD_LIFT;   /* out, held up */
 
     /* Talking into it: chatter in bursts, and now and then a laugh. */
     float chat = 0;
@@ -3877,9 +3985,11 @@ void muse_pixel_render(const muse_pose_t *p)
     } else if (cloud) {
         s_look_x = cloud_glance ? 0.0f : 0.9f;   /* up at the cloud */
         s_look_y = cloud_glance ? 0.1f : -0.9f;
+    } else if (search && found >= FD_SPOT) {
+        /* s_look_x, s_look_y: set below, on the photo. */
     } else if (search) {
-        s_look_x = lens_gx;
-        s_look_y = lens_gy;
+        s_look_x = fd_look ? 0.6f : lens_gx;
+        s_look_y = fd_look ? 0.9f : lens_gy;   /* down at it in the glass */
     } else if (work) {
         work_look(act, at, p->act_progress, &s_look_x, &s_look_y);
         if (act == MUSE_ACT_BROWSE && mode == MUSE_MODE_SPEAKING && p->act_progress < 0) {
@@ -3992,6 +4102,20 @@ void muse_pixel_render(const muse_pose_t *p)
         lean = 0;
     } else if (work) {
         work_body(act, at, p->act_progress, t, &bob, &lean, &hop);
+    } else if (search && found >= 0) {
+        bob = sinf(t * 3.0f) * 0.4f;
+        lean = 0;
+        if (found < FD_LOOK) {
+            hop += sinf(found / FD_LOOK * 3.1416f) * 2.5f;   /* a start */
+        } else if (found >= FD_SPOT && found < FD_OUT) {
+            hop += sinf((found - FD_SPOT) / (FD_OUT - FD_SPOT) * 3.1416f) * 1.5f;   /* ta-da */
+        } else if (found >= FD_LIFT - 0.06f && found < FD_THROW) {
+            hop -= sinf((found - FD_LIFT + 0.06f) / (FD_THROW - FD_LIFT + 0.06f) * 3.1416f) * 1.6f;   /* winding up */
+        } else if (found >= FD_THROW && found < FD_THROW + 0.14f) {
+            hop += sinf((found - FD_THROW) / 0.14f * 3.1416f) * 3.0f;   /* and up with it */
+        } else if (found >= FD_IN) {
+            hop += sinf((found - FD_IN) / (1.0f - FD_IN) * 3.1416f) * 1.5f;   /* in: a hop for joy */
+        }
     } else if (search) {
         bob = sinf(t * 2.0f) * 0.4f;
         lean = sp < 3.2f ? -1.4f * cosf(sp / 3.2f * 3.1416f) : sp < 3.6f ? 1.4f * (3.6f - sp) / 0.4f : 0.0f;
@@ -4004,7 +4128,7 @@ void muse_pixel_render(const muse_pose_t *p)
     static muse_act_t s_last_act;
     float pk_u = act == MUSE_ACT_PACKAGES ? pk_update(at, p->act_progress, s_last_act != MUSE_ACT_PACKAGES) : -1.0f;
     if (cloud && s_last_act != MUSE_ACT_CLOUD) {
-        s_work.tossed = s_last_act == MUSE_ACT_PAINT;   /* the cloud up already, or still to come */
+        s_work.tossed = s_last_act == MUSE_ACT_PAINT || (s_last_act == MUSE_ACT_SEARCH && s_work.lens_gone);   /* up already, or to come */
     }
     s_last_act = act;
     if (pk_u >= PK_CATCH && pk_u < PK_HOLD) {
@@ -4013,7 +4137,7 @@ void muse_pixel_render(const muse_pose_t *p)
     /* Downloading: up off the floor for the bar, and over to the left of the stack. */
     s_pk.rise += ((hauling ? 1.0f : 0.0f) - s_pk.rise) * (1.0f - expf(-dt * 8.0f));
     float rise = PK_RISE * s_pk.rise;
-    float side_to = hauling || cloud || (paint && toss >= PT_THROW) ? 5.0f : paint ? PT_SHIFT
+    float side_to = hauling || cloud || (paint && toss >= PT_THROW) || found >= FD_SPOT ? 5.0f : paint ? PT_SHIFT
                   : work ? WORK_SIDE[act - WORK_FIRST] : 0.0f;
     s_work.side += (side_to - s_work.side) * (1.0f - expf(-dt * 8.0f));
     /* Turned to what he's at, or round to us (avatar_t.turn); eased through
@@ -4029,6 +4153,8 @@ void muse_pixel_render(const muse_pose_t *p)
         turn_to = toss < 0 ? (admire ? 0.35f : 0.9f) : toss < PT_GRAB ? 0.9f : toss < PT_THROW ? 0.55f : toss < PT_IN ? 0.3f : 0.0f;
     } else if (cloud) {
         turn_to = cloud_glance ? 0.0f : 0.35f;
+    } else if (search && found >= 0) {
+        turn_to = found < FD_SPOT ? 0.0f : found < FD_LIFT - 0.06f ? 0.25f : found < FD_THROW ? 0.55f : found < FD_IN ? 0.3f : 0.0f;
     } else if (search) {
         turn_to = sp < 1.6f ? -0.6f : sp < 3.2f ? 0.6f : sp < 4.0f ? -0.2f : 0.0f;
     } else if (work) {
@@ -4185,6 +4311,7 @@ void muse_pixel_render(const muse_pose_t *p)
     bool ub_pop = false;               /* a piece just out */
     float pic_x = 0, pic_y = 0;        /* ASSEMBLE: the picture's pieces' top left */
     float mug_x = 0, mug_y = 0;
+    float fd_x = 0, fd_y = 0, fd_k = 1;   /* SEARCH, found it: the photo's middle, and its size */
     work_t wk = { 0 };
     float grip_x = PHONE_W / 2.0f, grip_y = PHONE_H - 0.5f;   /* the paw on the phone, from its top left */
     if (phone) {
@@ -4328,10 +4455,36 @@ void muse_pixel_render(const muse_pose_t *p)
     } else if (work) {
         wk = (work_t){ act, at, t, p->act_progress, &j, slx, srx, shy, j.ex[0], j.ex[1], j.fy - 0.5f };
         work_arms(&wk, arms);
+    } else if (search && found >= FD_SPOT) {
+        /* The photo up in his right paw, the other up for joy;
+         * then over his shoulder with it, and up it goes, his arm after it. */
+        float lx, ly;
+        fd_lens(FD_SPOT, j.ex[1], j.fy - 0.5f, &lx, &ly);
+        fd_photo(found, &j, lx, ly, t, &fd_x, &fd_y, &fd_k);
+        float wig = sinf(t * 14.0f) * 0.25f;
+        limb_t cheer_l = { j.cx - adx - 1.0f, j.cy - 4.0f, 2.4f + wig };
+        arms[0] = found < FD_LIFT - 0.06f ? cheer_l : arm_to(slx, shy, j.cx - 16.0f, j.cy + 2.0f);
+        if (found < FD_THROW) {
+            arms[1] = arm_to(srx, shy, fd_x - 1.0f, fd_y + PH_H * fd_k / 2.0f - 0.5f);   /* under it */
+        } else if (found < FD_IN) {
+            arms[1] = arm_to(srx, shy, j.cx + 17.0f, j.cy - 12.0f);   /* up after it */
+        } else {
+            arms[0] = cheer_l;
+            arms[1] = (limb_t){ j.cx + adx + 1.0f, j.cy - 4.0f, -2.4f - wig };
+        }
+        s_look_x = clampf((fd_x - j.fx) / 9.0f, -1, 1);
+        s_look_y = clampf((fd_y - j.fy) / 9.0f, -1, 1);
+        if (found >= FD_IN) {
+            s_look_x = 0;
+            s_look_y = 0.1f;
+        }
     } else if (search) {
-        /* The glass up to his right eye, by its handle; the other paw on his hip. */
-        arms[0] = arm_to(slx, shy, j.cx - 16.0f, j.cy + 2.0f);
-        arms[1] = arm_to(srx, shy, j.ex[1] + 9.5f, j.fy + 9.0f);
+        /* The glass up to his right eye, by its handle (lowered, found it); the other paw
+         * on his hip, or flung out at the start. */
+        float lx, ly;
+        fd_lens(found, j.ex[1], j.fy - 0.5f, &lx, &ly);
+        arms[0] = fd_start ? arm_to(slx, shy, j.cx - 20.0f, j.cy - 7.0f) : arm_to(slx, shy, j.cx - 16.0f, j.cy + 2.0f);
+        arms[1] = arm_to(srx, shy, lx + 9.5f, ly + 9.0f);
     } else if (tea) {
         /* The mug by the handle, out at his side where the steam shows; up to his lips for a sip. */
         float rx = j.cx + 15.0f, ry = j.cy - 1.0f;
@@ -4478,6 +4631,13 @@ void muse_pixel_render(const muse_pose_t *p)
             mouth = MOUTH_TALK;   /* saying the reply while it browses on */
             mouth_open = level * 1.3f + 0.1f * (0.5f + 0.5f * sinf(t * 22.0f));
         }
+    } else if (search && found >= 0) {
+        bool up = found >= FD_THROW && found < FD_IN;
+        bool glee = (found >= FD_SPOT && found < FD_LIFT - 0.06f) || found >= FD_IN;
+        style = glee ? EYES_HAPPY : up || found < FD_SPOT ? EYES_WIDE : EYES_NORMAL;
+        mouth = glee ? MOUTH_GRIN : MOUTH_O;
+        open = 1.0f - blink;
+        brows = glee ? 0 : 2;
     } else if (search) {
         style = EYES_NORMAL;
         open = 0.4f;   /* the other eye screwed up */
@@ -4490,6 +4650,10 @@ void muse_pixel_render(const muse_pose_t *p)
             style = EYES_HAPPY;
             mouth = MOUTH_SMILE;
         }
+    }
+    if (mode == MUSE_MODE_SPEAKING && happy <= 0.2f && (cloud || act == MUSE_ACT_PACKAGES || (search && found < 0))) {
+        mouth = MOUTH_TALK;   /* saying the reply as the image comes */
+        mouth_open = level * 1.3f + 0.1f * (0.5f + 0.5f * sinf(t * 22.0f));
     }
     if (dizzy > 0.05f && brace < 0.3f) {
         style = fracf(t * 6.0f) < 0.5f ? EYES_SWIRL_A : EYES_SWIRL_B;
@@ -4746,7 +4910,7 @@ void muse_pixel_render(const muse_pose_t *p)
         work_draw(&wk, arms, &s_work.gone_x, &s_work.gone_y);
     }
     if (s_work.last != act) {
-        bool prop = s_work.last == MUSE_ACT_SEARCH || (s_work.last >= WORK_FIRST && s_work.last < MUSE_ACT_COUNT);
+        bool prop = (s_work.last == MUSE_ACT_SEARCH && !s_work.lens_gone) || (s_work.last >= WORK_FIRST && s_work.last < MUSE_ACT_COUNT);
         s_work.gone_t = prop ? t : -1.0f;   /* its prop goes in a puff */
         s_work.last = act;
     }
@@ -4758,13 +4922,64 @@ void muse_pixel_render(const muse_pose_t *p)
                          1.0f - k, true);
         }
     }
-    if (search) {
+    if (search && found < FD_SPOT) {
         float k = ease_pop(at / 0.3f);   /* up it comes */
-        float lx = j.ex[1], ly = eye_y + (1.0f - k) * 10.0f;
-        draw_magnifier(lx, ly, lens_gx, lens_gy, t);
+        float lx, ly;
+        fd_lens(found, j.ex[1], eye_y + (1.0f - k) * 10.0f, &lx, &ly);
+        draw_magnifier(lx, ly, lens_gx, lens_gy, t, fd_start, fd_look);
         s_work.gone_x = lx;
         s_work.gone_y = ly;
         draw_paw(iround(lx + 9.5f), iround(ly + 9.5f));
+    }
+    if (search) {
+        s_work.lens_gone = found >= FD_SPOT;
+    }
+    if (search && found >= 0 && found < FD_OUT) {
+        draw_alert(iround(j.cx - 15.0f), iround(j.cy - j.b - 2.0f + (found < FD_LOOK ? 2.0f - found / FD_LOOK * 2.0f : 0.0f)));   /* "!" */
+    }
+    if (search && found >= FD_SPOT) {
+        /* The glass gone in a puff; the cloud coming down for the photo, which
+         * flips up into it, smaller; in, a puff of sparkles off it. */
+        if (found < FD_SPOT + 0.1f) {
+            float k = (found - FD_SPOT) / 0.1f;
+            for (int i = 0; i < 3; i++) {
+                float a = i * 2.094f + 0.5f;
+                draw_sparkle(iround(s_work.gone_x + cosf(a) * (2.0f + k * 5.0f)), iround(s_work.gone_y + sinf(a) * (2.0f + k * 5.0f)),
+                             1.0f - k, true);
+            }
+        }
+        float in = clampf((found - FD_OUT) / (FD_THROW - FD_OUT), 0, 1);
+        float k = clampf((found - FD_THROW) / (FD_IN - FD_THROW), 0, 1);
+        float flip = found >= FD_THROW ? fmaxf(0.15f, fabsf(cosf(k * TAU))) : 1.0f;
+        bool behind = k > 0.8f;
+        if (found < FD_IN && behind) {
+            draw_photo(fd_x, fd_y, fd_k * flip, fd_k);
+        }
+        if (found >= FD_OUT) {
+            draw_cloud(t, 1.0f - in, true);
+        }
+        if (found < FD_IN && !behind) {
+            draw_photo(fd_x, fd_y, fd_k * flip, fd_k);
+        }
+        if (found < FD_THROW) {
+            int hx, hy;
+            paw_of(&arms[1], srx, shy, &hx, &hy);
+            draw_paw(hx, hy);   /* holding it up */
+            if (fd_held && found < FD_OUT + 0.08f) {
+                float s = (found - FD_SPOT) / (FD_OUT + 0.08f - FD_SPOT);
+                for (int i = 0; i < 4; i++) {
+                    float a = i * 1.5708f + 0.785f;
+                    float r = 9.0f + s * 5.0f;
+                    draw_sparkle(iround(fd_x + cosf(a) * r), iround(fd_y + sinf(a) * r), 1.0f - s, true);
+                }
+            }
+        }
+        if (found >= FD_IN) {
+            float g = (found - FD_IN) / (1.0f - FD_IN);
+            draw_sparkle(CLOUD_X - 1, CLOUD_Y + 3, 1.0f - g, true);
+            draw_sparkle(CLOUD_X + CLOUD_W, CLOUD_Y + 5, 1.1f - g, true);
+            draw_sparkle(CLOUD_X + CLOUD_W / 2, CLOUD_Y + CLOUD_H + 1, 0.9f - g, true);
+        }
     }
     if (tea) {
         draw_mug(iround(mug_x), iround(mug_y), sip < 0.5f);
