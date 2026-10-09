@@ -56,7 +56,7 @@ static const char *TAG = "muse_lock_ui";
 #define SHAKE_MS 420
 #define SHAKE_PX 14
 #define CHECK_DELAY_MS 60       /* the last dot drawn before the hash holds the task up */
-#define IDLE_CLOSE_S 15.0f
+#define IDLE_CLOSE_S 30.0f
 #define MISS_S 1.4f             /* Muse dizzy after a wrong one */
 #define ERASE_DELAY_MS 1500     /* the erasing screen read before it starts */
 #if LV_FONT_MONTSERRAT_48
@@ -166,7 +166,7 @@ static void show_view(view_t v)
         lv_obj_set_state(u.keys[i], LV_STATE_DISABLED, !keys);
     }
     bool unlocking = u.purpose == DO_UNLOCK;
-    lv_obj_set_flag(u.avatar, LV_OBJ_FLAG_HIDDEN, !unlocking);
+    lv_obj_add_flag(u.avatar, LV_OBJ_FLAG_HIDDEN);   /* the keypad's plain: Muse waits on the face */
     lv_obj_set_flag(u.cancel, LV_OBJ_FLAG_HIDDEN, unlocking);
     if (v == VIEW_ERASE) {
         lv_obj_align(u.note, LV_ALIGN_CENTER, 0, 0);
@@ -546,7 +546,7 @@ static void build_keys(lv_obj_t *sheet)
     lv_obj_center(muse_style_label(u.keys[KEY_DEL], MUSE_FONT_ROW, MUSE_COLOR_TEXT, LV_SYMBOL_BACKSPACE));
     lv_obj_set_style_text_color(lv_obj_get_child(u.keys[KEY_DEL], 0), lv_color_hex(MUSE_COLOR_ACCENT_PRESSED),
                                 LV_STATE_PRESSED);
-    /* The bottom left: Cancel in Settings, Muse when unlocking. */
+    /* The bottom left: Cancel in Settings; empty when unlocking (Muse waits on the face). */
     u.cancel = muse_style_label(u.keys[KEY_SLOT], MUSE_FONT_BUTTON, MUSE_COLOR_TEXT, "Cancel");
     lv_obj_center(u.cancel);
     u.avatar = lv_image_create(box);
@@ -637,7 +637,7 @@ void muse_lock_ui_close(void)
 {
     if (u.up && !u.erasing && !u.checking) {
         if (u.purpose == DO_UNLOCK) {
-            slide_out(false);
+            slide_out(true);   /* down, as it came up */
         } else {
             finish(false);
         }
@@ -651,7 +651,7 @@ bool muse_lock_ui_up(void)
 
 lv_obj_t *muse_lock_ui_avatar(void)
 {
-    return muse_lock_ui_up() && u.purpose == DO_UNLOCK && u.view != VIEW_ERASE ? u.avatar : NULL;
+    return NULL;   /* none on the keypad: it's kept simple */
 }
 
 void muse_lock_ui_mood(float now, float *dizzy, float *tired)

@@ -3331,7 +3331,7 @@ static bool update_lock(float now)
     if (!s_lock_booted) {
         s_lock_booted = true;
         if (locked) {
-            muse_lock_ui_open(false);   /* at a start, the keypad straight away */
+            muse_lock_ui_open(true);   /* at a start, the keypad straight away (sliding up, as ever) */
         }
     }
     return locked;
@@ -3419,8 +3419,10 @@ static void frame_tick(lv_timer_t *timer)
         muse_home_extras_tick(now);   /* the clock */
         if (s_lock_prompt) {
             s_lock_prompt = false;
-            if (!muse_lock_ui_up()) {
-                muse_lock_ui_open(true);   /* the talk button: the keypad */
+            if (muse_lock_ui_up()) {
+                muse_lock_ui_close();   /* the talk button: the keypad away again */
+            } else {
+                muse_lock_ui_open(true);   /* or up */
             }
         }
         lock_frame(mode, mode_t, now, quake);

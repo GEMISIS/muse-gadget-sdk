@@ -27,6 +27,7 @@
 
 #include "muse_board.h"
 #include "muse_extras.h"
+#include "muse_lock.h"
 #include "muse_state.h"
 #include "muse_dialog.h"
 #include "muse_style.h"
@@ -319,7 +320,8 @@ void muse_home_extras_tick(float now)
     if (muse_state_caption(caption, sizeof(caption), &caption_ver) && caption[0]) {
         caption_at = now;
     }
-    bool show = line[0] && muse_state_mode(NULL) == MUSE_MODE_IDLE && now - caption_at > CAPTION_S;
+    bool show = line[0] && muse_state_mode(NULL) == MUSE_MODE_IDLE && now - caption_at > CAPTION_S
+                && !muse_lock_locked();   /* the user's own: not on the locked face */
     if (show != s_up_shown) {
         s_up_shown = show;
         if (show) {
