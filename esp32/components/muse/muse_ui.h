@@ -63,6 +63,7 @@ typedef enum {
     MUSE_UI_BENCH_BRACE,
     MUSE_UI_BENCH_TOSS,             /* painting a moment, the canvas tossed up, then waiting on the cloud */
     MUSE_UI_BENCH_ACTIVITY,         /* at what muse_ui_bench_activity says, as if Muse had said so */
+    MUSE_UI_BENCH_SEARCH_DOWNLOAD,  /* a searched image's whole way in, made up: searching, found, the cloud, boxes, unboxing, the picture */
 } muse_ui_bench_t;
 
 void muse_ui_bench_pose(muse_ui_bench_t what);

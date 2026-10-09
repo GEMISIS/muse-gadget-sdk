@@ -1936,6 +1936,9 @@ EXT_RAM_BSS_ATTR static volatile int s_bench_activity;   /* muse_ui_bench_activi
 /* What Muse says he's at (muse_state_activity), or the bench's made-up one. */
 #define BENCH_PAINT_S 3.0f      /* ">face=download": painting, */
 #define BENCH_CLOUD_S 3.0f      /* tossed up (UNBOX_TOSS_S), and the cloud this long before the bytes */
+#define BENCH_SEARCH_S 3.0f     /* ">face=search_download": searching, */
+#define BENCH_SKY_S 2.0f        /* found it (UNBOX_FOUND_S), the cloud this long, */
+#define BENCH_BYTES_S 2.0f      /* and its bytes coming over this long */
 static muse_activity_t ui_activity(float now)
 {
     float bt = now - s_bench_at;
@@ -1946,6 +1949,8 @@ static muse_activity_t ui_activity(float now)
         return bt < 1.0f ? MUSE_ACTIVITY_IMAGE : MUSE_ACTIVITY_IMAGE_MADE;
     case MUSE_UI_BENCH_DOWNLOAD:
         return bt < BENCH_PAINT_S ? MUSE_ACTIVITY_IMAGE : MUSE_ACTIVITY_IMAGE_MADE;
+    case MUSE_UI_BENCH_SEARCH_DOWNLOAD:
+        return bt < BENCH_SEARCH_S ? MUSE_ACTIVITY_SEARCH : MUSE_ACTIVITY_NONE;
     default:
         return muse_state_activity();
     }
@@ -1959,8 +1964,13 @@ static muse_activity_t ui_activity(float now)
  * (UNBOX_PAINT) as long as that takes; made, he tosses the canvas up into
  * the cloud (UNBOX_TOSS) and waits on it (UNBOX_CLOUD) while Muse writes out
  * the push (muse_present_pushing), which comes all at once a minute or more
- * later. Else on the phone while it isn't coming yet, or at whatever he says
- * he's at (pose_act, muse_present_phase's WAITING). Then hauling
+ * later. Found on the web (Muse searching while the turn waits on one, its
+ * URL not known yet: UNBOX_SEARCH, the magnifying glass), "found it!" and
+ * the photo up into the cloud once the reply names it (UNBOX_FOUND,
+ * muse_present_found), then the cloud while it's fetched here, or, that
+ * failing, while Muse pushes it. Else at whatever he says he's at (pose_act,
+ * muse_present_phase's WAITING). The cloud comes before the boxes, whatever
+ * the mode (the speech needn't wait for the image). Then hauling
  * boxes as its bytes come (UNBOX_BOXES, the stack after them), opening them
  * (UNBOX_OPEN), fitting the pieces into a little framed picture (UNBOX_FIT,
  * held there till the photo's ready) and tucking it into his pocket as he
@@ -1976,9 +1986,14 @@ static muse_activity_t ui_activity(float now)
 #define UNBOX_TUCK_S 0.35f      /* into the pocket, coming back up (ACT_DROP_S) */
 #define UNBOX_TOSS_S 1.8f       /* MUSE_ACT_PAINT's toss, act_progress 0..1 */
 #define UNBOX_CLOUD_S 0.6f      /* the cloud up at least this long before the boxes come */
+#define UNBOX_FOUND_S 1.6f      /* MUSE_ACT_SEARCH's "found it!" and the photo up, act_progress 0..1 */
+#define UNBOX_IDLE_S 90.0f      /* the cloud up this long at most, idle, for a push that's slow to come */
 #define BENCH_FETCH_S 0.3f      /* ">face=download": the push all at once, then never the photo */
 
-typedef enum { UNBOX_NONE, UNBOX_BOXES, UNBOX_OPEN, UNBOX_FIT, UNBOX_TUCK, UNBOX_PAINT, UNBOX_TOSS, UNBOX_CLOUD } unbox_stage_t;
+typedef enum {
+    UNBOX_NONE, UNBOX_BOXES, UNBOX_OPEN, UNBOX_FIT, UNBOX_TUCK, UNBOX_PAINT, UNBOX_TOSS, UNBOX_CLOUD, UNBOX_SEARCH,
+    UNBOX_FOUND,
+} unbox_stage_t;
 
 EXT_RAM_BSS_ATTR static struct {
     unbox_stage_t stage;
@@ -1987,32 +2002,51 @@ EXT_RAM_BSS_ATTR static struct {
     bool unknown;       /* and not knowing how far the bytes are */
     float full_at;      /* when it filled, or -1 */
     float last;
+    bool idle_out;      /* the cloud given up on, idle: not again till the push comes or goes */
+    bool defer;         /* one coming while the last's put away: photo_tick leaves it for the boxes */
 } s_unbox;
 
 static bool unbox_busy(void)
 {
-    return s_unbox.stage != UNBOX_NONE;
+    return s_unbox.stage != UNBOX_NONE || s_unbox.defer;
 }
 
-/* Where the image has got (muse_present_phase), or ">face=download"'s made-up one. */
+/* Where the image has got (muse_present_phase), or the bench's made-up one. */
 static muse_present_phase_t unbox_phase(float now, float *progress)
 {
+    float bt = now - s_bench_at;
+    if (s_bench == MUSE_UI_BENCH_SEARCH_DOWNLOAD) {
+        float wait = BENCH_SEARCH_S + UNBOX_FOUND_S + BENCH_SKY_S;
+        *progress = bt < wait ? -1.0f : fminf(1.0f, (bt - wait) / BENCH_BYTES_S);
+        return bt < wait ? MUSE_PRESENT_WAITING : bt < wait + BENCH_BYTES_S ? MUSE_PRESENT_FETCHING : MUSE_PRESENT_DECODING;
+    }
     if (s_bench != MUSE_UI_BENCH_DOWNLOAD) {
         return muse_present_phase(progress);
     }
-    float bt = now - s_bench_at, wait = BENCH_PAINT_S + UNBOX_TOSS_S + BENCH_CLOUD_S;
+    float wait = BENCH_PAINT_S + UNBOX_TOSS_S + BENCH_CLOUD_S;
     *progress = bt < wait ? -1.0f : 1.0f;
     return bt < wait ? MUSE_PRESENT_WAITING : bt < wait + BENCH_FETCH_S ? MUSE_PRESENT_FETCHING : MUSE_PRESENT_DECODING;
+}
+
+/* A web image named and being fetched here (muse_present_found), or the bench's. */
+static bool unbox_found(float now, bool bench)
+{
+    float bt = now - s_bench_at;
+    if (s_bench == MUSE_UI_BENCH_SEARCH_DOWNLOAD) {
+        return bt >= BENCH_SEARCH_S && bt < BENCH_SEARCH_S + UNBOX_FOUND_S + BENCH_SKY_S + BENCH_BYTES_S;
+    }
+    return !bench && muse_present_found();
 }
 
 /* Each frame, before photo_tick: moves the stages on. */
 static void unbox_tick(muse_mode_t mode, float now)
 {
     EXT_RAM_BSS_ATTR static float bench_at;
-    bool bench = s_bench == MUSE_UI_BENCH_DOWNLOAD;
+    bool bench = s_bench == MUSE_UI_BENCH_DOWNLOAD || s_bench == MUSE_UI_BENCH_SEARCH_DOWNLOAD;
     if (s_bench_at != bench_at) {
         bench_at = s_bench_at;
         s_unbox.stage = UNBOX_NONE;   /* the bench starts it again */
+        s_unbox.idle_out = false;
     }
     float dt = now - s_unbox.last;
     dt = dt < 0 || dt > 0.2f ? 0.05f : dt;
@@ -2026,32 +2060,64 @@ static void unbox_tick(muse_mode_t mode, float now)
     /* Not coming after all (a web fetch failed over to Muse, a decode failed): back to waiting. */
     bool gone = !coming && (phase == MUSE_PRESENT_WAITING || phase == MUSE_PRESENT_NONE);
     bool bytes = coming || phase == MUSE_PRESENT_FETCHING || phase == MUSE_PRESENT_DECODING;
-    /* Before them: Muse making it, or writing out the push, in a turn or waited for. */
+    /* Before them: Muse making it, finding it, or writing out the push, in a
+     * turn, waited for, or not (the speech gone on without it). */
     muse_activity_t activity = ui_activity(now);
-    bool pushing = !bench && muse_present_pushing() && phase == MUSE_PRESENT_WAITING;
-    bool turn = mode == MUSE_MODE_THINKING || phase == MUSE_PRESENT_WAITING;
-    bool made = activity == MUSE_ACTIVITY_IMAGE_MADE || pushing;
+    bool waiting = phase == MUSE_PRESENT_WAITING;
+    bool turn = mode == MUSE_MODE_THINKING || waiting;
+    bool found = unbox_found(now, bench);
+    bool pushing = !bench && !bytes && muse_present_pushing();
+    bool made = (turn && activity == MUSE_ACTIVITY_IMAGE_MADE) || pushing;
+    bool sky = made || found;   /* on its way, none of it here yet: the cloud's */
+    bool hunting = turn && waiting && (activity == MUSE_ACTIVITY_SEARCH || activity == MUSE_ACTIVITY_NONE);
     unbox_stage_t was = s_unbox.stage;
     if (!s_photo_card || mode == MUSE_MODE_LISTENING) {
         s_unbox.stage = UNBOX_NONE;   /* a new turn, or no photo layout */
+        s_unbox.idle_out = false;
     }
+    if (!sky) {
+        s_unbox.idle_out = false;
+    }
+    s_unbox.defer = false;
     switch (s_unbox.stage) {
     case UNBOX_NONE:
-        if (s_photo_card && mode != MUSE_MODE_LISTENING && s_photo.phase == PHOTO_NONE) {
-            if (bytes) {
-                s_unbox.stage = UNBOX_BOXES;
-                s_unbox.fill = 0;
-                s_unbox.full_at = -1;
-            } else if (turn && activity == MUSE_ACTIVITY_IMAGE && !pushing) {
-                s_unbox.stage = UNBOX_PAINT;
-            } else if (turn && made) {
-                s_unbox.stage = UNBOX_CLOUD;   /* named, not made here: the cloud comes down */
-            }
+        if (!s_photo_card || mode == MUSE_MODE_LISTENING) {
+            break;
+        }
+        if (s_photo.phase != PHOTO_NONE) {
+            /* The last one going back in the pocket: this one after it, through the boxes. */
+            s_unbox.defer = (s_photo.phase == PHOTO_LOWER || s_photo.phase == PHOTO_STOW) && (bytes || sky);
+        } else if (found || (bytes && activity == MUSE_ACTIVITY_SEARCH)) {
+            s_unbox.stage = UNBOX_FOUND;
+        } else if (bytes) {
+            s_unbox.stage = UNBOX_CLOUD;   /* the cloud first, however quick the bytes */
+        } else if (turn && activity == MUSE_ACTIVITY_IMAGE && !pushing) {
+            s_unbox.stage = UNBOX_PAINT;
+        } else if (sky && !s_unbox.idle_out) {
+            s_unbox.stage = UNBOX_CLOUD;   /* named, not made here: the cloud comes down */
+        } else if (hunting) {
+            s_unbox.stage = UNBOX_SEARCH;   /* not named yet: Muse looking for it */
+        }
+        break;
+    case UNBOX_SEARCH:
+        if (found || bytes || pushing) {
+            s_unbox.stage = UNBOX_FOUND;
+        } else if (activity == MUSE_ACTIVITY_IMAGE) {
+            s_unbox.stage = UNBOX_PAINT;   /* making it after all */
+        } else if (made) {
+            s_unbox.stage = UNBOX_CLOUD;
+        } else if (!hunting) {
+            s_unbox.stage = UNBOX_NONE;   /* at something else (pose_act shows it) */
+        }
+        break;
+    case UNBOX_FOUND:
+        if (now - s_unbox.at >= UNBOX_FOUND_S) {
+            s_unbox.stage = UNBOX_CLOUD;
         }
         break;
     case UNBOX_PAINT:
-        if (bytes || made || activity != MUSE_ACTIVITY_IMAGE) {
-            s_unbox.stage = bytes || made ? UNBOX_TOSS : UNBOX_NONE;   /* made: up it goes */
+        if (bytes || sky || activity != MUSE_ACTIVITY_IMAGE) {
+            s_unbox.stage = bytes || sky ? UNBOX_TOSS : UNBOX_NONE;   /* made: up it goes */
         } else if (!turn) {
             s_unbox.stage = UNBOX_NONE;
         }
@@ -2068,15 +2134,18 @@ static void unbox_tick(muse_mode_t mode, float now)
                 s_unbox.fill = 0;
                 s_unbox.full_at = -1;
             }
-        } else if (activity == MUSE_ACTIVITY_IMAGE && !pushing) {
+        } else if (activity == MUSE_ACTIVITY_IMAGE && !pushing && !found) {
             s_unbox.stage = UNBOX_PAINT;   /* another */
-        } else if (!turn || !made) {
+        } else if (!sky && !waiting) {
             s_unbox.stage = UNBOX_NONE;
+        } else if (mode == MUSE_MODE_IDLE && !waiting && now - s_unbox.at >= UNBOX_IDLE_S) {
+            s_unbox.stage = UNBOX_NONE;   /* a push that's slow to come shows when it does */
+            s_unbox.idle_out = true;
         }
         break;
     case UNBOX_BOXES: {
         if (gone) {
-            s_unbox.stage = UNBOX_NONE;
+            s_unbox.stage = sky ? UNBOX_CLOUD : UNBOX_NONE;   /* Muse to push it after all */
             break;
         }
         float target = coming || phase == MUSE_PRESENT_DECODING ? 1.0f : progress;
@@ -2094,14 +2163,14 @@ static void unbox_tick(muse_mode_t mode, float now)
     }
     case UNBOX_OPEN:
         if (gone) {
-            s_unbox.stage = UNBOX_NONE;
+            s_unbox.stage = sky ? UNBOX_CLOUD : UNBOX_NONE;
         } else if (now - s_unbox.at >= UNBOX_OPEN_S) {
             s_unbox.stage = UNBOX_FIT;
         }
         break;
     case UNBOX_FIT:
         if (gone) {
-            s_unbox.stage = UNBOX_NONE;
+            s_unbox.stage = sky ? UNBOX_CLOUD : UNBOX_NONE;
         } else if (now - s_unbox.at >= UNBOX_FIT_S && (coming || (bench && s_photo.kept))) {
             s_unbox.stage = UNBOX_TUCK;   /* the photo's here (on the bench, one from before) */
         }
@@ -2117,9 +2186,13 @@ static void unbox_tick(muse_mode_t mode, float now)
     }
     if (s_unbox.stage != was) {
         static const char *const NAMES[] = { "done", "boxes coming", "unboxing", "putting it together", "into the pocket",
-                                             "painting it", "tossing it up", "waiting on the cloud" };
-        ESP_LOGI(TAG, "image: %s after %.1f s%s", NAMES[s_unbox.stage], (double)(now - s_unbox.at),
-                 s_unbox.stage == UNBOX_NONE && was != UNBOX_TUCK ? " (not coming after all)" : "");
+                                             "painting it", "tossing it up", "waiting on the cloud", "searching for it",
+                                             "found it, up it goes" };
+        ESP_LOGI(TAG, "image: %s after %.1f s%s (mode %d, activity %s%s%s%s%s)", NAMES[s_unbox.stage],
+                 (double)(now - s_unbox.at),
+                 s_unbox.stage == UNBOX_NONE && was != UNBOX_TUCK ? " (not coming after all)" : "", (int)mode,
+                 muse_activity_name(activity), waiting ? ", waited for" : "", found ? ", found" : "",
+                 pushing ? ", Muse pushing it" : "", bytes ? ", its bytes coming" : "");
         s_unbox.at = now;
     }
 }
@@ -2150,6 +2223,12 @@ static muse_act_t unbox_act(float now, float *progress)
     case UNBOX_CLOUD:
         *progress = -1.0f;
         return MUSE_ACT_CLOUD;
+    case UNBOX_SEARCH:
+        *progress = -1.0f;
+        return MUSE_ACT_SEARCH;
+    case UNBOX_FOUND:
+        *progress = fminf(1.0f, st / UNBOX_FOUND_S);
+        return MUSE_ACT_SEARCH;
     default:
         return MUSE_ACT_NONE;
     }
@@ -3107,7 +3186,8 @@ static void pose_battery(muse_pose_t *pose, float now)
 
 /* The download (MUSE_ACT_PACKAGES) wants the room above him for its cloud,
  * and has the empty space under him to spare: he eases down ACT_DROP_PX for
- * it (from tossing the canvas up into it, painted, and waiting on it), stays
+ * it (from tossing the canvas or the photo found up into it, and waiting on
+ * it), stays
  * down to unbox it and put it together, and comes back up as he tucks it
  * into his pocket, before reaching for the photo. */
 #define ACT_DROP_PX 28   /* on top of MUSE_DOWN_PX */
@@ -3122,6 +3202,7 @@ static void act_drop(const muse_pose_t *pose, float now)
     dt = dt < 0 || dt > 0.2f ? 0.05f : dt;
     bool act = pose->act == MUSE_ACT_PACKAGES || pose->act == MUSE_ACT_UNBOX || pose->act == MUSE_ACT_CLOUD
                || (pose->act == MUSE_ACT_PAINT && pose->act_progress >= 0.0f)   /* tossing it up */
+               || (pose->act == MUSE_ACT_SEARCH && pose->act_progress >= 0.0f)  /* found it: up it goes */
                || (pose->act == MUSE_ACT_ASSEMBLE && pose->act_progress <= 1.0f);
     bool want = CORNERS && act && pose->reach <= 0.0f && !pose->holding;
     drop += want ? dt / ACT_DROP_S : -dt / ACT_DROP_S;

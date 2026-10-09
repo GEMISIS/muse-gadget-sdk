@@ -116,7 +116,10 @@ typedef struct {
      * comes out of (reach). Each plays in full, however quick the image.
      * What Muse says he's at work on (muse_activity.h), each looping as long
      * as it lasts, its prop popping in and going in a puff: SEARCH, peering
-     * about through a magnifying glass; NEWS, reading a newspaper; CALENDAR,
+     * about through a magnifying glass (act_progress -1); then, an image
+     * found, 0..1 through a start at the glass, the picture in it, the photo
+     * out of it held up, and tossed up into the cloud as PAINT's canvas is
+     * (then CLOUD); NEWS, reading a newspaper; CALENDAR,
      * flipping a little wall calendar; REMINDER, writing sticky notes and
      * slapping them up (act_progress 1: crossing one out, crumpling it and
      * tossing it); MAIL, pulling letters out of a mail bag and reading them
@@ -131,8 +134,8 @@ typedef struct {
      * takes); then, made, 0..1 through a flourish and tossing the canvas up
      * into the cloud the boxes will come out of. CLOUD: that cloud up, its
      * arrow pulsing, and him waiting on it, tapping a foot, till the bytes
-     * start coming (PACKAGES). BROWSE, Muse's browser at work on the web: at
-     * a little desk, a hand on the mouse, a laptop's browser window loading
+     * start coming (PACKAGES); talking, if he says the reply meanwhile.
+     * BROWSE, Muse's browser at work on the web: at a little desk, a hand on the mouse, a laptop's browser window loading
      * pages in the site's colour (browse_site), scrolling them and clicking
      * through, his eyes on the pointer (act_progress -1, as long as it
      * runs); then, done, 0..1 through a cheer and shutting the lid. At
