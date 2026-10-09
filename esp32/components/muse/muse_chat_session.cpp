@@ -2287,7 +2287,15 @@ static void on_event(cJSON *line)
             sid = cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetObjectItem(payload, "chat_context"), "chat_id"));
         }
         if (bg_chat(sid)) {
-            return;   /* Muse at work on the background request (pushing the image, say), not this turn */
+            /* Muse at work on the background request (pushing the image, say), not this turn:
+             * logged once a change, as where its time goes. */
+            EXT_RAM_BSS_ATTR static char bg_was[64];
+            const char *what = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_text"));
+            if (what && strcmp(what, bg_was)) {
+                strlcpy(bg_was, what, sizeof(bg_was));
+                ESP_LOGI(TAG, "background: %s", what);
+            }
+            return;
         }
         if (!s_turn.img_held && img_in_status(payload)) {
             const char *what = cJSON_GetStringValue(cJSON_GetObjectItem(payload, "activity_text"));

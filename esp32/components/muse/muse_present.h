@@ -51,6 +51,8 @@ bool muse_present_bytes(uint8_t *data, size_t len, const char *label);
  * show in place of the one asked for. If not, *why says so, for Muse.
  */
 bool muse_present_push_ok(const char *label, char *why, size_t cap);
+/* The ended image requests' chats to delete ("id, id"), handed over once: 0 if none. Any task. */
+size_t muse_present_stale_take(char *out, size_t cap);
 
 /*
  * Asks Muse, in the background (muse_chat_bg_ask_for, in a chat of its own),

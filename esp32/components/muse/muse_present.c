@@ -452,7 +452,46 @@ EXT_RAM_BSS_ATTR static int s_asked_next;
  * up in the Muse app. Kept in RAM: a restart leaves at most one behind.
  */
 EXT_RAM_BSS_ATTR static char s_ask_sid[MUSE_CHAT_SID_MAX + 1];
-EXT_RAM_BSS_ATTR static char s_ask_prev[MUSE_CHAT_SID_MAX + 1];
+/* The ended requests' chats, still on the Muse (with s_ask_lock): deleting
+ * one ahead of the next request kept that image waiting, so "up next"'s ask,
+ * at its own pace, has them deleted. */
+#define STALE_KEPT 4
+EXT_RAM_BSS_ATTR static char s_stale[STALE_KEPT][MUSE_CHAT_SID_MAX + 1];
+
+static void stale_add(const char *sid)
+{
+    if (!sid || !sid[0]) {
+        return;
+    }
+    portENTER_CRITICAL(&s_ask_lock);
+    int at = 0;
+    for (int i = 0; i < STALE_KEPT; i++) {
+        if (!s_stale[i][0]) {
+            at = i;
+            break;
+        }
+        at = (i + 1) % STALE_KEPT;   /* all full: the oldest goes undeleted */
+    }
+    strlcpy(s_stale[at], sid, sizeof(s_stale[at]));
+    portEXIT_CRITICAL(&s_ask_lock);
+}
+
+size_t muse_present_stale_take(char *out, size_t cap)
+{
+    size_t n = 0;
+    if (cap) {
+        out[0] = '\0';
+    }
+    portENTER_CRITICAL(&s_ask_lock);
+    for (int i = 0; i < STALE_KEPT && cap; i++) {
+        if (s_stale[i][0] && n + strlen(s_stale[i]) + 3 < cap) {
+            n += snprintf(out + n, cap - n, "%s%s", n ? ", " : "", s_stale[i]);
+            s_stale[i][0] = '\0';
+        }
+    }
+    portEXIT_CRITICAL(&s_ask_lock);
+    return n;
+}
 
 static void new_sid(char out[MUSE_CHAT_SID_MAX + 1])
 {
@@ -589,7 +628,7 @@ static void ask_tick(void)
         portENTER_CRITICAL(&s_ask_lock);
         s_guard = s_guard_shown = false;
         portEXIT_CRITICAL(&s_ask_lock);
-        strlcpy(s_ask_prev, s_ask_sid, sizeof(s_ask_prev));   /* deleted with the next ask */
+        stale_add(s_ask_sid);   /* deleted later, with "up next"'s ask: not on the way to an image */
         if (st == MUSE_CHAT_BG_DONE) {
             ESP_LOGI(TAG, "\"%s\": Muse answered \"%s\"", s_asking_label, reply);
         } else {
@@ -648,12 +687,7 @@ static void ask_tick(void)
     /* Small: every byte goes as base64 Muse writes out, about 35 s per
      * 14K characters, so a 200 px JPEG under 12 KB (one chunk) shows in
      * well under a minute. */
-    int n = 0;
-    if (s_ask_prev[0]) {
-        n = snprintf(msg, sizeof(msg),
-                     "First, quietly delete the chat with session id %s (an earlier one of these); don't "
-                     "mention it. Then: ", s_ask_prev);
-    }
+    int n = 0;   /* nothing ahead of it: an earlier one's chat goes later (muse_present_stale_take) */
     /* A file in Muse's workspace (generated), or an image on the web it fetches first. */
     bool web = !strncmp(path, "http://", 7) || !strncmp(path, "https://", 8);
     snprintf(msg + n, sizeof(msg) - n,
