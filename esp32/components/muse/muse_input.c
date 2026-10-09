@@ -749,7 +749,8 @@ static void chat_cancel(void)
  * "download" plays a made image's whole way in, made up: painting it, the
  * toss, the cloud, the push all at once, the boxes, unboxing, the picture
  * put together and held (or, with a photo put away lately, that one out of
- * the pocket).
+ * the pocket). "search_download" a searched one's: searching, found it and
+ * up into the cloud, the cloud, its bytes coming, then the same.
  */
 static void set_face(const char *name)
 {
@@ -771,6 +772,7 @@ static void set_face(const char *name)
         { "listen_phone", MUSE_UI_BENCH_LISTEN_PHONE, "thinking" },
         { "packages", MUSE_UI_BENCH_PACKAGES, "thinking" },
         { "download", MUSE_UI_BENCH_DOWNLOAD, "thinking" },
+        { "search_download", MUSE_UI_BENCH_SEARCH_DOWNLOAD, "thinking" },
         { "unbox", MUSE_UI_BENCH_UNBOX, "thinking" },
         { "assemble", MUSE_UI_BENCH_ASSEMBLE, "thinking" },
         { "toss", MUSE_UI_BENCH_TOSS, "thinking" },
@@ -819,7 +821,7 @@ static void set_face(const char *name)
         }
     }
     printf("@face.error unknown face \"%s\": boot idle listening thinking speaking error off happy"
-           " phone listen_phone packages download unbox assemble paint toss act:NAME tea pajamas brace\n", name);
+           " phone listen_phone packages download search_download unbox assemble paint toss act:NAME tea pajamas brace\n", name);
     fflush(stdout);
 }
 
