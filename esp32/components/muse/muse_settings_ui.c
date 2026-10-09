@@ -63,7 +63,7 @@ static lv_obj_t *s_mode;
 static lv_obj_t *s_advanced;   /* Muse, Bluetooth and Battery, under home */
 static lv_obj_t *s_general;    /* Wi-Fi, Display, Sound and Passcode, under home */
 EXT_RAM_BSS_ATTR static lv_obj_t *s_passcode;   /* under General */
-static lv_obj_t *s_reset;      /* Reset device's two warnings, under Advanced */
+static lv_obj_t *s_reset;      /* Reset device's two warnings, under About */
 static lv_obj_t *s_about;      /* what this device is and how it's doing, under Advanced */
 static lv_obj_t *s_reset_note, *s_reset_go_lbl;
 static int s_reset_step;       /* warnings agreed to so far */
@@ -415,7 +415,10 @@ static lv_obj_t *parent(lv_obj_t *p)
     if (p == s_text) {
         return s_text_back;
     }
-    if (p && (p == s_hatch || p == s_ble || p == s_battery || p == s_reset || p == s_about)) {
+    if (p && p == s_reset) {
+        return s_about;   /* Reset device is at About's foot */
+    }
+    if (p && (p == s_hatch || p == s_ble || p == s_battery || p == s_about)) {
         return s_advanced;
     }
     if (p && (p == s_wifi || p == s_sound || p == s_display || p == s_passcode)) {
@@ -1737,6 +1740,7 @@ static void build_about_page(lv_obj_t *tile)
     about_row(list, "MAC address", buf);
     s_about_uptime = about_row(list, "Up for", "");
     s_about_mem = about_row(list, "Free memory", "");
+    row(list, LV_SYMBOL_WARNING, "Reset device", NULL, on_nav, (void *)&RESET);   /* last, under what it'd erase */
     back_row(list, "Back");
 }
 
@@ -1798,7 +1802,6 @@ static void build_advanced_page(lv_obj_t *tile)
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_adv_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_adv_battery, on_nav, (void *)&BATTERY);
     row(list, LV_SYMBOL_FILE, "About", NULL, on_nav, (void *)&ABOUT);
-    row(list, LV_SYMBOL_WARNING, "Reset device", NULL, on_nav, (void *)&RESET);
     back_row(list, "Back");
 }
 
