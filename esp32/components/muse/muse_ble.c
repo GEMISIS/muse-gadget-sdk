@@ -28,6 +28,7 @@
 
 #include "muse_chat.h"
 #include "muse_link.h"
+#include "muse_lock.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_voice.h"
@@ -75,6 +76,11 @@ static void json_str(char *out, size_t len, const char *s)
 
 static int build_status(char *out, size_t len)
 {
+    if (muse_lock_locked()) {
+        /* Locked (muse_lock.h): which gadget, and that it's locked. */
+        return snprintf(out, len, "{\"name\":\"%s\",\"fw\":\"%s\",\"locked\":true}", s_name,
+                        esp_app_get_description()->version);
+    }
     muse_wifi_status_t w;
     muse_wifi_status(&w);
     muse_hatch_status_t h;
@@ -131,7 +137,9 @@ static void run_command(char *cmd)
     int n;
     const char *res = "ok";
 
-    if (!strcmp(cmd, "wifi.ssid")) {
+    if (muse_lock_locked()) {
+        res = "error: locked";   /* nothing read or changed till it's unlocked on the gadget */
+    } else if (!strcmp(cmd, "wifi.ssid")) {
         strlcpy(s_pending_ssid, v, sizeof(s_pending_ssid));
         s_pending_pass[0] = '\0';
     } else if (!strcmp(cmd, "wifi.pass")) {

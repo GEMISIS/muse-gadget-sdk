@@ -26,6 +26,7 @@
 #include "freertos/semphr.h"
 
 #include "esp_attr.h"
+#include "muse_lock.h"
 #include "muse_text.h"
 
 #define HAPPY_SECS 1.6f
@@ -189,6 +190,7 @@ void muse_state_set_power(const muse_power_t *power)
     portENTER_CRITICAL(&s_lock);
     s_power = *power;
     portEXIT_CRITICAL(&s_lock);
+    muse_lock_note_power(muse_state_on_battery());   /* asleep: the power it slept on */
     if (muse_state_on_battery() != was) {
         muse_state_nudge();
     }
@@ -228,6 +230,7 @@ float muse_state_idle_secs(void)
 
 void muse_state_set_asleep(bool asleep)
 {
+    muse_lock_note_asleep(asleep);   /* first: waking after long enough, it wakes locked */
     if (!asleep) {
         muse_state_poke();
     }

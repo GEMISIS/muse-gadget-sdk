@@ -83,11 +83,13 @@ void muse_link_reset_setup(void)
     }
 }
 
-void muse_link_factory_reset(void)
+bool muse_link_factory_reset(void)
 {
     if (s_ops && s_ops->factory_reset) {
         s_ops->factory_reset();
+        return true;
     }
+    return false;
 }
 
 bool muse_link_wifi_get(char *ssid, char *pass)

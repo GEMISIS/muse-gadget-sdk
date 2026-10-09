@@ -37,6 +37,7 @@
 #include "muse_board.h"
 #include "muse_chat.h"
 #include "muse_console.h"
+#include "muse_dialog.h"
 #include "muse_gadget_mode.h"
 #include "muse_home_extras.h"
 #if CONFIG_MUSE_GADGET_EXTRAS
@@ -47,6 +48,8 @@
 #include "muse_chats_ui.h"
 #endif
 #include "muse_link.h"
+#include "muse_lock.h"
+#include "muse_lock_ui.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
 #include "muse_orient.h"
@@ -625,9 +628,15 @@ static bool photo_shown(void);
 static bool photo_out_again(float now, const char *why);
 static void photo_put_away(float now, const char *why);
 
+EXT_RAM_BSS_ATTR static float s_lock_pat_at;   /* Muse tapped while locked: his battery shows (0: not yet) */
+
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
+    if (muse_lock_locked()) {
+        s_lock_pat_at = (float)esp_timer_get_time() / 1e6f;   /* only that */
+        return;
+    }
 #if MUSE_WIDGET_UI
     uint32_t site;
     float done;
@@ -666,7 +675,7 @@ static void on_canvas_clicked(lv_event_t *e)
 static void on_canvas_held(lv_event_t *e)
 {
     (void)e;
-    if (muse_state_mode(NULL) == MUSE_MODE_IDLE) {
+    if (muse_state_mode(NULL) == MUSE_MODE_IDLE && !muse_lock_locked()) {
         muse_mode_dialog_open();
     }
 }
@@ -2262,6 +2271,22 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
     return reach;
 }
 
+/* ---- Locked (muse_lock.h): Muse and the clock, and the keypad on a tap ---- */
+
+EXT_RAM_BSS_ATTR static lv_obj_t *s_veil;
+EXT_RAM_BSS_ATTR static bool s_lock_face;        /* the locked face is up */
+EXT_RAM_BSS_ATTR static int s_lock_px, s_lock_y;  /* Muse's size and place on the face, kept while the keypad has him */
+EXT_RAM_BSS_ATTR static int32_t s_lock_canvas_at, s_lock_clock_at;   /* their places among the face's children */
+EXT_RAM_BSS_ATTR static bool s_lock_booted;
+
+static void on_veil(lv_event_t *e)
+{
+    if (lv_event_get_code(e) == LV_EVENT_GESTURE && lv_indev_get_gesture_dir(lv_indev_active()) != LV_DIR_TOP) {
+        return;
+    }
+    muse_lock_ui_open(true);
+}
+
 static void build_overlays(void)
 {
     lv_obj_t *scr = lv_screen_active();
@@ -2314,8 +2339,22 @@ static void build_overlays(void)
     lv_obj_add_event_cb(s_camera_hint, on_camera_hint_clicked, LV_EVENT_CLICKED, NULL);
 #endif
 
-    /* Volume bar, power menu and the mode suggestion: under the pairing code
-     * and the sleep cover. */
+    /* The locked face's veil: over all of the face but Muse and the clock,
+     * which come up over it (lock_face). A tap or a swipe up on it brings the
+     * keypad. */
+    s_veil = lv_obj_create(s_face ? s_face : scr);
+    lv_obj_remove_style_all(s_veil);
+    lv_obj_set_size(s_veil, s_w, s_h);
+    lv_obj_set_style_bg_color(s_veil, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_veil, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_veil, LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_GESTURE_BUBBLE | LV_OBJ_FLAG_SCROLL_CHAIN);
+    lv_obj_add_flag(s_veil, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_veil, on_veil, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_veil, on_veil, LV_EVENT_GESTURE, NULL);
+
+    /* The passcode's keypad, then the volume bar, power menu and the mode
+     * suggestion over it: under the pairing code and the sleep cover. */
+    muse_lock_ui_build(lv_layer_top(), s_w, s_h);
     muse_power_menu_build(lv_layer_top(), s_w, s_h);
     muse_gadget_mode_build_toast(lv_layer_top(), s_w);
 
@@ -2973,9 +3012,10 @@ static void pose_battery(muse_pose_t *pose, float now)
     }
     was_charging = pose->charging;
     pose->belly = (pose->charging && p.battery_pct < 100) || now - plugged_at < BELLY_PLUG_S
-                  || now - patted_at < BELLY_PAT_S || p.battery_pct <= BELLY_LOW_PCT;
+                  || now - patted_at < BELLY_PAT_S || (s_lock_pat_at > 0 && now - s_lock_pat_at < BELLY_PAT_S)
+                  || p.battery_pct <= BELLY_LOW_PCT;
 #else
-    pose->belly = pose->charging || now - patted_at < BELLY_PAT_S;
+    pose->belly = pose->charging || now - patted_at < BELLY_PAT_S || (s_lock_pat_at > 0 && now - s_lock_pat_at < BELLY_PAT_S);
 #endif
     if (!pose->charging && !pose->bed && p.battery_pct < TIRED_PCT) {
         float f = (float)(TIRED_PCT - p.battery_pct) / (TIRED_PCT - TIRED_FULL_PCT);
@@ -3196,6 +3236,123 @@ void muse_ui_request_snapshot(void)
     s_snapshot = true;
 }
 
+/*
+ * Locked or not (muse_lock.h). Locked, the face is Muse and the clock over
+ * the veil, and nothing else shows or takes a tap: what was up (a dialog, an
+ * image, a photo, another screen) goes, and swiping stays off.
+ */
+static void lock_face(bool on, float now)
+{
+    if (on == s_lock_face) {
+        return;
+    }
+    s_lock_face = on;
+    lv_obj_t *clock = muse_home_extras_clock();
+    if (on) {
+        muse_dialog_close();
+        muse_menu_close();
+        image_hide_locked();
+        photo_full_hide(now);
+        photo_drop();
+        xSemaphoreTake(s_image_mutex, portMAX_DELAY);
+        photo_px_free(&s_photo.next);   /* one on its way up: dropped */
+        xSemaphoreGive(s_image_mutex);
+        if (s_settings) {
+            muse_settings_ui_go_home();
+        }
+        if (s_tv) {
+            lv_tileview_set_tile(s_tv, s_face, LV_ANIM_OFF);
+            lv_obj_remove_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE);
+        }
+        for (int i = 0; i < PAGE_COUNT && s_tv; i++) {
+            lv_obj_add_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_add_flag(s_pair, LV_OBJ_FLAG_HIDDEN);
+        muse_gadget_mode_hide_toast();
+        lv_anim_delete(s_canvas, NULL);   /* a layout's move: he stays where he is */
+        s_lock_px = s_muse_src.header.w;
+        s_lock_y = s_muse_y;
+        s_lock_canvas_at = lv_obj_get_index(s_canvas);
+        s_lock_clock_at = clock ? lv_obj_get_index(clock) : -1;
+        lv_obj_remove_flag(s_veil, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_veil);
+        lv_obj_move_foreground(s_canvas);
+        if (clock) {
+            lv_obj_move_foreground(clock);
+        }
+        return;
+    }
+    lv_obj_add_flag(s_veil, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_to_index(s_canvas, s_lock_canvas_at);
+    if (clock) {
+        lv_obj_move_to_index(clock, s_lock_clock_at);
+    }
+    set_canvas_px(s_lock_px);
+    lv_obj_align(s_canvas, LV_ALIGN_CENTER, 0, s_lock_y);
+    s_cells_valid = false;
+    s_shown_page = -1;   /* the page dots, next tick */
+    s_next_settings_tick = 0;
+    if (s_tv) {
+        lv_obj_add_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE);
+    }
+}
+
+/* The keypad's own frame, and the face locked or not to match; true if locked. */
+static bool update_lock(float now)
+{
+    muse_lock_ui_tick(now);
+    bool locked = muse_lock_locked();
+    lock_face(locked, now);
+    if (!s_lock_booted) {
+        s_lock_booted = true;
+        if (locked) {
+            muse_lock_ui_open(false);   /* at a start, the keypad straight away */
+        }
+    }
+    return locked;
+}
+
+/* A locked frame: Muse on the locked face, idle whatever's going on, or in
+ * the keypad's corner (the same image, at its size), taking it as it goes. */
+static void lock_frame(muse_mode_t mode, float mode_t, float now)
+{
+    EXT_RAM_BSS_ATTR static lv_obj_t *shown_in;
+    lv_obj_t *av = muse_lock_ui_avatar();
+    int px = av ? (int)lv_obj_get_width(av) : s_lock_px;
+    if ((int)s_muse_src.header.w != px || av != shown_in) {
+        set_canvas_px(px);
+        if (av) {
+            lv_image_set_src(av, &s_muse_src);   /* picks up the size */
+        } else {
+            lv_obj_align(s_canvas, LV_ALIGN_CENTER, 0, s_lock_y);
+        }
+        s_cells_valid = false;
+        shown_in = av;
+    }
+    float dizzy = 0.0f, tired = 0.0f;
+    if (av) {
+        muse_lock_ui_mood(now, &dizzy, &tired);
+    }
+    muse_pose_t pose = {
+        .mode = mode == MUSE_MODE_OFF ? mode : MUSE_MODE_IDLE,
+        .t = now,
+        .mode_t = mode == MUSE_MODE_IDLE ? mode_t : now,
+        .happy = muse_state_happiness(),
+        .bed = !av && s_night,
+        .dizzy = dizzy,
+    };
+    pose_battery(&pose, now);
+    pose.tired = tired > pose.tired ? tired : pose.tired;
+    pose_time(&pose, pose.mode);
+    pose.sleepy = pose.bed && pose.happy < 0.05f;
+    muse_pixel_render(&pose);
+    if (av) {
+        lv_obj_invalidate(av);
+    } else {
+        invalidate_muse();
+    }
+}
+
 static void frame_tick(lv_timer_t *timer)
 {
     muse_watchdog_beat();
@@ -3212,7 +3369,7 @@ static void frame_tick(lv_timer_t *timer)
     float now = (float)esp_timer_get_time() / 1e6f;
 
     if (mode != s_last_mode) {
-        if (mode == MUSE_MODE_LISTENING) {
+        if (mode == MUSE_MODE_LISTENING && !muse_lock_locked()) {
             image_hide_locked();
             photo_full_hide(now);
             muse_ui_show_face();
@@ -3221,7 +3378,13 @@ static void frame_tick(lv_timer_t *timer)
     }
     muse_power_menu_tick(now);
     update_flip(now);   /* asleep too, so it wakes the right way up */
+    bool locked = update_lock(now);   /* asleep too, so it wakes locked */
     if (update_sleep()) {
+        return;
+    }
+    if (locked) {
+        muse_home_extras_tick(now);   /* the clock */
+        lock_frame(mode, mode_t, now);
         return;
     }
     update_chrome(now);
@@ -3360,7 +3523,7 @@ esp_err_t muse_ui_start(void)
 
 void muse_ui_show_face(void)
 {
-    if (!s_tv) {
+    if (!s_tv || muse_lock_locked()) {
         return;
     }
     lv_obj_add_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE);
@@ -3372,7 +3535,7 @@ void muse_ui_set_swipe_enabled(bool enabled)
     if (!s_tv) {
         return;
     }
-    lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, enabled);
+    lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, enabled && !muse_lock_locked());
     s_shown_page = -1;
     s_next_settings_tick = 0;
 }
@@ -3395,7 +3558,7 @@ bool muse_ui_image_size(int *w, int *h)
 
 bool muse_ui_image_draw(int x, int y, int w, int h, const uint16_t *pixels)
 {
-    if (!s_ready || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > s_w || y + h > s_h) {
+    if (!s_ready || muse_lock_locked() || x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > s_w || y + h > s_h) {
         return false;
     }
     xSemaphoreTake(s_image_mutex, portMAX_DELAY);
@@ -3456,7 +3619,7 @@ bool muse_ui_present_sizes(int *screen_w, int *screen_h, int *photo_px)
 
 bool muse_ui_present(uint16_t *full, int fw, int fh, uint16_t *held, int hw, int hh, bool sharper)
 {
-    if (!s_ready || !full || fw <= 0 || fh <= 0 || fw > s_w || fh > s_h || (s_photo_px && !held)) {
+    if (!s_ready || muse_lock_locked() || !full || fw <= 0 || fh <= 0 || fw > s_w || fh > s_h || (s_photo_px && !held)) {
         return false;
     }
     xSemaphoreTake(s_image_mutex, portMAX_DELAY);

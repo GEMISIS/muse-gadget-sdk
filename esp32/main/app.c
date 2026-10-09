@@ -78,6 +78,7 @@
 #if CONFIG_MUSE_ENABLED
 #include "gadget_commands.h"
 #include "muse_glue.h"
+#include "muse_lock.h"
 // Muse joins Wi-Fi from its own settings, before or without pairing.
 #define WIFI_WITHOUT_PAIRING 1
 #else
@@ -1842,9 +1843,23 @@ static cJSON *bug_report_command(
 }
 #endif
 
+// Locked with a passcode (muse_lock.h): nothing shown on the gadget or
+// read from it till it's unlocked there. NULL: go ahead.
+static cJSON *locked_error(const char *command) {
+#if CONFIG_MUSE_ENABLED
+    if (muse_lock_locked() && muse_lock_policy_blocks_remote(command)) {
+        return command_error("locked", "the gadget is locked with its passcode");
+    }
+#endif
+    (void)command;
+    return NULL;
+}
+
 static cJSON *on_ws_command(
     const char *command, cJSON *params, const char *request_id,
     noise_ctrl_session_generation_t session_generation) {
+    cJSON *locked = locked_error(command);
+    if (locked) return locked;
     if (strcmp(command, "device.list_vms") == 0) {
         return list_vms_command();
     }

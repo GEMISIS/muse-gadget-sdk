@@ -45,7 +45,8 @@ if(CONFIG_MUSE_ENABLED)
         "muse_keypad.c"
         "muse_lv_mem.c"
         "muse_link.c"
-        "muse_ble.c")
+        "muse_ble.c"
+        "muse_lock.c" "muse_lock_policy.c" "muse_lock_hash.c" "muse_lock_ui.c")   # the passcode
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
         list(APPEND srcs "muse_present.c")   # images in replies, held up on the face

@@ -42,6 +42,7 @@
 #include "muse_chat.h"
 #include "muse_extras.h"
 #include "muse_gadget_mode.h"
+#include "muse_lock.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_text.h"
@@ -246,7 +247,7 @@ void muse_up_next_tick(void)
     }
     /* In reach, between turns, and not asleep on battery, when Wi-Fi rests:
      * waking makes up for it, as it's due by then. */
-    if (!muse_hatch_ready() || muse_hatch_turn_busy() || muse_state_mode(NULL) != MUSE_MODE_IDLE
+    if (!muse_hatch_ready() || muse_hatch_turn_busy() || muse_state_mode(NULL) != MUSE_MODE_IDLE || muse_lock_locked()
         || (!awake && muse_state_on_battery())) {
         return;
     }

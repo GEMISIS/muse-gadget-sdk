@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "esp_app_desc.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
@@ -36,6 +37,8 @@
 #include "muse_input.h"
 #include "muse_keypad.h"
 #include "muse_link.h"
+#include "muse_lock.h"
+#include "muse_lock_ui.h"
 #if CONFIG_MUSE_GADGET_ALARM
 #include "muse_rtc.h"
 #endif
@@ -58,7 +61,8 @@ static lv_obj_t *s_current;
 static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_display, *s_battery, *s_power, *s_text;
 static lv_obj_t *s_mode;
 static lv_obj_t *s_advanced;   /* Muse, Bluetooth and Battery, under home */
-static lv_obj_t *s_general;    /* Mode, Wi-Fi, Display and Sound, under home */
+static lv_obj_t *s_general;    /* Wi-Fi, Display, Sound and Passcode, under home */
+EXT_RAM_BSS_ATTR static lv_obj_t *s_passcode;   /* under General */
 static lv_obj_t *s_reset;      /* Reset device's two warnings, under Advanced */
 static lv_obj_t *s_about;      /* what this device is and how it's doing, under Advanced */
 static lv_obj_t *s_reset_note, *s_reset_go_lbl;
@@ -77,6 +81,11 @@ typedef struct {
 /* Home values. */
 static lv_obj_t *s_home_wifi, *s_home_sound, *s_home_display;
 static lv_obj_t *s_home_mode;
+EXT_RAM_BSS_ATTR static lv_obj_t *s_home_passcode;
+
+/* Passcode page. */
+EXT_RAM_BSS_ATTR static lv_obj_t *s_pass_sw, *s_pass_more, *s_pass_after[2];
+EXT_RAM_BSS_ATTR static int s_pass_shown;   /* has a PIN, as shown; -1 to show again */
 
 /* Advanced values. */
 static lv_obj_t *s_adv_hatch, *s_adv_ble, *s_adv_battery;
@@ -377,7 +386,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 static void drop(lv_obj_t *p)
 {
     lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_display, &s_battery, &s_power, &s_text,
-                                 &s_mode, &s_advanced, &s_general, &s_reset, &s_about };
+                                 &s_mode, &s_advanced, &s_general, &s_reset, &s_about, &s_passcode };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -396,7 +405,7 @@ static lv_obj_t *parent(lv_obj_t *p)
     if (p && (p == s_hatch || p == s_ble || p == s_battery || p == s_reset || p == s_about)) {
         return s_advanced;
     }
-    if (p && (p == s_wifi || p == s_sound || p == s_display || p == s_mode)) {
+    if (p && (p == s_wifi || p == s_sound || p == s_display || p == s_passcode)) {
         return s_general;
     }
     return s_home;
@@ -1349,7 +1358,7 @@ static lv_obj_t *mode_net_row(lv_obj_t *list, const char *text, int which)
 static void build_mode_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
-    s_mode = page(tile, "MODE", &list);
+    s_mode = page(tile, "MODES", &list);
     for (int i = TIME_NIGHT_FROM; i <= TIME_NIGHT_TO; i++) {
         row(list, LV_SYMBOL_EYE_CLOSE, i == TIME_NIGHT_FROM ? "Night starts" : "Night ends", &s_time_vals[i],
             on_time_pick, (void *)(intptr_t)i);
@@ -1515,8 +1524,95 @@ static void build_power_page(lv_obj_t *tile)
     back_row(list, "Cancel");
 }
 
+/* ---------- Passcode (muse_lock.h) ---------- */
+
+static void on_pass_done(bool ok)
+{
+    (void)ok;
+    s_pass_shown = -1;   /* the switch and rows as they are now */
+}
+
+static void on_pass_sw(lv_event_t *e)
+{
+    lv_obj_t *sw = lv_event_get_target(e);
+    bool want = lv_obj_has_state(sw, LV_STATE_CHECKED), has = muse_lock_has_pin();
+    lv_obj_set_state(sw, LV_STATE_CHECKED, has);   /* as it is, till the keypad's done */
+    if (want && !has) {
+        muse_lock_ui_set_pin(on_pass_done);
+    } else if (!want && has) {
+        muse_lock_ui_turn_off(on_pass_done);
+    }
+}
+
+static void on_pass_change(lv_event_t *e)
+{
+    (void)e;
+    muse_lock_ui_change_pin(on_pass_done);
+}
+
+static void on_after_pick(void *user)
+{
+    intptr_t v = (intptr_t)user;
+    muse_lock_set_after(v >> 8, (int)(v & 0xff));
+}
+
+/* "On battery" or "On a charger": how long asleep before it's asked for again. */
+static void on_after(lv_event_t *e)
+{
+    int charger = (int)(intptr_t)lv_event_get_user_data(e);
+    int cur = muse_lock_after(charger);
+    muse_dialog_option_t options[MUSE_LOCK_AFTER_COUNT];
+    for (int i = 0; i < MUSE_LOCK_AFTER_COUNT; i++) {
+        options[i] = (muse_dialog_option_t){ MUSE_LOCK_AFTER_NAMES[i], NULL, i == cur, on_after_pick,
+                                             (void *)(intptr_t)(charger << 8 | i) };
+    }
+    const muse_dialog_t d = {
+        .title = charger ? "On a charger" : "On battery",
+        .help = "How long the screen can be off before Muse asks for the passcode again. With some of it on "
+                "battery and some on a charger, the shorter of the two counts.",
+        .options = options,
+        .option_count = MUSE_LOCK_AFTER_COUNT,
+    };
+    muse_dialog_open(s_tile, &d);
+}
+
+static void build_passcode_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_passcode = page(tile, "PASSCODE", &list);
+    s_pass_shown = -1;
+    s_pass_sw = switch_row(list, "Passcode", muse_lock_has_pin(), on_pass_sw);
+    s_pass_more = column(list);
+    row(s_pass_more, LV_SYMBOL_EDIT, "Change passcode", NULL, on_pass_change, NULL);
+    note(s_pass_more, "Ask again after sleeping for");
+    for (int charger = 0; charger < 2; charger++) {
+        row(s_pass_more, charger ? LV_SYMBOL_CHARGE : LV_SYMBOL_BATTERY_FULL, charger ? "On a charger" : "On battery",
+            &s_pass_after[charger], on_after, (void *)(intptr_t)charger);
+        lv_obj_set_style_text_color(s_pass_after[charger], lv_color_hex(MUSE_COLOR_ACCENT), 0);
+    }
+    char text[160];
+    snprintf(text, sizeof(text), "A 6-digit passcode, asked for whenever Muse starts. %d wrong tries lock it for an hour; "
+                                 "%d more erase everything on it.", MUSE_LOCK_TRIES, MUSE_LOCK_TRIES);
+    note(list, text);
+    back_row(list, "Back");
+}
+
+static void tick_passcode(void)
+{
+    bool has = muse_lock_has_pin();
+    if ((int)has != s_pass_shown) {
+        s_pass_shown = has;
+        lv_obj_set_state(s_pass_sw, LV_STATE_CHECKED, has);
+        lv_obj_set_flag(s_pass_more, LV_OBJ_FLAG_HIDDEN, !has);
+    }
+    for (int charger = 0; charger < 2; charger++) {
+        set_text(s_pass_after[charger], MUSE_LOCK_AFTER_NAMES[muse_lock_after(charger)]);
+    }
+}
+
 /* ---------- Home ---------- */
 
+static const page_t PASSCODE = { &s_passcode, build_passcode_page };
 static const page_t WIFI = { &s_wifi, build_wifi_page };
 static const page_t HATCH = { &s_hatch, build_hatch_page };
 static const page_t BLE = { &s_ble, build_ble_page };
@@ -1716,10 +1812,11 @@ static void build_general_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_general = page(tile, "GENERAL", &list);
-    row(list, LV_SYMBOL_SHUFFLE, "Mode", &s_home_mode, on_nav, (void *)&MODE);
     row(list, LV_SYMBOL_WIFI, "Wi-Fi", &s_home_wifi, on_nav, (void *)&WIFI);
     row(list, LV_SYMBOL_IMAGE, "Display", &s_home_display, on_nav, (void *)&DISPLAY);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
+    lv_obj_t *pass = row(list, NULL, "Passcode", &s_home_passcode, on_nav, (void *)&PASSCODE);
+    lv_obj_move_to_index(muse_style_padlock(pass, 22, MUSE_COLOR_ACCENT), 0);   /* no padlock in the symbol font */
     back_row(list, "Back");
 }
 
@@ -1731,6 +1828,7 @@ static void build_home(lv_obj_t *tile)
 {
     lv_obj_t *list;
     s_home = page(tile, "SETTINGS", &list);
+    row(list, LV_SYMBOL_SHUFFLE, "Modes", &s_home_mode, on_nav, (void *)&MODE);
     row(list, LV_SYMBOL_LIST, "General", NULL, on_nav, (void *)&GENERAL);
     row(list, LV_SYMBOL_SETTINGS, "Advanced", NULL, on_nav, (void *)&ADVANCED);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
@@ -1749,6 +1847,11 @@ static void tick_general(void)
         set_text(s_home_sound, "Muted");
     }
     set_text(s_home_display, sleep_name(muse_settings_sleep_s()));
+    set_text(s_home_passcode, muse_lock_has_pin() ? "On" : "Off");
+}
+
+static void tick_home(void)
+{
     set_text(s_home_mode, muse_gadget_mode_name(muse_gadget_mode()));
 }
 
@@ -1776,7 +1879,9 @@ void muse_settings_ui_tick(bool visible)
         muse_dialog_close_on(s_tile);   /* not still open on the way back */
         return;
     }
-    if (s_current == s_general) {
+    if (s_current && s_current == s_home) {
+        tick_home();
+    } else if (s_current == s_general) {
         tick_general();
     } else if (s_current == s_wifi) {
         tick_wifi();
@@ -1796,6 +1901,16 @@ void muse_settings_ui_tick(bool visible)
         tick_advanced();
     } else if (s_current == s_about) {
         tick_about();
+    } else if (s_current == s_passcode) {
+        tick_passcode();
+    }
+}
+
+void muse_settings_ui_go_home(void)
+{
+    muse_dialog_close_on(s_tile);
+    for (int i = 0; i < 8 && s_current && s_current != s_home; i++) {
+        go_back();
     }
 }
 

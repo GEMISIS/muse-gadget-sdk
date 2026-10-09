@@ -36,6 +36,7 @@
 #include "muse_chat.h"
 #include "muse_gadget_mode.h"
 #include "muse_input.h"
+#include "muse_lock.h"
 #include "muse_mem.h"
 #include "muse_sd.h"
 #include "muse_settings.h"
@@ -509,6 +510,13 @@ static bool hatch_reply(bool *delivered)
             default:
                 break;
             }
+        }
+        if (muse_lock_locked()) {
+            ESP_LOGI(TAG, "reply stopped: locked");   /* nothing more said or shown (muse_lock.h) */
+            muse_hatch_turn_cancel();
+            muse_state_set_level(0);
+            go_idle("");
+            return false;
         }
         if (got_event(MUSE_PTT_DOWN)) {
             ESP_LOGI(TAG, "reply interrupted");
@@ -1076,7 +1084,7 @@ static void voice_task(void *arg)
 #if HOLD_NOTES
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
-            if (held_due() && !press_waiting()) {
+            if (held_due() && !press_waiting() && !muse_lock_locked()) {   /* its reply waits for unlocking */
                 set_resting(false);   /* full power while it goes, even asleep */
                 muse_wifi_power(MUSE_WIFI_FULL);
                 pending_down = send_held(asleep);

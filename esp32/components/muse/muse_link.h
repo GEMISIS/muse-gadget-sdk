@@ -91,7 +91,7 @@ bool muse_link_hatch_vm(const char *want_vm, char *vm_id, size_t id_cap, char *v
 bool muse_link_talk_press(void);
 void muse_link_reset_setup(void);
 /* Back to a freshly flashed board: setup, Wi-Fi, pairing and every setting. */
-void muse_link_factory_reset(void);
+bool muse_link_factory_reset(void);   /* false: no Link to do it */
 /* The first saved network, owned by Link. Return false when Link hasn't registered. */
 bool muse_link_wifi_get(char *ssid, char *pass);
 bool muse_link_wifi_set(const char *ssid, const char *pass);

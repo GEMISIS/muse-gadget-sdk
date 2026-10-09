@@ -80,6 +80,10 @@ bool muse_sd_queue_image(const void *data, size_t len, const char *ext);
 /* From the extras task: saves the image waiting, if any. */
 void muse_sd_image_write(void);
 
+/* Deletes everything under MUSE_SD_DIR (too many wrong passcodes, muse_lock.h);
+ * nothing more is written there until the restart that follows. */
+void muse_sd_wipe(void);
+
 #else
 
 static inline void muse_sd_mount(void) {}
@@ -93,6 +97,7 @@ static inline void muse_sd_tee_write(muse_sd_tee_t *t, const void *data, size_t 
 static inline void muse_sd_tee_end(muse_sd_tee_t *t, bool ok, const char *ext, int w, int h) {}
 static inline bool muse_sd_queue_image(const void *data, size_t len, const char *ext) { return false; }
 static inline void muse_sd_image_write(void) {}
+static inline void muse_sd_wipe(void) {}
 
 #endif
 
