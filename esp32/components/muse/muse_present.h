@@ -154,7 +154,8 @@ uint8_t *muse_present_fetch(const char *url, const char *body, size_t max, size_
 bool muse_present_bench_fetch(const char *url);
 
 /*
- * A JPEG (baseline), or with CONFIG_MUSE_PRESENT_FORMATS a PNG or WebP, decoded
+ * A JPEG (progressive too, given the PSRAM: muse_jpeg.h), or with
+ * CONFIG_MUSE_PRESENT_FORMATS a PNG or WebP, decoded
  * to RGB565 in PSRAM fitting fit_w x fit_h (keeping its shape, never
  * enlarged): *px (heap_caps_free it), *w, *h. False if it couldn't be.
  */

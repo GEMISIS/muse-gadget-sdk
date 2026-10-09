@@ -25,11 +25,11 @@ extern "C" {
 #endif
 
 /*
- * Images in formats other than baseline JPEG (muse_present.c decodes those
- * with the ROM's decoder), for Muse to hold up: PNG (libpng) and WebP
- * (components/libwebp, decoding only), decoded straight to RGB565 in PSRAM,
- * shrunk on the way to fit a box (the screen) so a big one never sits whole
- * in memory. Transparency goes over white, like the photo's card. No task of
+ * Images in formats other than JPEG (muse_present.c decodes those with the
+ * ROM's decoder, or muse_jpeg.h's if progressive), for Muse to hold up: PNG
+ * (libpng) and WebP (components/libwebp, decoding only), decoded straight
+ * to RGB565 in PSRAM, shrunk on the way to fit a box (the screen) so a big
+ * one never sits whole in memory. Transparency goes over white, like the photo's card. No task of
  * its own, no internal RAM: everything it takes comes from PSRAM.
  */
 
