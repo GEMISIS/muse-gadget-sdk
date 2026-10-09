@@ -895,7 +895,7 @@ uint8_t *muse_present_fetch(const char *url, const char *body, size_t max, size_
         .max_redirection_count = 3,
         .event_handler = got_event,
         .user_data = &g,
-        .user_agent = "MuseGadget/1.0 (+https://muse.ai)",
+        .user_agent = "MuseGadget-personal/1.0 (+https://github.com/GEMISIS/muse-gadget-sdk)",
     };
     *len = 0;
     *status = 0;
