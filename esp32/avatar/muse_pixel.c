@@ -540,7 +540,48 @@ typedef struct {
     float a, b;     /* half width, half height */
     float fx, fy;   /* face panel centre */
     float fa, fb;   /* face panel half extents */
+    float turn;     /* -1..1: turned to his work, + to the viewer's right (face_turn()) */
+    float ex[2];    /* the eyes' middles across, left and right, */
+    float ew[2];    /* how square on each is to us (1, or less turned away), */
+    float kx[2];    /* the cheeks', */
+    float mx;       /* and the mouth's */
 } avatar_t;
+
+/*
+ * Turned (avatar_t.turn): a three-quarter view, as he gets on with
+ * something at his side. The face's features sit round a curve inside the
+ * hood, FACE_R of its half width, and slide round it by up to TURN_MAX
+ * radians: the far eye bunches up by the hood's edge, narrower, the near one
+ * comes round to the middle, and the face panel goes with them, more of the
+ * hood showing behind. The far arm goes behind him (draw_avatar()).
+ */
+#define TURN_MAX 0.8f
+#define FACE_R 0.8f
+#define FACE_PHI 0.97f          /* the panel's edges, round the curve (0.66 of the half width, square on) */
+#define EYE_PHI 0.407f          /* the eyes' (0.48 of the panel's half width), */
+#define CHEEK_PHI 0.636f        /* the cheeks' (0.72) */
+
+/* Across, the point phi round the face from its middle, hx the hood's middle. */
+static float face_at(const avatar_t *j, float hx, float phi)
+{
+    return hx + FACE_R * j->a * sinf(clampf(phi + j->turn * TURN_MAX, -1.5708f, 1.5708f));
+}
+
+/* The face panel and features for j->turn, about hx; a fur rim kept round it on the far side. */
+static void face_turn(avatar_t *j, float hx)
+{
+    float rim = j->a - 2.5f;
+    float l = fmaxf(face_at(j, hx, -FACE_PHI), hx - rim), r = fminf(face_at(j, hx, FACE_PHI), hx + rim);
+    j->fx = (l + r) / 2.0f;
+    j->fa = (r - l) / 2.0f;
+    for (int s = 0; s < 2; s++) {
+        float sg = s ? 1.0f : -1.0f;
+        j->ex[s] = clampf(face_at(j, hx, sg * EYE_PHI), l + 2.5f, r - 2.5f);   /* not off the panel */
+        j->ew[s] = cosf(sg * EYE_PHI + j->turn * TURN_MAX);
+        j->kx[s] = face_at(j, hx, sg * CHEEK_PHI);
+    }
+    j->mx = face_at(j, hx, 0);
+}
 
 /* Per-row parts of the body and face fields, in Q12. */
 typedef struct {
@@ -647,6 +688,7 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
     y1 = y1 >= H ? H - 1 : y1;
     int ox = iround(j->cx), oy = iround(j->cy);
     int32_t cx = QF(j->cx), fcx = QF(j->fx), inv_fa = QF(1.0f / j->fa);
+    int back = j->turn > 0.3f ? 1 : j->turn < -0.3f ? 0 : -1;   /* turned: the far arm, behind him */
 
     for (int y = y0; y <= y1; y++) {
         row_t row;
@@ -659,7 +701,7 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
             /* Arms sit in front of the body. */
             bool arm = false;
             for (int a = 0; arms_on && a < 2 && !arm; a++) {
-                if (in_limb(&arm_q[a], fx, fy, &lx, &ly)) {
+                if (a != back && in_limb(&arm_q[a], fx, fy, &lx, &ly)) {
                     s_mask[y * W + x] = M_ARM;
                     int32_t nx = ((lx * QF(0.85f)) >> Q) + (a ? QF(0.25f) : -QF(0.25f));
                     px(x, y, fur(nx, (ly * QF(0.8f)) >> Q, x, y, ox, oy));
@@ -703,6 +745,12 @@ static void draw_avatar(const avatar_t *j, const limb_t arms[2], const limb_t fe
                 }
                 continue;
             }
+            if (arms_on && back >= 0 && in_limb(&arm_q[back], fx, fy, &lx, &ly)) {
+                s_mask[y * W + x] = M_ARM;
+                int32_t nx = ((lx * QF(0.85f)) >> Q) + (back ? QF(0.25f) : -QF(0.25f));
+                px(x, y, fur(nx, (ly * QF(0.8f)) >> Q, x, y, ox, oy));
+                continue;
+            }
 
             for (int f = 0; f < 2; f++) {
                 if (in_limb(&foot_q[f], fx, fy, &lx, &ly)) {
@@ -743,14 +791,16 @@ typedef enum {
     EYES_SWIRL_B,
 } eye_style_t;
 
-/* The eyes are small glossy black beads. */
-static void draw_eye(float ex, float ey, float openness, eye_style_t style, float gx, float gy)
+/* The eyes are small glossy black beads; `narrow`, the far one turned away (avatar_t.turn), a column less. */
+static void draw_eye(float ex, float ey, float openness, eye_style_t style, float gx, float gy, bool narrow)
 {
     int cx = iround(ex + gx * 0.8f), cy = iround(ey + gy * 0.7f);
+    int x0 = iround(ex) - (narrow ? 1 : 2);
 
     if (style == EYES_HAPPY) {
         static const char *const HAPPY[] = { ".##.", "#..#" };
-        stamp(HAPPY, 2, iround(ex) - 2, iround(ey), C_IRIS, C_IRIS);
+        static const char *const HAPPY3[] = { ".#.", "#.#" };
+        stamp(narrow ? HAPPY3 : HAPPY, 2, x0, iround(ey), C_IRIS, C_IRIS);
         return;
     }
     if (style == EYES_X) {
@@ -767,24 +817,29 @@ static void draw_eye(float ex, float ey, float openness, eye_style_t style, floa
     }
     if (openness < 0.3f) {
         static const char *const SHUT[] = { "#..#", ".##." };
-        stamp(SHUT, 2, iround(ex) - 2, iround(ey) + 1, C_IRIS, C_IRIS);
+        static const char *const SHUT3[] = { "#.#", ".#." };
+        stamp(narrow ? SHUT3 : SHUT, 2, x0, iround(ey) + 1, C_IRIS, C_IRIS);
         return;
     }
 
     static const char *const BEAD[] = { ".##.", "#o##", "####", ".##." };
     static const char *const BIG[] = { ".##.", "#o##", "#o##", "####", ".##." };
-    const char *const *rows = style == EYES_WIDE ? BIG : BEAD;
+    static const char *const BEAD3[] = { ".#.", "#o#", "###", ".#." };
+    static const char *const BIG3[] = { ".#.", "#o#", "#o#", "###", ".#." };
+    const char *const *rows = style == EYES_WIDE ? (narrow ? BIG3 : BIG) : (narrow ? BEAD3 : BEAD);
     int n = style == EYES_WIDE ? 5 : 4;
     /* Lids close from the top: skip the upper rows as openness drops. */
     int skip = iround((1 - openness) * (n - 1));
-    stamp(rows + skip, n - skip, cx - 2, cy - 2 + skip, C_IRIS, skip ? C_IRIS : C_SHINE);
+    int l = cx - (narrow ? 1 : 2);
+    stamp(rows + skip, n - skip, l, cy - 2 + skip, C_IRIS, skip ? C_IRIS : C_SHINE);
     if (skip) {
-        for (int i = -2; i <= 1; i++) {
-            px(cx + i, cy - 2 + skip, C_BROW);   /* the lid, heavy over it */
+        for (int i = 0; i < (narrow ? 3 : 4); i++) {
+            px(l + i, cy - 2 + skip, C_BROW);   /* the lid, heavy over it */
         }
     }
 }
 
+/* A rosy cheek, centred across on x, on the face panel only (turned, the far one goes round its edge). */
 static void draw_blush(int x, int y, float strength)
 {
     static const char *const CHEEK[] = { ".##.", "####", ".##." };
@@ -794,7 +849,8 @@ static void draw_blush(int x, int y, float strength)
                 continue;
             }
             float b = bayer(x + i, y + j);
-            if (b < strength) {
+            int xx = x - 2 + i;
+            if (b < strength && (unsigned)xx < W && (unsigned)(y + j) < H && s_mask[(y + j) * W + xx] == M_FACE) {
                 px(x - 2 + i, y + j, (j == 1 && b < strength * 0.5f) ? C_BLUSHD : C_BLUSH);
             }
         }
@@ -2066,6 +2122,7 @@ EXT_RAM_BSS_ATTR static struct {
     muse_act_t last;    /* last frame's act */
     float gone_t;       /* when its prop went (-1 none), */
     float gone_x, gone_y;   /* and where it was */
+    float turn_a, turn;     /* turned to it (avatar_t.turn): eased, in two stages */
 } s_work;
 
 /* How far to his left he stands for each, to give its prop room. */
@@ -2074,7 +2131,7 @@ static const int8_t WORK_SIDE[MUSE_ACT_COUNT - WORK_FIRST] = {
     [MUSE_ACT_MAIL - WORK_FIRST] = 6,     [MUSE_ACT_CALC - WORK_FIRST] = 2,     [MUSE_ACT_TOOLS - WORK_FIRST] = 6,
     [MUSE_ACT_WEATHER - WORK_FIRST] = 5,  [MUSE_ACT_MAP - WORK_FIRST] = 0,      [MUSE_ACT_MUSIC - WORK_FIRST] = 0,
     [MUSE_ACT_WRITE - WORK_FIRST] = 0,    [MUSE_ACT_MEMORY - WORK_FIRST] = 6,   [MUSE_ACT_RESPOND - WORK_FIRST] = 0,
-    [MUSE_ACT_BROWSE - WORK_FIRST] = 11,
+    [MUSE_ACT_BROWSE - WORK_FIRST] = 9,
 };
 
 typedef struct {
@@ -2082,7 +2139,7 @@ typedef struct {
     float at, t, ap;        /* act_t, the time, act_progress */
     const avatar_t *j;
     float slx, srx, shy;    /* the shoulders */
-    float ex, ey, edx;      /* his right eye's middle; the left's is 2 * edx to the left */
+    float exl, ex, ey;      /* his eyes' middles: the left's across, the right's, and down */
 } work_t;
 
 /* 0..1 through [a, b) of x. */
@@ -2247,12 +2304,14 @@ static void draw_envelope(int x, int y, bool open)
 static void draw_glasses(const work_t *w)
 {
     for (int e = 0; e < 2; e++) {
-        int cx = iround(w->ex - e * 2 * w->edx), cy = iround(w->ey) + 1;
+        int cx = iround(e ? w->exl : w->ex), cy = iround(w->ey) + 1;
         static const char *const RIM[] = { ".####.", "#....#", "#....#", "#....#", ".####." };
-        stamp(RIM, 5, cx - 3, cy - 3, C_OUT, C_OUT);
+        static const char *const RIM5[] = { ".###.", "#...#", "#...#", "#...#", ".###." };   /* turned away */
+        bool narrow = w->j->ew[e ? 0 : 1] < 0.55f;
+        stamp(narrow ? RIM5 : RIM, 5, cx - (narrow ? 2 : 3), cy - 3, C_OUT, C_OUT);
         px(cx + 1, cy - 2, C_WHITE);   /* a glint */
     }
-    for (int x = iround(w->ex - 2 * w->edx) + 3; x <= iround(w->ex) - 3; x++) {
+    for (int x = iround(w->exl) + 3; x <= iround(w->ex) - 3; x++) {
         px(x, iround(w->ey) - 1, C_OUT);   /* the bridge */
     }
 }
@@ -2270,12 +2329,14 @@ static void work_paw(const work_t *w, const limb_t arms[2], int a);
 /*
  * Browsing (MUSE_ACT_BROWSE): a laptop on a little desk at his right, its
  * screen a browser window (the traffic lights, the address bar with the
- * site's icon, a loading bar), a paw on the mouse beside it. Each page
- * loads, its header first in the site's colour, then he scrolls down it,
- * the pointer wandering as he reads, and it goes over to a button and
- * clicks through to the next. Done (act_progress 0..1): a tick on the
- * screen and a cheer, then he shuts the lid. All in fixed cells, `drop`
- * lower as it pops in.
+ * site's icon, a loading bar). He's turned to it, a paw on the mouse beside
+ * it and the other on a keyboard at the desk's end, in front of him. Each
+ * page loads, its header first in the site's colour, then he scrolls down
+ * it, the pointer wandering as he reads (now and then leaning in, or a
+ * look round at us as one loads), and it goes over to a button and clicks
+ * through to the next. Done (act_progress 0..1): a tick on the screen and
+ * a cheer at us, then he shuts the lid. All in fixed cells, `drop` lower as
+ * it pops in.
  */
 #define BR_X0 42                /* the lid's outline: left, top, right, bottom */
 #define BR_Y0 23
@@ -2288,6 +2349,9 @@ static void work_paw(const work_t *w, const limb_t arms[2], int a);
 #define BR_PAGE_H (BR_Y1 - 1 - BR_PAGE_Y)
 #define BR_DESK_Y (BR_Y1 + 2)   /* the desk's top */
 #define BR_MOUSE_X 41
+#define BR_DESK_X0 31           /* the desk's left end, in front of him, */
+#define BR_KEYS_X0 32           /* and the keyboard on it, under his near paw */
+#define BR_KEYS_X1 38
 #define BR_P 4.4f               /* a page: loading, reading, clicking through */
 #define BR_LOAD 0.6f
 #define BR_CLICK 3.9f
@@ -2324,6 +2388,18 @@ static br_t br_at(float at)
     b.y = y + (ty - y) * g1 - sinf(g1 * 3.1416f) * 2.0f;
     b.click = u >= BR_CLICK && u < BR_CLICK + 0.4f ? (u - BR_CLICK) / 0.4f : -1.0f;
     return b;
+}
+
+/* Every third page, loaded: a quick look round at us, and back to it. */
+static bool br_glance(const br_t *b)
+{
+    return b->pg % 3 == 1 && b->u > BR_LOAD + 0.1f && b->u < BR_LOAD + 0.75f;
+}
+
+/* Reading the odd page closely (leaning in to it). */
+static bool br_close(const br_t *b)
+{
+    return b->pg % 2 && b->u > 1.8f && b->u < 3.2f;
 }
 
 static uint32_t br_hash(int a, int b)
@@ -2409,14 +2485,14 @@ static void br_draw(const work_t *w, const limb_t arms[2], int drop, float *ax, 
 
     /* The desk: its top, its edge, two legs. */
     int dy = BR_DESK_Y + drop;
-    for (int x = BR_MOUSE_X - 5; x < W; x++) {
-        bool end = x == BR_MOUSE_X - 5;
+    for (int x = BR_DESK_X0; x < W; x++) {
+        bool end = x == BR_DESK_X0;
         px(x, dy, end ? C_OUT : C_WOOD);
         px(x, dy + 1, end ? C_OUT : C_WOODD);
         px(x, dy + 2, C_OUT);
     }
     for (int y = dy + 3; y <= 57; y++) {
-        px(BR_MOUSE_X - 3, y, C_OUT);
+        px(BR_MOUSE_X - 3, y, C_OUT);   /* the near leg, past him */
         px(BR_MOUSE_X - 2, y, C_WOODD);
         px(BR_X1 - 2, y, C_WOODD);
         px(BR_X1 - 1, y, C_OUT);
@@ -2427,6 +2503,14 @@ static void br_draw(const work_t *w, const limb_t arms[2], int drop, float *ax, 
     }
     int hx, hy;
     paw_of(&arms[1], w->srx, w->shy, &hx, &hy);
+    for (int x = BR_KEYS_X0; x <= BR_KEYS_X1; x++) {
+        bool end = x == BR_KEYS_X0 || x == BR_KEYS_X1;
+        px(x, dy - 2, C_OUT);
+        px(x, dy - 1, end ? C_OUT : x % 2 ? C_BUBBLE : C_BUBBLED);   /* the keys */
+    }
+    if (fin < 0) {
+        work_paw(w, arms, 0);
+    }
     int mx = fin >= 0.35f ? BR_MOUSE_X : hx;
     box_fill(mx - 2, dy - 3, mx + 2, dy - 1, C_WHITE, C_OUT);
     px(mx, dy - 2, b.click >= 0 && b.click < 0.4f && fin < 0 ? C_ACC : C_BUBBLED);
@@ -2577,7 +2661,12 @@ static void work_look(muse_act_t a, float at, float ap, float *lx, float *ly)
             *ly = ap < 0.3f || ap >= 0.8f ? 0.1f : 0.6f;
             break;
         }
-        br_t b = br_at(at);   /* on the pointer */
+        br_t b = br_at(at);   /* on the pointer, but for a look at us */
+        if (br_glance(&b)) {
+            *lx = 0;
+            *ly = 0.1f;
+            break;
+        }
         *lx = 0.45f + 0.55f * clampf((b.x - BR_SX) / BR_SW, 0, 1);
         *ly = -0.4f + 1.2f * clampf((b.y - BR_SY) / (BR_Y1 - BR_SY), 0, 1);
         break;
@@ -2586,6 +2675,54 @@ static void work_look(muse_act_t a, float at, float ap, float *lx, float *ly)
         *lx = 0;
         *ly = 0;
         break;
+    }
+}
+
+/* How far round to it he turns (avatar_t.turn), or back to us: when it comes to something. */
+static float work_turn(muse_act_t a, float at, float ap)
+{
+    float k;
+    switch (a) {
+    case MUSE_ACT_NEWS:
+        k = fmodf(at, 3.6f);
+        return k >= 1.8f && k < 2.4f ? 0.0f : 0.2f;   /* well! a look at us over it */
+    case MUSE_ACT_CALENDAR:
+        return 0.7f;
+    case MUSE_ACT_REMINDER:
+        if (ap >= 1) {
+            k = fmodf(at, 3.0f);
+            return k < 1.8f ? 0.65f : k < 2.6f ? 0.0f : 0.4f;   /* at the note; a grin at us as it goes */
+        }
+        k = fmodf(at, 4.0f);
+        return k < 2.2f ? 0.3f : k < 2.7f ? 0.75f : k < 3.2f ? 0.0f : 0.3f;   /* writing; up it goes; ta-da */
+    case MUSE_ACT_MAIL:
+        k = fmodf(at, 4.4f);
+        return k < 0.9f ? 0.75f : k < 1.4f ? 0.5f : k < 1.8f ? 0.15f : k < 4.0f ? 0.35f : 0.0f;
+    case MUSE_ACT_CALC:
+        return fracf(at / 1.6f) > 0.8f ? 0.0f : 0.3f;   /* the answer: at us */
+    case MUSE_ACT_TOOLS:
+        k = fmodf(at, 3.8f);
+        return k < 1.6f ? 0.85f : k < 2.2f ? 0.5f : k < 3.3f ? 0.0f : 0.6f;
+    case MUSE_ACT_WEATHER:
+        k = fmodf(at, 6.0f);
+        return k >= 3.8f ? 0.15f : 0.4f;
+    case MUSE_ACT_MAP:
+        k = fracf(at / 4.0f);
+        return k > 0.55f && k < 0.8f ? 0.0f : 0.25f;   /* puzzled: at us */
+    case MUSE_ACT_WRITE:
+        return 0.35f;
+    case MUSE_ACT_MEMORY:
+        k = fmodf(at, 3.4f);
+        return k < 1.2f ? 0.2f : k < 2.2f ? 0.75f : k < 3.0f ? 0.0f : 0.5f;
+    case MUSE_ACT_BROWSE: {
+        if (ap >= 0) {
+            return ap < 0.3f || ap >= 0.8f ? 0.0f : 0.6f;   /* a cheer at us; the lid; done, at us */
+        }
+        br_t b = br_at(at);
+        return br_glance(&b) ? 0.1f : 1.0f;
+    }
+    default:
+        return 0;
     }
 }
 
@@ -2609,13 +2746,20 @@ static void work_body(muse_act_t a, float at, float ap, float t, float *bob, flo
     case MUSE_ACT_WRITE:
         *bob = sinf(t * 9.0f) * 0.3f;
         break;
+    case MUSE_ACT_TOOLS:
+        if (fmodf(at, 3.8f) < 1.6f) {
+            *bob += 1.5f;   /* bent over the box, rummaging */
+            *lean = 1.2f;
+        }
+        break;
     case MUSE_ACT_RESPOND:
         *hop += sinf(clampf(at / 0.35f, 0, 1) * 3.1416f) * 2.0f;   /* turning to us with a hop */
         break;
     case MUSE_ACT_BROWSE: {
         br_t b = br_at(at);
         *bob = sinf(t * 2.0f) * 0.4f;
-        *lean = 0.6f;   /* into the screen */
+        float close = br_close(&b) ? smooth(seg(b.u, 1.8f, 2.1f)) * (1.0f - smooth(seg(b.u, 2.9f, 3.2f))) : 0.0f;
+        *lean = 0.6f + 1.2f * close;   /* into the screen; closer, reading closely */
         if (ap >= 0) {
             *hop += sinf(seg(ap, 0.0f, 0.3f) * 3.1416f) * 2.5f;   /* a hop for joy */
             *lean = 0.2f;
@@ -2727,8 +2871,9 @@ static void work_arms(const work_t *w, limb_t arms[2])
     }
     case MUSE_ACT_WRITE: {
         float tl = fracf(at / 0.24f) < 0.5f ? 1.0f : 0.0f;
-        arms[0] = arm_to(w->slx, w->shy, j->cx - 6.0f, j->cy + 9.0f + tl);
-        arms[1] = arm_to(w->srx, w->shy, j->cx + 6.0f, j->cy + 10.0f - tl);
+        float kx = j->cx + 3.0f * j->turn;   /* the keyboard's middle, round in front of him */
+        arms[0] = arm_to(w->slx, w->shy, kx - 6.0f, j->cy + 9.0f + tl);
+        arms[1] = arm_to(w->srx, w->shy, kx + 6.0f, j->cy + 10.0f - tl);
         break;
     }
     case MUSE_ACT_MEMORY:
@@ -2754,7 +2899,10 @@ static void work_arms(const work_t *w, limb_t arms[2])
             float wig = sinf(t * 14.0f) * 0.25f;
             arms[0] = (limb_t){ j->cx - j->a - 1.3f, j->cy - 4.0f, 2.4f + wig };   /* a cheer */
         } else {
-            arms[0] = hip_l;
+            /* The near paw across on the keys, from the front of him; typing now and then. */
+            float typing = b.u > 2.0f && b.u < 3.0f && fracf(at / 0.22f) < 0.45f ? 1.0f : 0.0f;
+            float kx = BR_KEYS_X0 + 3.0f + (fracf(at / 0.44f) < 0.5f ? 0.0f : 1.5f) * (b.u > 2.0f && b.u < 3.0f);
+            arms[0] = arm_to(j->cx + 1.0f, w->shy + 4.0f, kx, BR_DESK_Y - 3.0f + typing);
         }
         break;
     }
@@ -2848,7 +2996,7 @@ static void work_face(const work_t *w, float blink, eye_style_t *style, mouth_t 
             break;
         }
         br_t b = br_at(at);
-        bool hmm = b.pg % 2 && b.u > 1.8f && b.u < 3.2f;   /* reading this one closely */
+        bool hmm = br_close(&b);
         if (b.click >= 0 && b.click < 0.6f) {
             *mouth = MOUTH_O;
             *brows = 2;
@@ -3285,7 +3433,7 @@ static void work_draw(const work_t *w, const limb_t arms[2], float *ax, float *a
         break;
     }
     case MUSE_ACT_WRITE: {
-        int x0 = iround(j->cx) - 8, y0 = iround(j->cy) - 1 + drop;
+        int x0 = iround(j->cx + 3.0f * j->turn) - 8, y0 = iround(j->cy) - 1 + drop;
         box_fill(x0, y0, x0 + 16, y0 + 10, C_PHONE, C_OUT);
         box_fill(x0 + 1, y0 + 1, x0 + 15, y0 + 9, C_WHITE, C_BG);
         int typed = (int)(at / 0.12f);
@@ -3734,6 +3882,10 @@ void muse_pixel_render(const muse_pose_t *p)
         s_look_y = lens_gy;
     } else if (work) {
         work_look(act, at, p->act_progress, &s_look_x, &s_look_y);
+        if (act == MUSE_ACT_BROWSE && mode == MUSE_MODE_SPEAKING && p->act_progress < 0) {
+            s_look_x = 0;   /* saying the reply: at us */
+            s_look_y = 0.1f;
+        }
     } else if (brace > 0.3f) {
         s_look_x = 0;
         s_look_y = 0;
@@ -3864,6 +4016,33 @@ void muse_pixel_render(const muse_pose_t *p)
     float side_to = hauling || cloud || (paint && toss >= PT_THROW) ? 5.0f : paint ? PT_SHIFT
                   : work ? WORK_SIDE[act - WORK_FIRST] : 0.0f;
     s_work.side += (side_to - s_work.side) * (1.0f - expf(-dt * 8.0f));
+    /* Turned to what he's at, or round to us (avatar_t.turn); eased through
+     * two lags in a row, so it sets off and settles gently, in about 0.3 s. */
+    float turn_to = 0;
+    if (act == MUSE_ACT_PHONE_LISTEN) {
+        turn_to = typing ? 0.25f : mmhm > 0 ? 0.0f : lp < 3.8f ? -0.45f : 0.2f;   /* looking off, as they talk */
+    } else if (act == MUSE_ACT_PACKAGES) {
+        turn_to = pk_u >= PK_CATCH && pk_u < PK_HOLD + 0.1f ? 0.15f : 0.45f;   /* up at the cloud, the stack */
+    } else if (unbox) {
+        turn_to = 0.5f;
+    } else if (paint) {
+        turn_to = toss < 0 ? (admire ? 0.35f : 0.9f) : toss < PT_GRAB ? 0.9f : toss < PT_THROW ? 0.55f : toss < PT_IN ? 0.3f : 0.0f;
+    } else if (cloud) {
+        turn_to = cloud_glance ? 0.0f : 0.35f;
+    } else if (search) {
+        turn_to = sp < 1.6f ? -0.6f : sp < 3.2f ? 0.6f : sp < 4.0f ? -0.2f : 0.0f;
+    } else if (work) {
+        turn_to = work_turn(act, at, p->act_progress);
+    }
+    if (act == MUSE_ACT_BROWSE && mode == MUSE_MODE_SPEAKING && p->act_progress < 0) {
+        turn_to = 0.3f;   /* saying the reply as it browses on: round to us, mostly */
+    }
+    if (happy > 0.2f || dizzy > 0.05f || brace > 0.3f) {
+        turn_to = 0;   /* patted, shaken: round to us */
+    }
+    float tk = 1.0f - expf(-dt * 16.0f);
+    s_work.turn_a += (turn_to - s_work.turn_a) * tk;
+    s_work.turn += (s_work.turn_a - s_work.turn) * tk;
 
     /* Boot: the avatar pops up from a squash, then opens their eyes. */
     float boot = mode == MUSE_MODE_BOOT ? clampf(p->mode_t / 1.4f, 0, 1) : 1.0f;
@@ -3881,9 +4060,10 @@ void muse_pixel_render(const muse_pose_t *p)
     if (bed) {
         j.cy += 3.0f * lie - 5.0f * s_rise;   /* down in the bed, or sat up out of it */
     }
-    j.fa = j.a * 0.66f;
+    j.turn = s_work.turn;
+    j.a *= 1.0f - 0.05f * fabsf(j.turn);   /* turned: a touch narrower */
+    face_turn(&j, j.cx + lean * 0.3f);
     j.fb = 7.4f * squash;
-    j.fx = j.cx + lean * 0.3f;
     j.fy = j.cy - j.b * 0.30f + bob * 0.3f;
     j.fy += clampf(p->reach, 0, 1) * 1.2f;   /* face down, at the pocket */
     j.fy += 0.8f * tired + 1.5f * nod;        /* head hanging; dropping as he nods off */
@@ -3932,6 +4112,10 @@ void muse_pixel_render(const muse_pose_t *p)
     feet[1] = (limb_t){ j.cx + 7.0f, base - 0.5f + (cheer ? hop * 0.3f : -step), 0.15f };
     feet[0].y -= 1.8f * tap;   /* tapping along */
     feet[0].angle -= 0.35f * tap;
+    /* Turned: his feet round with him, the far one a step back (up). */
+    feet[0].x += 3.0f * j.turn;
+    feet[1].x += 1.5f * j.turn;
+    feet[j.turn > 0 ? 1 : 0].y -= 1.0f * fabsf(j.turn);
     for (int f = 0; f < 2; f++) {
         /* Braced: planted wide, where he stood, toes out. */
         float side = f ? 1.0f : -1.0f;
@@ -3990,7 +4174,8 @@ void muse_pixel_render(const muse_pose_t *p)
         arms[1].angle += (in.angle - arms[1].angle) * reach;
     }
     /* Busy: the act's arms (or the mug's, or bracing) over the mode's. */
-    float shy = j.cy - 2.0f, slx = j.cx - 12.0f, srx = j.cx + 12.0f;
+    float sw = 12.0f * cosf(j.turn * TURN_MAX);   /* turned: the shoulders come round, closer across */
+    float shy = j.cy - 2.0f, slx = j.cx - sw, srx = j.cx + sw;
     float sh_x[2] = { slx, srx }, sh_y[2] = { shy, shy };   /* where each arm reaches from */
     float phone_x = 0, phone_y = 0;    /* its top left */
     float box_x = 0, box_y = 0;        /* the box in the air */
@@ -4141,12 +4326,12 @@ void muse_pixel_render(const muse_pose_t *p)
         arms[1] = cloud_ready ? arm_to(srx, shy, CLOUD_X + (CLOUD_W - BOX_W) / 2 + 0.5f, j.cy - 6.0f + sinf(t * 4.0f))
                               : arm_to(srx, shy, j.cx + 17.0f, j.cy + 7.0f);
     } else if (work) {
-        wk = (work_t){ act, at, t, p->act_progress, &j, slx, srx, shy, j.fx + j.fa * 0.48f, j.fy - 0.5f, j.fa * 0.48f };
+        wk = (work_t){ act, at, t, p->act_progress, &j, slx, srx, shy, j.ex[0], j.ex[1], j.fy - 0.5f };
         work_arms(&wk, arms);
     } else if (search) {
         /* The glass up to his right eye, by its handle; the other paw on his hip. */
         arms[0] = arm_to(slx, shy, j.cx - 16.0f, j.cy + 2.0f);
-        arms[1] = arm_to(srx, shy, j.fx + j.fa * 0.48f + 9.5f, j.fy + 9.0f);
+        arms[1] = arm_to(srx, shy, j.ex[1] + 9.5f, j.fy + 9.0f);
     } else if (tea) {
         /* The mug by the handle, out at his side where the steam shows; up to his lips for a sip. */
         float rx = j.cx + 15.0f, ry = j.cy - 1.0f;
@@ -4177,7 +4362,6 @@ void muse_pixel_render(const muse_pose_t *p)
 
     /* ---- face ---- */
     float eye_y = j.fy - 0.5f;
-    float eye_dx = j.fa * 0.48f;
     eye_style_t style = EYES_NORMAL;
     float open = 1.0f - blink;
     mouth_t mouth = MOUTH_SMILE;
@@ -4325,18 +4509,19 @@ void muse_pixel_render(const muse_pose_t *p)
         mouth = MOUTH_FLAT;
     }
 
-    draw_eye(j.fx - eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
-    draw_eye(j.fx + eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
+    for (int e = 0; e < 2; e++) {
+        draw_eye(j.ex[e], eye_y, open, style, s_eyes.gx, s_eyes.gy, j.ew[e] < 0.55f);
+    }
     if (tired > 0.6f && style == EYES_NORMAL) {
-        for (int side = -1; side <= 1; side += 2) {
-            int ex = iround(j.fx + side * eye_dx), ey = iround(eye_y) + 2;
+        for (int e = 0; e < 2; e++) {
+            int ex = iround(j.ex[e]), ey = iround(eye_y) + 2;
             px(ex - 1, ey, C_SKIND);   /* bags under them */
             px(ex, ey, C_SKIND);
         }
     }
 
     /* Tiny brows for the expressive states. */
-    int bl = iround(j.fx - eye_dx), br = iround(j.fx + eye_dx), by = iround(eye_y) - 4;
+    int bl = iround(j.ex[0]), br = iround(j.ex[1]), by = iround(eye_y) - 4;
     if (brows == 1) {
         px(bl - 1, by + 1, C_BROW); px(bl, by + 1, C_BROW);
         px(br - 1, by, C_BROW); px(br, by - 1, C_BROW);
@@ -4351,12 +4536,12 @@ void muse_pixel_render(const muse_pose_t *p)
     float blush = 0.55f + happy * 0.45f + (mode == MUSE_MODE_SPEAKING ? 0.15f : 0.0f) + (p->holding ? 0.2f : 0.0f) + plug * 0.3f
                   + (act == MUSE_ACT_PHONE_TALK ? 0.15f : 0.0f) + (sip > 0.6f || sigh ? 0.3f : 0.0f) + 0.2f * brace;
     blush *= 1.0f - 0.5f * tired;   /* tired: pale */
-    draw_blush(iround(j.fx - j.fa * 0.72f), iround(eye_y + 2), blush);
-    draw_blush(iround(j.fx + j.fa * 0.72f), iround(eye_y + 2), blush);
+    draw_blush(iround(j.kx[0]), iround(eye_y + 2), blush);
+    draw_blush(iround(j.kx[1]), iround(eye_y + 2), blush);
 
-    draw_mouth(iround(j.fx), iround(eye_y + 3), mouth, mouth_open);
+    draw_mouth(iround(j.mx), iround(eye_y + 3), mouth, mouth_open);
     if (paint && toss < 0 && !admire && mouth == MOUTH_SMILE) {
-        px(iround(j.fx) + 2, iround(eye_y + 4), C_TONGUE);   /* concentrating */
+        px(iround(j.mx) + 2, iround(eye_y + 4), C_TONGUE);   /* concentrating */
     }
     if (paint) {
         draw_beret(iround(j.cx + 1.0f), iround(j.cy - j.b + 2.0f));
@@ -4575,7 +4760,7 @@ void muse_pixel_render(const muse_pose_t *p)
     }
     if (search) {
         float k = ease_pop(at / 0.3f);   /* up it comes */
-        float lx = j.fx + eye_dx, ly = eye_y + (1.0f - k) * 10.0f;
+        float lx = j.ex[1], ly = eye_y + (1.0f - k) * 10.0f;
         draw_magnifier(lx, ly, lens_gx, lens_gy, t);
         s_work.gone_x = lx;
         s_work.gone_y = ly;
