@@ -1912,6 +1912,14 @@ void muse_widget_ui_tick(muse_mode_t mode, float now, bool may_open)
     chip_tick(mode, now, may_open);
 }
 
+int muse_widget_ui_sheet_top(void)
+{
+    if (!s_sheet || s_state != ST_OPEN) {
+        return -1;
+    }
+    return s_h - SHEET_BOTTOM - lv_obj_get_height(s_sheet);
+}
+
 bool muse_widget_ui_sheet_up(void)
 {
     return s_sheet != NULL || muse_widget_keys_up();

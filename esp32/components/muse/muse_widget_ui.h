@@ -61,6 +61,8 @@ void muse_widget_ui_build(lv_obj_t *face, int w, int h, int top);
 void muse_widget_ui_tick(muse_mode_t mode, float now, bool may_open);
 /* The sheet's up (or folding away): the face makes room for it. */
 bool muse_widget_ui_sheet_up(void);
+/* The open sheet's top, from the screen's (settled, not mid-slide); -1 if none. */
+int muse_widget_ui_sheet_top(void);
 /* The chip that brings it back is showing, where "up next" goes. */
 bool muse_widget_ui_chip_up(void);
 /* Muse's browser at work in the turn (muse_browse.h), for his act: *site the
@@ -85,6 +87,7 @@ static inline void muse_widget_ui_tick(muse_mode_t mode, float now, bool may_ope
     (void)may_open;
 }
 static inline bool muse_widget_ui_sheet_up(void) { return false; }
+static inline int muse_widget_ui_sheet_top(void) { return -1; }
 static inline bool muse_widget_ui_chip_up(void) { return false; }
 static inline bool muse_widget_ui_browsing(uint32_t *site, float *done)
 {
