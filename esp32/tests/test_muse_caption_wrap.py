@@ -80,6 +80,34 @@ class CaptionWrapTest(unittest.TestCase):
         )
         return proc.stdout.decode().split("\n")
 
+    def page(self, text: str, cols: int, lines: int, at: int) -> list[str]:
+        proc = subprocess.run(
+            [str(self.binary), "page", str(cols), str(lines), str(at)],
+            input=text.encode(),
+            capture_output=True,
+            check=True,
+        )
+        return proc.stdout.decode().split("\n")
+
+    def test_text_that_fits_stays_on_its_page(self) -> None:
+        # Three lines on a three-line page: no second page of its last line again.
+        text = "one two three four five six seven eight nine"   # 3 lines of 16
+        self.assertEqual(len(self.wrap(text, 16)), 3)
+        first = self.page(text, 16, 3, 0)
+        for at in range(len(text)):
+            self.assertEqual(self.page(text, 16, 3, at), first, at)
+
+    def test_last_page_is_full_not_a_repeat(self) -> None:
+        # Four lines: the last page is the last three, never the third line alone.
+        words = "one two three four five six seven eight nine ten eleven twelve thirteen".split()
+        while len(self.wrap(" ".join(words), 16)) > 4:
+            words.pop()
+        text = " ".join(words)
+        lines = self.wrap(text, 16)
+        self.assertEqual(len(lines), 4)
+        self.assertEqual(self.page(text, 16, 3, len(text) - 1), lines[1:])
+        self.assertEqual(self.page(text, 16, 3, 0), lines[:3])
+
     def test_words_stay_whole(self) -> None:
         self.assertEqual(self.wrap("the quick brown fox jumps", 10), ["the quick", "brown fox", "jumps"])
 

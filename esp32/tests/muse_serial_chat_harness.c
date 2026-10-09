@@ -18,6 +18,7 @@
  * for test_muse_serial_chat.py, which parses the result the way tools/muse/chat.py does.
  *   console    stdin is a reply's text: prints the lines a typed turn sends for it
  *   unescape   stdin is console lines: prints each unescaped, as "<length>:<bytes>"
+ *   page C L AT  the page (C columns, L lines) shown as the speech reaches byte AT
  *   caption C  stdin is a reply's text: prints it wrapped to C columns, as the
  *              screen pages it (test_muse_caption_wrap.py)
  *   ascii      stdin is a reply's text: prints it with the ASCII stand-ins the
@@ -94,6 +95,14 @@ int main(int argc, char **argv)
         s_lines = 1000;
         static char page[1 << 16];
         if (muse_hatch_caption_at(in, 0, page, sizeof(page))) {
+            fputs(page, stdout);
+        }
+    } else if (argc > 4 && !strcmp(argv[1], "page")) {
+        /* The page shown as the speech reaches byte AT, LINES tall. */
+        s_cols = atoi(argv[2]);
+        s_lines = atoi(argv[3]);
+        static char page[1 << 16];
+        if (muse_hatch_caption_at(in, (size_t)atol(argv[4]), page, sizeof(page))) {
             fputs(page, stdout);
         }
     } else if (argc > 1 && !strcmp(argv[1], "ascii")) {
