@@ -149,11 +149,7 @@ static UINT jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
 /* Fits w x h inside bw x bh, keeping its shape. */
 static void fit(int w, int h, int bw, int bh, int *ow, int *oh)
 {
-    if (w <= bw && h <= bh) {
-        *ow = w;   /* never stretched: smaller than the box, it's shown as it is */
-        *oh = h;
-        return;
-    }
+    /* As big as the box allows, its shape kept: never stretched out of true. */
     if ((int64_t)w * bh > (int64_t)h * bw) {
         *ow = bw;
         *oh = (int)((int64_t)h * bw / w);
