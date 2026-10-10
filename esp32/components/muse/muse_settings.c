@@ -25,14 +25,20 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "muse_chat_title.h"
 #include "muse_link.h"
 
 static const char *TAG = "muse_settings";
+
+#define TITLING_MAX 4                    /* chats waiting on their titles at once */
+#define TITLING_US (180 * 1000000LL)     /* how long one waits before its stand-in name shows */
+#define STAND_IN_MAX 24                  /* a stand-in name from the first words, in bytes */
 
 #define NS "muse"
 #define DEFAULT_HOST "hatch.metaaivm.com"
@@ -63,7 +69,10 @@ typedef struct {
     uint32_t chats_gen;                        /* bumped when the list or the pick changes */
     bool chats_dirty;                          /* retitled: save_chats() is due (muse_settings_chats_flush) */
     char new_sid[MUSE_CHAT_SID_MAX + 1];       /* the new chat picked, until the Muse titles it (RAM only) */
-    char titling_sid[MUSE_CHAT_SID_MAX + 1];   /* waiting on a real title (muse_settings_chat_set_titling) */
+    struct {
+        char sid[MUSE_CHAT_SID_MAX + 1];
+        int64_t since;
+    } titling[TITLING_MAX];                    /* waiting on a real title (muse_settings_chat_set_titling), RAM only */
     /* The gadget mode each chat last heard (muse_settings_chat_told), -1 for none;
      * the named chats keep theirs in their entries. */
     int8_t told_main, told_gadget;             /* NVS "told_main", "told_gadget" */
@@ -597,24 +606,119 @@ esp_err_t muse_settings_chat_pick_new(void)
     return ESP_OK;
 }
 
+/* With the lock held: the chat's place among those waiting on a title, or -1. */
+static int titling_find(const char *sid)
+{
+    for (int i = 0; i < TITLING_MAX; i++) {
+        if (s.titling[i].sid[0] && !strcmp(s.titling[i].sid, sid)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* With the lock held: chat `sid` waits on its title from now, in a free place or the longest-waiting one's. */
+static void titling_add(const char *sid)
+{
+    if (titling_find(sid) >= 0) {
+        return;
+    }
+    int at = 0;
+    for (int i = 0; i < TITLING_MAX; i++) {
+        if (!s.titling[i].sid[0]) {
+            at = i;
+            break;
+        }
+        at = s.titling[i].since < s.titling[at].since ? i : at;
+    }
+    strlcpy(s.titling[at].sid, sid, sizeof(s.titling[at].sid));
+    s.titling[at].since = esp_timer_get_time();
+    s.chats_gen++;
+}
+
+/* With the lock held: chat `sid` waits no more. */
+static void titling_drop(const char *sid)
+{
+    int i = titling_find(sid);
+    if (i >= 0) {
+        s.titling[i].sid[0] = '\0';
+        s.chats_gen++;
+    }
+}
+
+/* With the lock held: the new chat joins the named ones under `name`, and
+ * isn't the new one any more; its index, or -1 with no room. */
+static int join_new(const char *name)
+{
+    if (s.chats_n >= MUSE_CHATS_MAX) {
+        return -1;
+    }
+    int i = s.chats_n++;
+    memset(&s.chats[i], 0, sizeof(s.chats[i]));
+    strlcpy(s.chats[i].sid, s.new_sid, sizeof(s.chats[i].sid));
+    strlcpy(s.chats[i].name, name, sizeof(s.chats[i].name));
+    s.chats[i].told_mode = s.told_new;   /* its first message may have told it the mode */
+    s.new_sid[0] = '\0';
+    s.told_new = -1;
+    s.chats_dirty = true;
+    s.chats_gen++;
+    return i;
+}
+
 void muse_settings_chat_set_titling(const char *sid)
 {
     LOCKED({
-        if (strcmp(s.titling_sid, sid ? sid : "") != 0) {
-            strlcpy(s.titling_sid, sid ? sid : "", sizeof(s.titling_sid));
-            s.chats_gen++;
+        if (sid && sid[0]) {
+            titling_add(sid);
+        } else {
+            for (int i = 0; i < TITLING_MAX; i++) {
+                if (s.titling[i].sid[0]) {
+                    s.titling[i].sid[0] = '\0';
+                    s.chats_gen++;
+                }
+            }
         }
     });
 }
 
 void muse_settings_chat_titled(const char *sid)
 {
+    if (sid) {
+        LOCKED(titling_drop(sid));
+    }
+}
+
+bool muse_settings_chat_titling(const char *sid)
+{
+    bool titling = false;
+    if (sid && sid[0]) {
+        LOCKED(titling = titling_find(sid) >= 0);
+    }
+    return titling;
+}
+
+bool muse_settings_chat_sent(const char *sid, const char *words)
+{
+    if (!sid || !sid[0]) {
+        return false;
+    }
+    /* Named for now by the first words, if they're known, till the Muse titles it. */
+    char name[MUSE_CHAT_NAME_MAX + 1];
+    muse_chat_title_excerpt(words, name, STAND_IN_MAX + 1);
+    if (!name[0] || muse_chat_title_placeholder(name)) {
+        strlcpy(name, "New chat", sizeof(name));
+    }
+    bool joined = false;
     LOCKED({
-        if (sid && s.titling_sid[0] && !strcmp(s.titling_sid, sid)) {
-            s.titling_sid[0] = '\0';
-            s.chats_gen++;
+        joined = s.new_sid[0] && !strcmp(s.new_sid, sid) && join_new(name) >= 0;
+        if (joined) {
+            titling_add(sid);
         }
     });
+    if (joined) {
+        ESP_LOGI(TAG, "new chat %s: first message sent, \"%s\" till the Muse titles it", sid, name);
+    }
+    return joined;
 }
 
 bool muse_settings_chat_untitled(const char *sid)
@@ -635,9 +739,12 @@ bool muse_settings_chat_retitle(const char *sid, const char *title, bool *starte
     if (!sid || !sid[0] || !title) {
         return false;
     }
+    /* A stand-in ("Processing audio", the voice note's file) is no name: the
+     * chat waits on its real title, under the name it has. */
+    bool stand_in = muse_chat_title_placeholder(title);
     /* A long title is cut at a word, with an ellipsis, to fit. */
     char cut[MUSE_CHAT_NAME_MAX + 1];
-    if (strlen(title) > MUSE_CHAT_NAME_MAX) {
+    if (!stand_in && strlen(title) > MUSE_CHAT_NAME_MAX) {
         size_t n = MUSE_CHAT_NAME_MAX - 3;
         while (n > 8 && title[n] != ' ') {
             n--;
@@ -645,34 +752,37 @@ bool muse_settings_chat_retitle(const char *sid, const char *title, bool *starte
         snprintf(cut, sizeof(cut), "%.*s...", (int)n, title);
         title = cut;
     }
-    if (!chat_name(title, clean)) {
+    if (!stand_in && !chat_name(title, clean)) {
         return false;
     }
     bool found = false, changed = false, joined = false;
     LOCKED({
         int i = find_chat_sid(sid);
-        if (i < 0 && !strcmp(s.new_sid, sid) && s.chats_n < MUSE_CHATS_MAX) {
-            /* The new chat has started: it joins the named ones, under its title. */
-            i = s.chats_n++;
-            memset(&s.chats[i], 0, sizeof(s.chats[i]));
-            strlcpy(s.chats[i].sid, sid, sizeof(s.chats[i].sid));
-            s.chats[i].told_mode = s.told_new;   /* its first message may have told it the mode */
-            s.new_sid[0] = '\0';
-            s.told_new = -1;
-            joined = true;
+        if (i < 0 && s.new_sid[0] && !strcmp(s.new_sid, sid)) {
+            /* The new chat has started: it joins the named ones, under its title or, till that comes, "New chat". */
+            i = join_new(stand_in ? "New chat" : clean);
+            joined = i >= 0;
+            if (joined && stand_in) {
+                titling_add(sid);
+            }
         }
         if (i >= 0) {
             found = true;
-            changed = strcmp(s.chats[i].name, clean) != 0;
-            if (changed) {
-                strlcpy(s.chats[i].name, clean, sizeof(s.chats[i].name));
-                s.chats_dirty = true;
-                s.chats_gen++;
+            if (!stand_in) {
+                changed = strcmp(s.chats[i].name, clean) != 0;
+                if (changed) {
+                    strlcpy(s.chats[i].name, clean, sizeof(s.chats[i].name));
+                    s.chats_dirty = true;
+                    s.chats_gen++;
+                }
+                titling_drop(sid);
             }
         }
     });
     if (changed) {
         ESP_LOGI(TAG, "chat %s titled \"%s\"", sid, clean);
+    } else if (found && stand_in && title[0]) {
+        ESP_LOGI(TAG, "chat %s: \"%s\" is no title yet", sid, title);
     }
     if (started) {
         *started = joined;
@@ -682,7 +792,16 @@ bool muse_settings_chat_retitle(const char *sid, const char *title, bool *starte
 
 void muse_settings_chats_flush(void)
 {
+    int64_t now = esp_timer_get_time();
     LOCKED({
+        /* Waited long enough: the stand-in name it has shows. */
+        for (int i = 0; i < TITLING_MAX; i++) {
+            if (s.titling[i].sid[0] && now - s.titling[i].since > TITLING_US) {
+                ESP_LOGW(TAG, "chat %s: no title from the Muse yet; named as it is", s.titling[i].sid);
+                s.titling[i].sid[0] = '\0';
+                s.chats_gen++;
+            }
+        }
         if (s.chats_dirty) {
             s.chats_dirty = false;
             save_chats();
@@ -803,7 +922,7 @@ int muse_settings_chat_items(muse_chat_item_t *out, int max, int *current)
         n++;
         for (int i = 0; i < s.chats_n; i++, n++) {
             if (n < max) {
-                bool titling = s.titling_sid[0] && !strcmp(s.titling_sid, s.chats[i].sid);
+                bool titling = titling_find(s.chats[i].sid) >= 0;
                 chat_item(&out[n], MUSE_CHAT_NAMED, titling ? MUSE_CHAT_TITLING : s.chats[i].name, s.chats[i].sid,
                           s.chats[i].told_mode);
             }
@@ -853,6 +972,7 @@ bool muse_settings_chat_forget(const char *sid)
             found = true;
             current = !strcmp(s.chat_sid, s.chats[i].sid);
             ESP_LOGI(TAG, "forgot chat \"%s\": %s", s.chats[i].name, s.chats[i].sid);
+            titling_drop(sid);
             memmove(&s.chats[i], &s.chats[i + 1], (s.chats_n - i - 1) * sizeof(s.chats[0]));
             s.chats_n--;
             save_chats();

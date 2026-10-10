@@ -17,7 +17,8 @@
 /*
  * The named chats in muse_settings.c for test_muse_settings_chats.py, against
  * an NVS kept in memory: the "chats" blob read in the layout before each
- * chat kept the mode it last heard, and the modes chats are told. The case
+ * chat kept the mode it last heard, the modes chats are told, and a new
+ * chat's name while it waits on its title. The case
  * to run is argv[1]. The IDF headers muse_settings.c includes are empty
  * files; what they would declare is faked here, before it's built in.
  */
@@ -74,6 +75,10 @@ static void esp_fill_random(void *buf, size_t n)
         ((uint8_t *)buf)[i] = next++ * 37;
     }
 }
+
+/* The clock, moved on by the cases: how long a chat's waited on its title. */
+static int64_t s_now_us;
+static int64_t esp_timer_get_time(void) { return s_now_us; }
 
 static bool muse_link_wifi_get(char *ssid, char *pass)
 {
@@ -392,6 +397,138 @@ static void old_words_forgotten(void)
     assert(muse_settings_chat_told(work) == 0 && muse_settings_chat_told("") == 0);
 }
 
+/* The one item listed for chat `sid`, and whether it's the one picked. */
+static muse_chat_item_t item_of(const char *sid, bool *picked)
+{
+    muse_chat_item_t items[MUSE_CHAT_ITEMS_MAX];
+    int current;
+    int n = muse_settings_chat_items(items, MUSE_CHAT_ITEMS_MAX, &current);
+    for (int i = 0; i < n; i++) {
+        if (items[i].kind != MUSE_CHAT_NEW && !strcmp(items[i].sid, sid)) {
+            *picked = i == current;
+            return items[i];
+        }
+    }
+    muse_chat_item_t none = { .kind = MUSE_CHAT_NEW };
+    *picked = false;
+    return none;
+}
+
+/* What the "New chat" row says, and whether it's picked. */
+static muse_chat_item_t new_row(bool *picked)
+{
+    muse_chat_item_t items[MUSE_CHAT_ITEMS_MAX];
+    int current;
+    int n = muse_settings_chat_items(items, MUSE_CHAT_ITEMS_MAX, &current);
+    assert(items[n - 1].kind == MUSE_CHAT_NEW);
+    *picked = current == n - 1;
+    return items[n - 1];
+}
+
+/*
+ * A new chat: "New chat" till its first message goes, then listed (and
+ * saved) under a few of its words, shown as "Generating title..." while the
+ * Muse's stand-in titles come and go, never kept, and then its real title.
+ */
+static void new_chat_waits_on_its_title(void)
+{
+    assert(muse_settings_init() == ESP_OK);
+    uint32_t gen = muse_settings_chats_gen();
+    assert(muse_settings_chat_pick_new() == ESP_OK);
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(sid);
+    bool picked;
+    muse_chat_item_t it = new_row(&picked);
+    assert(picked && !strcmp(it.name, "New chat") && !strcmp(it.sid, sid));
+    assert(muse_settings_chat_untitled(sid) && !muse_settings_chat_titling(sid));
+
+    /* A stand-in before anything's sent changes nothing it shows. */
+    assert(!muse_settings_chat_sent(WORK, "not the new chat"));
+    assert(muse_settings_chat_sent(sid, "  what's the weather like in lisbon this weekend? "));
+    assert(muse_settings_chats_gen() != gen);
+    assert(!muse_settings_chat_untitled(sid) && muse_settings_chat_titling(sid));
+    assert(!muse_settings_chat_sent(sid, "again"));   /* once */
+    it = item_of(sid, &picked);
+    assert(it.kind == MUSE_CHAT_NAMED && picked && !strcmp(it.name, MUSE_CHAT_TITLING));
+    it = new_row(&picked);
+    assert(!picked && !strcmp(it.name, "New chat") && !it.sid[0]);
+    char name[MUSE_CHAT_NAME_MAX + 1];
+    assert(muse_settings_chat_name(sid, name) && !strcmp(name, "What's the weather..."));
+
+    static const char *const STAND_INS[] = { "Processing audio", "Audio file", "New chat", "Untitled",
+                                             "voice_note.wav", "", "Processing file..." };
+    for (size_t i = 0; i < sizeof(STAND_INS) / sizeof(STAND_INS[0]); i++) {
+        bool started = true;
+        assert(muse_settings_chat_retitle(sid, STAND_INS[i], &started) && !started);
+        assert(muse_settings_chat_titling(sid));
+        assert(muse_settings_chat_name(sid, name) && !strcmp(name, "What's the weather..."));
+        it = item_of(sid, &picked);
+        assert(!strcmp(it.name, MUSE_CHAT_TITLING));
+    }
+    muse_settings_chats_flush();
+    muse_chat_entry_t saved[MUSE_CHATS_MAX];
+    assert(saved_chats(saved) == 1 && !strcmp(saved[0].name, "What's the weather...") && !strcmp(saved[0].sid, sid));
+
+    s_now_us += 30 * 1000000LL;
+    muse_settings_chats_flush();   /* not long enough to give up */
+    assert(muse_settings_chat_titling(sid));
+
+    assert(muse_settings_chat_retitle(sid, "Lisbon weekend weather", NULL));
+    assert(!muse_settings_chat_titling(sid));
+    it = item_of(sid, &picked);
+    assert(picked && !strcmp(it.name, "Lisbon weekend weather"));
+    muse_settings_chats_flush();
+    assert(saved_chats(saved) == 1 && !strcmp(saved[0].name, "Lisbon weekend weather"));
+
+    /* Titled: a stand-in later on (an "activity" event's) neither renames it nor has it wait again. */
+    assert(muse_settings_chat_retitle(sid, "Processing audio", NULL));
+    assert(!muse_settings_chat_titling(sid));
+    assert(muse_settings_chat_name(sid, name) && !strcmp(name, "Lisbon weekend weather"));
+}
+
+/* A voice note's new chat, which the Muse never titles: "New chat" once it's waited long enough. */
+static void untitled_chat_gives_up_in_time(void)
+{
+    assert(muse_settings_init() == ESP_OK);
+    assert(muse_settings_chat_pick_new() == ESP_OK);
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(sid);
+    assert(muse_settings_chat_sent(sid, NULL));
+    bool picked;
+    assert(!strcmp(item_of(sid, &picked).name, MUSE_CHAT_TITLING));
+    assert(muse_settings_chat_retitle(sid, "Transcribe audio file", NULL));
+    s_now_us += 181 * 1000000LL;
+    uint32_t gen = muse_settings_chats_gen();
+    muse_settings_chats_flush();
+    assert(muse_settings_chats_gen() != gen);   /* the list shows it */
+    assert(!muse_settings_chat_titling(sid));
+    muse_chat_item_t it = item_of(sid, &picked);
+    assert(picked && !strcmp(it.name, "New chat"));
+    muse_chat_entry_t saved[MUSE_CHATS_MAX];
+    assert(saved_chats(saved) == 1 && !strcmp(saved[0].name, "New chat"));
+    /* A real title later still names it. */
+    assert(muse_settings_chat_retitle(sid, "Grocery list", NULL));
+    assert(!strcmp(item_of(sid, &picked).name, "Grocery list"));
+}
+
+/* The Muse's title (a stand-in) before the first message was taken for sent:
+ * it joins as "New chat", waiting; forgotten, it waits no more. */
+static void stand_in_title_first(void)
+{
+    assert(muse_settings_init() == ESP_OK);
+    assert(muse_settings_chat_pick_new() == ESP_OK);
+    char sid[MUSE_CHAT_SID_MAX + 1];
+    muse_settings_chat_sid(sid);
+    bool started = false;
+    assert(muse_settings_chat_retitle(sid, "Processing audio...", &started) && started);
+    assert(muse_settings_chat_titling(sid) && !muse_settings_chat_untitled(sid));
+    char name[MUSE_CHAT_NAME_MAX + 1];
+    assert(muse_settings_chat_name(sid, name) && !strcmp(name, "New chat"));
+    assert(muse_settings_chat_forget(sid));
+    assert(!muse_settings_chat_titling(sid));
+    expect_chats(0);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
@@ -402,6 +539,9 @@ int main(int argc, char **argv)
     case 3: other_chat_in_ram(); break;
     case 4: unknown_blob_ignored(); break;
     case 5: old_words_forgotten(); break;
+    case 6: new_chat_waits_on_its_title(); break;
+    case 7: untitled_chat_gives_up_in_time(); break;
+    case 8: stand_in_title_first(); break;
     default: return 2;
     }
     return 0;

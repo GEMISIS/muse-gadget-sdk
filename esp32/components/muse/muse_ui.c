@@ -1522,13 +1522,14 @@ static void build_screen(void)
     s_state_lbl = make_label(face, CORNERS ? &lv_font_montserrat_20 : s_small ? &lv_font_unscii_8 : &lv_font_unscii_16,
                              0xffffff);
     lv_obj_set_style_text_letter_space(s_state_lbl, s_small || CORNERS ? 1 : 2, 0);
-    /* A fixed width, so a long chat's name (chat_label) ends in dots. */
+    /* A fixed width and one line, so a long chat's name (chat_label) ends in
+     * dots: a label as tall as its text would wrap it instead. */
     int state_w = s_w - (s_small ? 4 : CORNERS ? 120 : 32);
     if (!s_small && muse_board->round) {
         int r = (s_w < s_h ? s_w : s_h) / 2 - 10, dy = s_h / 2 - (STATE_Y + s_dy + 20);
         state_w = dy < r ? 2 * (int)sqrtf((float)(r * r - dy * dy)) - 24 : state_w;
     }
-    lv_obj_set_width(s_state_lbl, state_w);
+    lv_obj_set_size(s_state_lbl, state_w, lv_font_get_line_height(lv_obj_get_style_text_font(s_state_lbl, 0)));
     lv_label_set_long_mode(s_state_lbl, LV_LABEL_LONG_MODE_DOTS);
     lv_obj_set_style_text_align(s_state_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(s_state_lbl, LV_ALIGN_TOP_MID, 0, muse_board->rim_controls ? 64 : s_small ? 22 : STATE_Y + s_dy);
@@ -2880,7 +2881,9 @@ static const char *chat_label(void)
         } else if (!strcmp(sid, gadget)) {
             strlcpy(s_chat_label, "GADGET CHAT", sizeof(s_chat_label));
         } else if (muse_settings_chat_untitled(sid)) {
-            strlcpy(s_chat_label, "NEW CHAT", sizeof(s_chat_label));
+            strlcpy(s_chat_label, "NEW CHAT", sizeof(s_chat_label));   /* nothing said in it yet */
+        } else if (muse_settings_chat_titling(sid)) {
+            strlcpy(s_chat_label, "GENERATING TITLE...", sizeof(s_chat_label));   /* MUSE_CHAT_TITLING */
         } else if (muse_settings_chat_name(sid, s_chat_label)) {
             muse_text_to_ascii(s_chat_label, sizeof(s_chat_label));   /* the font's own letters */
             for (char *c = s_chat_label; *c; c++) {
@@ -3076,6 +3079,13 @@ static void update_power(float now)
     }
 }
 
+/* The state label faded out with one chat's name: in with the one it has now. */
+static void state_swap(lv_anim_t *a)
+{
+    lv_label_set_text(a->var, s_shown_name ? s_shown_name : "");
+    fade_to(a->var, LV_OPA_COVER, NULL);
+}
+
 static void update_status(muse_mode_t mode, float now)
 {
     uint32_t accent = muse_pixel_accent(mode);
@@ -3086,8 +3096,22 @@ static void update_status(muse_mode_t mode, float now)
     }
 
     if (name != s_shown_name) {
-        lv_label_set_text(s_state_lbl, name);
+        /* One chat name to the next ("NEW CHAT", "GENERATING TITLE...", its
+         * title): a quick cross-fade. A state changes at once. */
+        static bool was_chat;
+        bool chat = name == s_chat_label;
+        bool fade = chat && was_chat && name[0] && lv_label_get_text(s_state_lbl)[0]
+                    && strcmp(lv_label_get_text(s_state_lbl), name) != 0;
         s_shown_name = name;
+        was_chat = chat;
+        if (fade) {
+            fade_to(s_state_lbl, LV_OPA_TRANSP, state_swap);
+        } else {
+            lv_label_set_text(s_state_lbl, name);
+            if (lv_anim_get(s_state_lbl, fade_opa)) {
+                fade_to(s_state_lbl, LV_OPA_COVER, NULL);   /* in place of a fade on its way */
+            }
+        }
     }
     if ((int)mode != s_shown_state) {
         lv_obj_set_style_text_color(s_state_lbl, lv_color_hex(CORNERS ? COLOR_DIM : accent), 0);

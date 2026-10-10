@@ -107,6 +107,7 @@ extern "C" {
 #endif
 }
 #include "muse_chat_priv.h"
+#include "muse_chat_title.h"
 #include "muse_lyrics.h"
 
 #include <xplat/noise/core/ClientSession.h>
@@ -177,7 +178,8 @@ static const char *TAG = "muse_chat_session";
  * text instead, but /api/voice/dictation answers 403, so DICTATE_NEW_CHAT is
  * off. Asked alongside the note, the Muse doesn't rename the chat; asked in a
  * typed turn of its own, it does: so a chat titled after an audio file gets
- * that turn once its first reply is done (muse_gadget_mode_retitle).
+ * that turn once its first reply is done (muse_gadget_mode_retitle). Until
+ * its real title comes it's "Generating title..." here, never the audio's.
  * DICTATE_EVERY_TURN dictates every voice turn, for when dictation works.
  */
 #define DICTATE_NEW_CHAT 0
@@ -245,9 +247,16 @@ static char s_sub_sid[MUSE_CHAT_SID_MAX + 1];
 /* The subscription for s_sub_sid came back 404: a side chat the Muse only
  * starts with its first message. It's opened again once one is taken. */
 static bool s_sub_missing;
-/* A new chat whose first message was a voice note: its title will be the
- * audio file's, so it's asked for a real one (muse_gadget_mode_retitle). */
-static char s_voice_new_sid[MUSE_CHAT_SID_MAX + 1];
+/*
+ * A new chat whose first message was a voice note, till it has a real title:
+ * the Muse's first is the audio file's, so it's set aside like any stand-in
+ * (muse_chat_title_placeholder) and a real one asked for
+ * (muse_gadget_mode_retitle). s_voice_title is the last set aside, which
+ * isn't taken later either.
+ */
+EXT_RAM_BSS_ATTR static char s_voice_new_sid[MUSE_CHAT_SID_MAX + 1];
+EXT_RAM_BSS_ATTR static char s_voice_title[96];   /* as long as a title runs, near enough */
+static bool s_voice_asked;
 
 /* ---- Streams on the connection ---- */
 
@@ -1336,6 +1345,18 @@ static void message_to(const char *sid, int tells)
     s_turn.tells = (int8_t)tells;
 }
 
+/* This turn's message has gone, its `words` if it had any: the first in a new
+ * chat makes it a named one, waiting on its title (muse_settings_chat_sent).
+ * A voice note's will be titled after the audio: retitle it. */
+static void first_sent(const char *words)
+{
+    if (muse_settings_chat_sent(s_turn.sid, words) && !words) {
+        strlcpy(s_voice_new_sid, s_turn.sid, sizeof(s_voice_new_sid));
+        s_voice_title[0] = '\0';
+        s_voice_asked = false;
+    }
+}
+
 /* Base64-encodes the staged PCM into one body chunk; `last` pads and closes the request. */
 static bool send_note_part(bool last)
 {
@@ -1365,9 +1386,6 @@ static bool open_note(void)
     }
     char sid[MUSE_CHAT_SID_MAX + 1], head[MUSE_CHAT_NOTE_HEAD_MAX];
     muse_settings_chat_sid(sid);
-    if (muse_settings_chat_untitled(sid)) {
-        strlcpy(s_voice_new_sid, sid, sizeof(s_voice_new_sid));   /* titled after the audio: retitle it */
-    }
     /* The mode goes as the text with the audio, and the reminder to push an image. */
     int mode = -1;
     const char *ctx = muse_gadget_mode_context(sid, &mode);
@@ -1418,6 +1436,7 @@ static bool record_note(void)
         return false;
     }
     ESP_LOGI(TAG, "voice note: %.2fs, %u byte request", secs, (unsigned)s_turn.body_sent);
+    first_sent(nullptr);
     mark(M_SENT);
     s_turn.chat_posted = true;
     s_turn.chat_us = s_turn.last_event_us = now_us();
@@ -1449,6 +1468,7 @@ static bool send_rec_as_note(void)
     }
     ESP_LOGI(TAG, "voice note instead: %.2fs, %u byte request", (double)s_turn.pcm_bytes / (MIC_RATE * 2),
              (unsigned)s_turn.body_sent);
+    first_sent(nullptr);
     free_rec();
     mark(M_SENT);
     s_turn.chat_posted = true;
@@ -1545,6 +1565,7 @@ static void send_chat(const char *text, const char *modality)
     s_turn.body_sent = len;
     s_turn.chat_us = s_turn.last_event_us = now_us();
     s_turn.phase = P_WAIT_REPLY;
+    first_sent(text);
 }
 
 static void post_chat(const char *text)
@@ -2262,20 +2283,24 @@ static void on_event(cJSON *line)
                      cJSON_IsTrue(cJSON_GetObjectItem(session, "archived")) ? " (archived)" : "");
         }
         bool started = false;
-        if (sid && title && title[0] && muse_settings_chat_retitle(sid, title, &started)) {
-            /* A chat started by voice is titled after the audio file, in
-             * words that vary ("Transcribe audio file", "Summarize audio file
-             * content"): ask for a real title whatever it says. After that,
-             * only a title that still reads like a placeholder asks again. */
-            bool by_voice = started && !strcmp(sid, s_voice_new_sid);
-            if (by_voice || strcasestr(title, "audio file") || strcasestr(title, "session title")) {
-                muse_settings_chat_set_titling(sid);   /* "Title generating..." meanwhile */
-                muse_gadget_mode_retitle(sid);
-            } else {
-                muse_settings_chat_titled(sid);   /* a real title: no more "Title generating..." */
-            }
-            if (by_voice) {
-                s_voice_new_sid[0] = '\0';
+        if (sid && title) {
+            /* A chat started by voice is first titled after the audio file,
+             * in words that vary ("Transcribe audio file", "Summarize audio
+             * file content"): set aside whatever it says, and a real title
+             * asked for; again for another stand-in. A stand-in is never
+             * kept (muse_settings_chat_retitle): "Generating title..." till
+             * the real one. */
+            bool voice = s_voice_new_sid[0] && !strcmp(sid, s_voice_new_sid);
+            bool stand_in = (voice && (!s_voice_asked || !strcasecmp(title, s_voice_title)))
+                            || muse_chat_title_placeholder(title);
+            if (muse_settings_chat_retitle(sid, stand_in ? "" : title, &started) && voice) {
+                if (!stand_in) {
+                    s_voice_new_sid[0] = '\0';   /* titled for real */
+                } else if (title[0] && (!s_voice_asked || strcasecmp(title, s_voice_title) != 0)) {
+                    strlcpy(s_voice_title, title, sizeof(s_voice_title));
+                    s_voice_asked = true;
+                    muse_gadget_mode_retitle(sid);
+                }
             }
         }
         return;

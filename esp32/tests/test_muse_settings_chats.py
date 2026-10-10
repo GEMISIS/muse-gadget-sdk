@@ -14,7 +14,9 @@
 
 """The named chats muse_settings.c keeps in NVS: the blob from before each chat
 kept the gadget mode it last heard still loads, and what chats are told is
-saved where the next boot reads it (muse_settings_chats_harness.c)."""
+saved where the next boot reads it (muse_settings_chats_harness.c). A new
+chat is "New chat" till its first message, then "Generating title..." till
+the Muse's real title, a stand-in title never kept as its name."""
 
 import os
 import shlex
@@ -25,8 +27,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 # The IDF headers muse_settings.c includes; the harness fakes what they declare.
-EMPTY_HEADERS = ('esp_attr.h', 'esp_err.h', 'esp_log.h', 'esp_mac.h', 'esp_random.h', 'freertos/FreeRTOS.h',
-                 'freertos/semphr.h', 'nvs.h', 'nvs_flash.h', 'muse_link.h')
+EMPTY_HEADERS = ('esp_attr.h', 'esp_err.h', 'esp_log.h', 'esp_mac.h', 'esp_random.h', 'esp_timer.h',
+                 'freertos/FreeRTOS.h', 'freertos/semphr.h', 'nvs.h', 'nvs_flash.h', 'muse_link.h')
 
 
 class SettingsChats(unittest.TestCase):
@@ -43,7 +45,8 @@ class SettingsChats(unittest.TestCase):
         result = subprocess.run(
             [*cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function',
              '-I', str(out), '-I', str(ROOT / 'tests'), '-I', str(ROOT / 'components/muse'),
-             str(ROOT / 'tests/muse_settings_chats_harness.c'), '-o', str(cls.binary)],
+             str(ROOT / 'tests/muse_settings_chats_harness.c'), str(ROOT / 'components/muse/muse_chat_title.c'),
+             '-o', str(cls.binary)],
             capture_output=True, text=True)
         if result.returncode:
             raise AssertionError(result.stdout + result.stderr)
@@ -73,6 +76,18 @@ class SettingsChats(unittest.TestCase):
     def test_chats_told_older_contract_words_hear_the_new_ones(self):
         log = self.run_case(5)
         self.assertIn('every chat hears them again', log)
+
+    def test_new_chat_waits_on_its_title_and_never_takes_a_stand_in(self):
+        log = self.run_case(6)
+        self.assertIn('"Processing audio" is no title yet', log)
+        self.assertIn('titled "Lisbon weekend weather"', log)
+
+    def test_chat_never_titled_keeps_its_stand_in_name_in_time(self):
+        log = self.run_case(7)
+        self.assertIn('no title from the Muse yet', log)
+
+    def test_stand_in_title_before_the_first_message_is_taken(self):
+        self.run_case(8)
 
 
 if __name__ == '__main__':

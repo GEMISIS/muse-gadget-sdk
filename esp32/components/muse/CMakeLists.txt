@@ -39,6 +39,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_voice.c"
         "muse_adpcm.c"
         "muse_settings.c"
+        "muse_chat_title.c"   # a new chat's stand-in titles, never kept as its name
         "muse_settings_ui.c"
         "muse_dialog.c"
         "muse_style.c"

@@ -121,11 +121,25 @@ static int captions, console_events, sent_events, image_events;
 static char image_caption[EV_TEXT];
 enum mark_t { M_TEXT, M_DONE, M_ACK, M_TTS, M_GO, M_MP3, M_AUDIO };
 static void mark(mark_t) {}
-static void muse_gadget_mode_retitle(const char *) {}
+/* A new chat's title (muse_settings.h): the first message taken, what the
+ * Muse's titles are kept as, and the real ones asked for. */
+static int retitle_asks;
+static char retitled[64], sent_words[64], new_sid[40];
+static void muse_gadget_mode_retitle(const char *) { retitle_asks++; }
 static char s_voice_new_sid[MUSE_CHAT_SID_MAX + 1];
-static bool muse_settings_chat_retitle(const char *, const char *, bool *) { return false; }
-static void muse_settings_chat_set_titling(const char *) {}
-static void muse_settings_chat_titled(const char *) {}
+static char s_voice_title[96];
+static bool s_voice_asked;
+extern "C" bool muse_chat_title_placeholder(const char *title);
+static bool muse_settings_chat_retitle(const char *, const char *title, bool *) {
+    strlcpy(retitled, title, sizeof(retitled));
+    return true;
+}
+static bool muse_settings_chat_sent(const char *sid, const char *words) {
+    strlcpy(sent_words, words ? words : "(voice)", sizeof(sent_words));
+    bool joined = new_sid[0] && !strcmp(sid, new_sid);
+    new_sid[0] = '\0';
+    return joined;
+}
 static int64_t s_now = 12345;
 static int64_t now_us() { return s_now; }
 static char chat_sid[MUSE_CHAT_SID_MAX + 1], posted[4096];
@@ -1005,6 +1019,43 @@ static void line(const char *json) {
     on_event(root);
     cJSON_Delete(root);
 }
+static void titled(const char *sid, const char *title) {
+    char json[256];
+    snprintf(json, sizeof(json), R"J({"type":"event","event":"sessions.updated","payload":{"change":"renamed",
+        "session":{"session_id":"%s","title":"%s"}}})J", sid, title);
+    line(json);
+}
+/* A new chat's titles: a typed one's stand-in passed on (and not kept there),
+ * a voice note's first title set aside whatever it says, a real one asked
+ * for once per stand-in, and the real one kept. */
+static void titles() {
+    strlcpy(new_sid, "chat-t", sizeof(new_sid));
+    strlcpy(s_turn.sid, "chat-t", sizeof(s_turn.sid));
+    first_sent("pasta for four");
+    assert(!strcmp(sent_words, "pasta for four") && !s_voice_new_sid[0]);
+    titled("chat-t", "Processing file");
+    assert(!strcmp(retitled, "") && retitle_asks == 0);   /* a stand-in: waited out, not asked */
+    titled("chat-t", "Pasta for four");
+    assert(!strcmp(retitled, "Pasta for four"));
+
+    strlcpy(new_sid, "chat-v", sizeof(new_sid));
+    strlcpy(s_turn.sid, "chat-v", sizeof(s_turn.sid));
+    first_sent(nullptr);
+    assert(!strcmp(sent_words, "(voice)") && !strcmp(s_voice_new_sid, "chat-v"));
+    titled("chat-v", "Summarize recording content");   /* the audio's, though it reads like a title */
+    assert(!strcmp(retitled, "") && retitle_asks == 1);
+    titled("chat-v", "Summarize recording content");   /* again: still set aside, not asked twice */
+    assert(!strcmp(retitled, "") && retitle_asks == 1);
+    titled("chat-v", "Transcribe audio file");
+    assert(!strcmp(retitled, "") && retitle_asks == 2);
+    titled("chat-v", "Lisbon weekend weather");
+    assert(!strcmp(retitled, "Lisbon weekend weather") && !s_voice_new_sid[0] && retitle_asks == 2);
+
+    /* Not the first message: no chat joins. */
+    strlcpy(s_turn.sid, "chat-v", sizeof(s_turn.sid));
+    first_sent(nullptr);
+    assert(!s_voice_new_sid[0]);
+}
 /* A reply's widgets: from its done message, and from a presentation of the turn's chat; never in its text. */
 static void widgets() {
     static char texts[MAX_MSGS * TEXT_MAX];
@@ -1052,6 +1103,7 @@ int main(int argc, char **argv) {
     case 17: push_released_early(); break;
     case 15: activities(); break;
     case 16: widgets(); break;
+    case 18: titles(); break;
 #if CONFIG_MUSE_TTS_PICO
     case 12: pico_ahead_of_the_grace(); break;
     case 13: pico_ahead_of_an_image(); break;
@@ -1066,7 +1118,7 @@ int main(int argc, char **argv) {
                  '-I', str(ROOT / 'tests'), '-I', str(ROOT / 'components/muse'),
                  '-I', str(ROOT / 'components/minimp3/include')]
         objects = [str(out / 'cjson.o'), str(out / 'mode.o'), str(out / 'widget.o'), str(out / 'html.o'),
-                   str(out / 'text.o')]
+                   str(out / 'text.o'), str(out / 'title.o')]
         commands = [
             [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
              '-c', str(JSON / 'cJSON.c'), '-o', str(out / 'cjson.o')],
@@ -1076,6 +1128,8 @@ int main(int argc, char **argv) {
              '-c', str(ROOT / 'components/muse/muse_widget_html.c'), '-o', str(out / 'html.o')],
             [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
              '-c', str(ROOT / 'components/muse/muse_text.c'), '-o', str(out / 'text.o')],
+            [*shlex.split(os.environ.get('CC', 'cc')), '-std=c11', *flags,
+             '-c', str(ROOT / 'components/muse/muse_chat_title.c'), '-o', str(out / 'title.o')],
             [*shlex.split(os.environ.get('CC', 'cc')), '-std=gnu11', *flags,
              '-c', str(out / 'mode.c'), '-o', str(out / 'mode.o')],
             [*shlex.split(os.environ.get('CXX', 'c++')), '-std=gnu++17', *flags,
@@ -1099,6 +1153,9 @@ int main(int argc, char **argv) {
 
     def test_rejected_deltas_do_not_emit_or_complete_voice_or_typed_replies(self):
         self.run_case(0)
+
+    def test_new_chat_titles_never_take_a_stand_in(self):
+        self.run_case(18)
 
     def test_ack_parent_reply_chain_and_parentless_messages_still_work(self):
         self.run_case(1)

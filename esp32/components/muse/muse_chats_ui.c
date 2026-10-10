@@ -20,8 +20,9 @@
  * Tapping one picks it and goes back to Muse; holding a made one opens a card
  * asking whether to forget it here only, or delete it from Muse too
  * (muse_chat_delete.h). "New chat" is ticked when picked; the chat joins the
- * list once the first thing asked in it has the Muse title it
- * (muse_settings_chat_pick_new, muse_settings_chat_retitle). Styled as the
+ * list once the first thing is asked in it, dim "Generating title..."
+ * (MUSE_CHAT_TITLING) till the Muse titles it (muse_settings_chat_pick_new,
+ * muse_settings_chat_sent, muse_settings_chat_retitle). Styled as the
  * settings pages are (muse_settings_ui.c). The "?" in the top left corner
  * opens a card that says all this.
  */
@@ -85,12 +86,22 @@ static void expire_note(void)
     }
 }
 
+/* A label one line tall, the width it's given: a long text ends in "...".
+ * (As tall as its text, LVGL wraps it instead, out of the row.) */
+static lv_obj_t *one_line(lv_obj_t *parent, const lv_font_t *font, uint32_t color, const char *text)
+{
+    lv_obj_t *l = muse_style_label(parent, font, color, text);
+    lv_obj_set_size(l, lv_pct(100), lv_font_get_line_height(font));
+    lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+    return l;
+}
+
 /*
  * Tappable row: an icon, the text over a smaller dim line (sub, if not NULL),
- * and room for a tick on the right. The text keeps its width either way, and
- * a long one ends in "...".
+ * and room for a tick on the right. The text keeps its width either way, one
+ * line each, and a long one ends in "..."; `dim` for a name still to come.
  */
-static lv_obj_t *row(const char *icon, const char *text, const char *sub, lv_event_cb_t cb, void *user)
+static lv_obj_t *row(const char *icon, const char *text, const char *sub, bool dim, lv_event_cb_t cb, void *user)
 {
     lv_obj_t *c = muse_style_row(s_list, true, false);
     muse_style_label(c, MUSE_FONT_ROW, MUSE_COLOR_ACCENT, icon);
@@ -100,13 +111,9 @@ static lv_obj_t *row(const char *icon, const char *text, const char *sub, lv_eve
     lv_obj_set_height(col, LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(col, 1);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-    lv_obj_t *t = muse_style_label(col, MUSE_FONT_ROW, MUSE_COLOR_TEXT, text);
-    lv_obj_set_width(t, lv_pct(100));
-    lv_label_set_long_mode(t, LV_LABEL_LONG_MODE_DOTS);
+    one_line(col, MUSE_FONT_ROW, dim ? MUSE_COLOR_DIM : MUSE_COLOR_TEXT, text);
     if (sub) {
-        lv_obj_t *s = muse_style_label(col, MUSE_FONT_NOTE, MUSE_COLOR_DIM, sub);
-        lv_obj_set_width(s, lv_pct(100));
-        lv_label_set_long_mode(s, LV_LABEL_LONG_MODE_DOTS);
+        one_line(col, MUSE_FONT_NOTE, MUSE_COLOR_DIM, sub);
     }
     lv_obj_add_event_cb(c, cb, LV_EVENT_ALL, user);
     lv_obj_t *v = muse_style_label(c, MUSE_FONT_VALUE, MUSE_COLOR_ACCENT, "");
@@ -175,7 +182,7 @@ static void rebuild(void)
         int i = order[o];
         const muse_chat_item_t *c = &s_items[i];
         if (c->kind == MUSE_CHAT_NEW) {
-            s_values[i] = row(LV_SYMBOL_PLUS, "New chat", NULL, on_new, (void *)(intptr_t)i);
+            s_values[i] = row(LV_SYMBOL_PLUS, "New chat", NULL, false, on_new, (void *)(intptr_t)i);
             continue;
         }
         const char *icon = c->kind == MUSE_CHAT_MAIN ? LV_SYMBOL_HOME
@@ -185,7 +192,8 @@ static void rebuild(void)
                          : c->name[0] ? c->name : c->sid;
         const char *told = c->told_mode >= 0 && c->told_mode < (int)(sizeof(TOLD) / sizeof(TOLD[0]))
                          ? TOLD[c->told_mode] : NULL;
-        s_values[i] = row(icon, name, told, on_chat, (void *)(intptr_t)i);
+        bool titling = c->kind == MUSE_CHAT_NAMED && !strcmp(c->name, MUSE_CHAT_TITLING);
+        s_values[i] = row(icon, name, told, titling, on_chat, (void *)(intptr_t)i);
     }
     /* A short word on what a tap just did; the "?" explains the rest. */
     s_note = muse_style_label(s_list, MUSE_FONT_NOTE, MUSE_COLOR_DIM, s_note_text);

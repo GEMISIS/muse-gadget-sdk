@@ -129,29 +129,41 @@ bool muse_settings_chat_forget(const char *sid);
  * ESP_ERR_INVALID_STATE the one that already has the name. */
 esp_err_t muse_settings_chat_new(const char *name, char sid_out[MUSE_CHAT_SID_MAX + 1]);
 /*
- * Picks a new chat with nothing typed for it: a fresh id, kept in RAM only.
- * It starts on the Muse with the first message, which the Muse titles it by;
- * only then does it join the named chats, under that title
- * (muse_settings_chat_retitle). Picking another chat first drops it.
+ * Picks a new chat with nothing typed for it: a fresh id, kept in RAM only,
+ * "New chat" till its first message goes (muse_settings_chat_sent). Then it
+ * joins the named chats, listed as MUSE_CHAT_TITLING till the Muse's title
+ * comes (muse_settings_chat_retitle), or long enough goes by for the name it
+ * has to do. Picking another chat first drops it.
  * ESP_ERR_NO_MEM with MUSE_CHATS_MAX kept already.
  */
 esp_err_t muse_settings_chat_pick_new(void);
-/* The new chat picked by muse_settings_chat_pick_new(), not yet titled. */
+/* The new chat picked by muse_settings_chat_pick_new(), nothing sent in it yet. */
 bool muse_settings_chat_untitled(const char *sid);
-/* Chat `sid` is waiting on a real title (asked for after the Muse titled it
- * after an audio file): listed as MUSE_CHAT_TITLING until then. NULL or ""
- * clears it. RAM only; any task. */
-#define MUSE_CHAT_TITLING "Title generating..."
+/*
+ * The first message has gone to chat `sid`, its first `words` if they're
+ * known (NULL for a voice note): if it's the new chat, it joins the named
+ * chats now, under a few of those words or "New chat" till the Muse titles
+ * it, waiting on its title meanwhile. True if it joined. Any task.
+ */
+bool muse_settings_chat_sent(const char *sid, const char *words);
+/* Chat `sid` is waiting on a real title: listed as MUSE_CHAT_TITLING until
+ * then, or a few minutes at most. NULL or "" clears every one. RAM only; any task. */
+#define MUSE_CHAT_TITLING "Generating title..."
 void muse_settings_chat_set_titling(const char *sid);
-/* Chat `sid` has a real title now, or won't get one: if it's the one waiting, it isn't any more. */
+/* Chat `sid` has a real title now, or won't get one: if it's waiting, it isn't any more. */
 void muse_settings_chat_titled(const char *sid);
+/* Chat `sid` is waiting on a real title (shown as MUSE_CHAT_TITLING). */
+bool muse_settings_chat_titling(const char *sid);
 /* The Muse's title for a chat: a named one's new name, or the new chat's,
- * which then joins the named chats (*started set). Kept in RAM at once, so
- * any task may call it; muse_settings_chats_flush() writes it to flash.
- * False if sid is neither. */
+ * which then joins the named chats (*started set). A stand-in title
+ * (muse_chat_title_placeholder: "Processing audio", "", ...) is never kept:
+ * the chat waits on the real one, under the name it has. Kept in RAM at
+ * once, so any task may call it; muse_settings_chats_flush() writes it to
+ * flash. False if sid is neither. */
 bool muse_settings_chat_retitle(const char *sid, const char *title, bool *started);
-/* Writes retitled chats, and the modes chats were told, to flash; from a task
- * whose stack is internal RAM. */
+/* Writes retitled chats, and the modes chats were told, to flash, and gives
+ * up on titles waited on too long; from a task whose stack is internal RAM,
+ * every so often. */
 void muse_settings_chats_flush(void);
 /*
  * The gadget mode (muse_gadget_mode_t) a chat last heard, -1 if none: each
