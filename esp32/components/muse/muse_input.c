@@ -1115,6 +1115,10 @@ static bool console_command(char *line, bool whole)
         muse_ui_quake();   /* as a shake of the board would */
         return true;
     }
+    if (!strcmp(line, "tumble")) {
+        muse_ui_tumble();   /* as the screen turning would, without the turn */
+        return true;
+    }
     if (!strcmp(line, "charge")) {
         cheer_plugged("serial", true);   /* as plugging in would */
         return true;
@@ -1269,7 +1273,8 @@ static bool console_command(char *line, bool whole)
  * the device's state, "power" the battery meter (muse_battery.h) and
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
  * two minutes asleep on battery would; 'w' rejoins), "quake" shakes Muse
- * up as a shake of the board does, "charge" cheers as plugging in does
+ * up as a shake of the board does, "tumble" knocks him over as the screen
+ * turning does (with no turn), "charge" cheers as plugging in does
  * (cheer_plugged), "brief" asks the Muse for the face's
  * "up next" line now and "brief?" prints it (muse_up_next.h), "face=" shows a face
  * (see set_face), "activity=TEXT" shows Muse at what he'd be at if he said

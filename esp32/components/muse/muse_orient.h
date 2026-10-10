@@ -33,9 +33,23 @@ extern "C" {
 /* LVGL task, every frame; `now` in seconds. 0 upright (keys on top), 2 upside
  * down, 1 and 3 on its sides (muse_board_t.set_turn). */
 int muse_orient_turn(float now);
+/* The turn the board's been read at lately, not taken yet (it waits to be
+ * sure), or -1: for the face to wobble as it's about to go. */
+int muse_orient_leaning(void);
 #else
 static inline int muse_orient_turn(float now) { (void)now; return 0; }
+static inline int muse_orient_leaning(void) { return -1; }
 #endif
+
+/*
+ * Which way the picture goes round on the panel for each turn up the count
+ * (muse_board_t.set_turn): 1, a quarter clockwise, as the 2.16's MADCTL_TURN
+ * has it (SIDEWAYS_SWAPPED 0): the board's gone a quarter the other way,
+ * so the old picture's left edge is down (as SIDE_SIGN 1 has it: turn 1 with
+ * +x, the picture's right, reading up). -1 if those two are flipped. Muse
+ * falls that way as the screen turns (muse_tumble.h); wrong, and he'd fall up.
+ */
+#define MUSE_ORIENT_SPIN 1
 
 #ifdef __cplusplus
 }

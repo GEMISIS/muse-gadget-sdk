@@ -3777,6 +3777,82 @@ static void draw_pajamas(const avatar_t *j)
  * Frame
  * ------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+ * Knocked over by the screen turning (pose->tumble)
+ * ------------------------------------------------------------------------- */
+
+EXT_RAM_BSS_ATTR static uint8_t s_tumble_fb[W * H];   /* the frame as drawn, to turn (PSRAM: only while he tumbles) */
+
+/* The whole frame turned tb->tilt clockwise about (sx, sy), his feet as
+ * drawn, which go to (dx, dy), and squashed along him about them. */
+static void tumble_turn(const muse_tumble_pose_t *tb, float sx, float sy, float dx, float dy)
+{
+    memcpy(s_tumble_fb, s_fb, sizeof(s_fb));
+    float c = cosf(tb->tilt), s = sinf(tb->tilt);
+    float kx = 1.0f / (1.0f + 0.2f * tb->squash), ky = 1.0f / (1.0f - 0.28f * tb->squash);
+    for (int y = 0; y < H; y++) {
+        float qy = y + 0.5f - dy;
+        for (int x = 0; x < W; x++) {
+            float qx = x + 0.5f - dx;
+            int fx = (int)floorf(sx + (qx * c + qy * s) * kx), fy = (int)floorf(sy + (qy * c - qx * s) * ky);
+            s_fb[y * W + x] = (unsigned)fx < W && (unsigned)fy < H ? s_tumble_fb[fy * W + fx] : C_BG;
+        }
+    }
+}
+
+/* His shadow under him, turned, where his feet went to (dx, dy): wider lying
+ * down, fading as he's off the floor; behind him. */
+static void tumble_shadow(const muse_tumble_pose_t *tb, float dx, float dy)
+{
+    float c = cosf(tb->tilt), s = sinf(tb->tilt);
+    float cx = dx + 23.0f * s, low = dy - 23.0f * c + 23.0f * fabsf(c) + 16.0f * fabsf(s);   /* his middle, his lowest */
+    float near = clampf((low - 46.0f) / 10.0f, 0, 1);
+    if (!tb->floor || near <= 0) {
+        return;
+    }
+    float half_w = (13.0f * fabsf(c) + 22.0f * fabsf(s)) * (0.5f + 0.5f * near);
+    for (int row = 0; row < 3; row++) {
+        float hw = half_w * (row == 1 ? 1.0f : 0.72f);
+        int y = 58 + row;
+        for (int x = iround(cx - hw); x <= iround(cx + hw); x++) {
+            float edge = fabsf(x + 0.5f - cx) / hw;
+            if (get_px(x, y) == C_BG && bayer(x, y) > edge * 0.8f + (1.0f - near) * 0.3f) {
+                px(x, y, C_SHADOW);
+            }
+        }
+    }
+}
+
+/* A puff of dust going out every way from (x, y), k 0..1 through it. */
+static void draw_dust_puff(float x, float y, float k)
+{
+    float r = 3.0f + 10.0f * (1.0f - (1.0f - k) * (1.0f - k));
+    int size = k < 0.45f ? 2 : 1;
+    for (int i = 0; i < 7; i++) {
+        float a = i * TAU / 7 + 0.4f;
+        int x0 = iround(x + cosf(a) * r), y0 = iround(y + sinf(a) * r * 0.7f);
+        for (int v = 0; v < size; v++) {
+            for (int u = 0; u < size; u++) {
+                if (bayer(x0 + u, y0 + v) > k * 0.9f) {
+                    px(x0 + u, y0 + v, u + v ? C_STEAMD : C_STEAM);
+                }
+            }
+        }
+    }
+}
+
+/* Dusting himself off: a little puff off the side he's patting (side -1, his left; 1, his right). */
+static void draw_pat_puff(const avatar_t *j, int side, float k)
+{
+    float x = j->cx + side * (j->a + 1.0f + 5.0f * k), y = j->cy + 6.0f - 4.0f * k;
+    for (int i = 0; i < 3; i++) {
+        int xx = iround(x + side * (i == 2 ? 1.0f : 0.0f)), yy = iround(y) - (i == 1);
+        if (bayer(xx, yy) > k) {
+            px(xx, yy, i ? C_STEAMD : C_STEAM);
+        }
+    }
+}
+
 /*
  * Screen pixel -> grid cell, with 0x80 set on a cell's last screen pixel. When
  * cells are 3+ pixels, that edge is drawn dimmer so the pixel grid shows.
@@ -3841,6 +3917,8 @@ void muse_pixel_render(const muse_pose_t *p)
     float happy = p->happy;
     float level = p->level;
     float t = p->t;
+    const muse_tumble_pose_t *tb = &p->tumble;   /* knocked over by the screen turning */
+    bool tumble = tb->on;
 
     if (p->battery) {
         s_batt = batt_colour(p);
@@ -4005,6 +4083,11 @@ void muse_pixel_render(const muse_pose_t *p)
     } else {
         s_look = false;
     }
+    if (tumble) {
+        s_look = true;   /* knocked over: at us, or down at himself, dusting off */
+        s_look_x = 0;
+        s_look_y = tb->pat > 0 ? 0.9f : 0.0f;
+    }
 
     /* Tired (pose->tired): idle, up, and not cheering, reeling or showing
      * something. Slow to tire, quick to perk up. */
@@ -4123,6 +4206,11 @@ void muse_pixel_render(const muse_pose_t *p)
     /* Braced: crouched, swaying against it. */
     bob *= 1.0f - brace;
     lean += (sinf(t * 6.5f) * 1.3f - lean) * brace;
+    /* Knocked over: wobbling as he goes, and a shake to finish. */
+    if (tumble) {
+        bob *= 0.3f;
+        lean += sinf(t * 38.0f) * 1.6f * tb->shake + sinf(t * 22.0f) * 0.8f * tb->whoa;
+    }
 
     /* Hauling boxes: the one in the air, if any. */
     static muse_act_t s_last_act;
@@ -4135,11 +4223,15 @@ void muse_pixel_render(const muse_pose_t *p)
         hop -= sinf((pk_u - PK_CATCH) / (PK_HOLD - PK_CATCH) * 3.1416f) * 1.2f;   /* the catch, a dip */
     }
     /* Downloading: up off the floor for the bar, and over to the left of the stack. */
-    s_pk.rise += ((hauling ? 1.0f : 0.0f) - s_pk.rise) * (1.0f - expf(-dt * 8.0f));
+    if (!tumble) {
+        s_pk.rise += ((hauling ? 1.0f : 0.0f) - s_pk.rise) * (1.0f - expf(-dt * 8.0f));   /* knocked over: as he was */
+    }
     float rise = PK_RISE * s_pk.rise;
     float side_to = hauling || cloud || (paint && toss >= PT_THROW) || found >= FD_SPOT ? 5.0f : paint ? PT_SHIFT
                   : work ? WORK_SIDE[act - WORK_FIRST] : 0.0f;
-    s_work.side += (side_to - s_work.side) * (1.0f - expf(-dt * 8.0f));
+    if (!tumble) {
+        s_work.side += (side_to - s_work.side) * (1.0f - expf(-dt * 8.0f));
+    }
     /* Turned to what he's at, or round to us (avatar_t.turn); eased through
      * two lags in a row, so it sets off and settles gently, in about 0.3 s. */
     float turn_to = 0;
@@ -4163,7 +4255,7 @@ void muse_pixel_render(const muse_pose_t *p)
     if (act == MUSE_ACT_BROWSE && mode == MUSE_MODE_SPEAKING && p->act_progress < 0) {
         turn_to = 0.3f;   /* saying the reply as it browses on: round to us, mostly */
     }
-    if (happy > 0.2f || dizzy > 0.05f || brace > 0.3f) {
+    if (happy > 0.2f || dizzy > 0.05f || brace > 0.3f || (tumble && tb->there <= 0)) {
         turn_to = 0;   /* patted, shaken: round to us */
     }
     float tk = 1.0f - expf(-dt * 16.0f);
@@ -4203,12 +4295,12 @@ void muse_pixel_render(const muse_pose_t *p)
         draw_headboard();
         draw_pillow(32.0f, 12.0f);
     }
-    if (mode == MUSE_MODE_LISTENING && !act) {
+    if (mode == MUSE_MODE_LISTENING && !act && !tumble) {
         draw_rings(j.cx, j.fy + 2, t, level, 0.9f);
-    } else if (mode == MUSE_MODE_SPEAKING && !act) {
+    } else if (mode == MUSE_MODE_SPEAKING && !act && !tumble) {
         draw_rings(j.cx, j.fy + 2, t, level, 0.6f);
     }
-    if (!bed) {
+    if (!bed && !tumble) {
         draw_shadow(j.cx, 58.5f - rise, 13.0f - hop * 0.8f + 3.0f * brace);
     }
 
@@ -4495,6 +4587,37 @@ void muse_pixel_render(const muse_pose_t *p)
         sh_y[1] = j.cy + 9.0f;
         arms[1] = arm_to(sh_x[1], sh_y[1], mug_x + 1.0f, mug_y + 4.0f);
     }
+    if (tumble) {
+        /* Knocked over: flailing; flat out; a paw pushing off the floor (on
+         * the side he's tilted to), the other out for balance; patting
+         * himself down, one paw then the other; arms up, all set back. */
+        float wig = sinf(t * 30.0f);
+        limb_t flail[2] = { arm_to(slx, shy, j.cx - 21.0f, j.cy - 10.0f + 3.0f * wig),
+                            arm_to(srx, shy, j.cx + 21.0f, j.cy - 10.0f - 3.0f * wig) };
+        limb_t limp[2] = { arm_to(slx, shy, j.cx - 17.0f, j.cy + 8.0f), arm_to(srx, shy, j.cx + 17.0f, j.cy + 8.0f) };
+        for (int a = 0; a < 2; a++) {
+            arms[a] = limb_mix(arms[a], flail[a], tb->whoa);
+            arms[a] = limb_mix(arms[a], limp[a], tb->daze);
+        }
+        if (tb->up > 0) {
+            int push = tb->tilt > 0 ? 1 : 0;
+            float side = push ? 1.0f : -1.0f;
+            arms[push] = limb_mix(arms[push], arm_to(push ? srx : slx, shy, j.cx + side * 19.0f, j.cy + 9.0f), tb->up);
+            arms[1 - push] = limb_mix(arms[1 - push], arm_to(push ? slx : srx, shy, j.cx - side * 22.0f, j.cy - 8.0f), tb->up);
+        }
+        if (tb->pat > 0) {
+            int hit = (int)(t * 6.0f) & 1;
+            float side = hit ? 1.0f : -1.0f, k = fracf(t * 6.0f);
+            arms[hit] = limb_mix(arms[hit], arm_to(hit ? srx : slx, shy, j.cx + side * (6.0f + 2.0f * sinf(k * TAU / 2)), j.cy + 7.0f),
+                                 tb->pat);
+            arms[1 - hit] = limb_mix(arms[1 - hit], arm_to(hit ? slx : srx, shy, j.cx - side * 16.0f, j.cy + 6.0f), tb->pat);
+        }
+        if (tb->there > 0) {
+            float up = sinf(tb->there * 3.1416f), w = sinf(t * 14.0f) * 0.25f;
+            arms[0] = limb_mix(arms[0], (limb_t){ j.cx - adx - 1.0f, j.cy - 4.0f, 2.4f + w }, up);
+            arms[1] = limb_mix(arms[1], (limb_t){ j.cx + adx + 1.0f, j.cy - 4.0f, -2.4f - w }, up);
+        }
+    }
     if (brace > 0) {
         /* Arms out for balance, see-sawing against the sway. */
         float bal = sinf(t * 6.5f) * 2.5f;
@@ -4671,6 +4794,40 @@ void muse_pixel_render(const muse_pose_t *p)
         style = EYES_NORMAL;
         open = 0;
         mouth = MOUTH_FLAT;
+    }
+    if (tumble) {
+        /* Knocked over: whoa; oof, as he lands; seeing stars; teeth set,
+         * getting up; dusting off; eyes shut for a shake; and pleased. */
+        brows = 0;
+        if (tb->there > 0 && tb->there < 1) {
+            style = EYES_HAPPY;
+            mouth = MOUTH_GRIN;
+        } else if (tb->shake > 0.1f) {
+            style = EYES_NORMAL;
+            open = 0;
+            mouth = MOUTH_FLAT;
+        } else if (tb->pat > 0) {
+            style = EYES_NORMAL;
+            open = 1.0f - blink;
+            mouth = MOUTH_SMILE;
+        } else if (tb->up > 0.3f) {
+            style = EYES_NORMAL;
+            open = 0.7f;
+            mouth = MOUTH_GRIT;
+            brows = 3;
+        } else if (tb->daze > 0.3f) {
+            style = fracf(t * 6.0f) < 0.5f ? EYES_SWIRL_A : EYES_SWIRL_B;
+            mouth = MOUTH_WOBBLE;
+            mouth_open = fracf(t * 4.0f) < 0.5f ? 0.0f : 1.0f;
+        } else if (tb->squash < -0.1f) {
+            style = EYES_X;   /* oof */
+            mouth = MOUTH_O;
+        } else if (tb->whoa > 0.3f) {
+            style = EYES_WIDE;
+            open = 1;
+            mouth = MOUTH_O;
+            brows = 2;
+        }
     }
 
     for (int e = 0; e < 2; e++) {
@@ -4995,10 +5152,10 @@ void muse_pixel_render(const muse_pose_t *p)
     draw_sparkles(p, j.cx, j.cy, true, spk_speed, spk_count);
 
     float top = j.cy - j.b;
-    if ((mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_SPEAKING) && !act) {
+    if ((mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_SPEAKING) && !act && !tumble) {
         draw_waves(j.cx, j.fy + 2, j.a, level, t);
     }
-    if (mode == MUSE_MODE_THINKING && !act) {
+    if (mode == MUSE_MODE_THINKING && !act && !tumble) {
         draw_thought_dots(j.cx + 14, top + 2, t);
     }
     if (act == MUSE_ACT_PHONE_TALK && at > 0.3f) {
@@ -5032,6 +5189,52 @@ void muse_pixel_render(const muse_pose_t *p)
     if (nod > 0.3f) {
         static const char *const Z[] = { "####", "..#.", ".#..", "####" };
         stamp(Z, 4, iround(j.cx + 10), iround(top - nod * 3.0f), C_SPK, C_SPK);   /* nodding off */
+    }
+    if (tumble) {
+        /* Knocked over: stars, a puff off him patting himself down, a
+         * sparkle where he sets back what he was at; all of it turned with
+         * him, then his shadow and the dust on the floor. */
+        if (tb->daze > 0.05f) {
+            draw_stars(j.cx, top, t, tb->daze);
+        }
+        if (tb->pat > 0) {
+            draw_pat_puff(&j, ((int)(t * 6.0f) & 1) ? 1 : -1, fracf(t * 6.0f));
+        }
+        float set_x = -1, set_y = 0;   /* where it's set back */
+        if (work || (search && found < FD_SPOT)) {
+            set_x = s_work.gone_x;
+            set_y = s_work.gone_y;
+        } else if (paint) {
+            set_x = CV_X + CV / 2.0f;
+            set_y = CV_Y + CV / 2.0f;
+        } else if (act == MUSE_ACT_PACKAGES || unbox || cloud) {
+            set_x = CLOUD_X + CLOUD_W / 2.0f;
+            set_y = 40.0f;
+        } else if (assemble) {
+            set_x = pic_x + PIC / 2.0f;
+            set_y = pic_y + PIC / 2.0f;
+        } else if (phone) {
+            set_x = phone_x + PHONE_W / 2.0f;
+            set_y = phone_y + PHONE_H / 2.0f;
+        } else if (tea) {
+            set_x = mug_x + MUG_W / 2.0f;
+            set_y = mug_y + MUG_H / 2.0f;
+        }
+        if (set_x >= 0 && tb->there > 0 && tb->there < 0.6f) {
+            float k = tb->there / 0.6f;
+            for (int i = 0; i < 4; i++) {
+                float a = i * 1.5708f + 0.785f;
+                draw_sparkle(iround(set_x + cosf(a) * (3.0f + k * 6.0f)), iround(set_y + sinf(a) * (3.0f + k * 6.0f)), 1.0f - k,
+                             true);
+            }
+        }
+        float fx = 32.0f - s_work.side, fy = 57.0f - PK_RISE * s_pk.rise;   /* his feet as drawn (muse_tumble_pose_t) */
+        float dx = tb->x - s_work.side, dy = tb->y - PK_RISE * s_pk.rise;
+        tumble_turn(tb, fx, fy, dx, dy);
+        tumble_shadow(tb, dx, dy);
+        if (tb->dust > 0) {
+            draw_dust_puff(tb->dust_x - s_work.side, tb->dust_y, tb->dust);
+        }
     }
     if (p->battery && !p->charging && p->battery_pct <= BATT_LOW) {
         draw_low_badge(7, 57, p->battery_pct, t);   /* on the floor at his left */

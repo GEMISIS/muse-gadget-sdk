@@ -67,6 +67,7 @@
 #include "muse_logring.h"
 #include "muse_style.h"
 #include "muse_text.h"
+#include "muse_tumble.h"
 #if CONFIG_MUSE_TTS_PICO
 #include "muse_tts.h"
 #endif
@@ -272,10 +273,12 @@ static int s_from_px, s_from_y, s_to_px, s_to_y;
  * hand out of the pocket, PHOTO_STOW). The photo is an LVGL card on the face,
  * his arms LVGL lines from his shoulders to its bottom corners; the renderer
  * draws the reach and the pocket (muse_pose_t). Put away, it stays in the
- * pocket (kept) a while, for a pat to take it out again. The compact layout
- * skips all that and shows it full size straight away.
+ * pocket (kept) a while, for a pat to take it out again. Knocked out of
+ * his hands as the screen turns (muse_tumble.h), it falls (PHOTO_FALLEN), and
+ * he takes it out again once he's up. The compact layout skips all that and
+ * shows it full size straight away.
  */
-typedef enum { PHOTO_NONE, PHOTO_REACH, PHOTO_RISE, PHOTO_HOLD, PHOTO_LOWER, PHOTO_STOW } photo_phase_t;
+typedef enum { PHOTO_NONE, PHOTO_REACH, PHOTO_RISE, PHOTO_HOLD, PHOTO_LOWER, PHOTO_STOW, PHOTO_FALLEN } photo_phase_t;
 
 typedef struct {
     uint16_t *full, *held;      /* RGB565, PSRAM: fitting the screen, and held up */
@@ -292,6 +295,8 @@ EXT_RAM_BSS_ATTR static struct {
     bool upped;                 /* muse_present_up said for it */
     bool kept;                  /* PHOTO_NONE: px is the one put away, */
     float kept_at;              /* then */
+    int32_t fell_x, fell_y;     /* PHOTO_FALLEN: where the card was as it went */
+    bool fell_shown;            /* and whether it was up at all */
     photo_px_t px;              /* shown */
     photo_px_t next;            /* from muse_ui_present, under s_image_mutex */
     lv_image_dsc_t full_dsc, held_dsc;
@@ -623,12 +628,8 @@ static void build_button_icons(lv_obj_t *face)
  * the right way up (add_hides); turned, an icon by the top edge goes to
  * the bottom one.
  */
-static void update_flip(float now)
+static void apply_turn(int turn)
 {
-    int turn = muse_board->set_turn ? muse_orient_turn(now) : 0;
-    if (turn == s_turn) {
-        return;
-    }
     s_turn = turn;
     muse_board->set_turn(turn);
     if (s_mic_icon) {
@@ -642,6 +643,152 @@ static void update_flip(float now)
 }
 
 /*
+ * Not straight round, though (muse_tumble.h): with Muse on screen, the turn
+ * knocks him over, and the screen turns, dimmed, while he's down; with
+ * anything else up (locked, a menu, settings, an image, the widgets) it just
+ * dips dark, turns and comes back. Turned before he's sure of it, he
+ * wobbles (s_teeter). A new turn partway through goes on from wherever it's
+ * got to; asleep, straight round. In PSRAM: read once a frame.
+ */
+#define TEETER_IN_S 0.25f
+#define TEETER_OUT_S 0.3f
+#define DIM_SLEW_S 0.1f     /* the dimming goes no quicker than this, from dark to lit */
+#define JOSTLE_S 1.4f       /* in bed: sat up, seeing stars, this long after the dip */
+
+EXT_RAM_BSS_ATTR static muse_tumble_t s_tumble;
+EXT_RAM_BSS_ATTR static muse_tumble_frame_t s_tumbled;   /* this frame's (its pose, the teeter's between) */
+EXT_RAM_BSS_ATTR static float s_dim;                     /* the screen dimmed for it, 0..1, as shown */
+EXT_RAM_BSS_ATTR static int s_bright_base;               /* the brightness, undimmed (update_sleep), */
+EXT_RAM_BSS_ATTR static bool s_bright_known;             /* once there's one */
+EXT_RAM_BSS_ATTR static float s_teeter, s_flip_last;
+EXT_RAM_BSS_ATTR static float s_jostle_at;               /* in bed: when the turn woke him (0 none) */
+static volatile bool s_tumble_req;                       /* muse_ui_tumble */
+
+void muse_ui_tumble(void)
+{
+    s_tumble_req = true;
+}
+
+static bool face_shows(void);
+static bool photo_shown(void);
+static void photo_knock(float now);
+static void apply_brightness(int pct);
+
+static void apply_dimmed(void)
+{
+    if (s_bright_known && !s_dark) {
+        apply_brightness((int)lroundf(s_bright_base * (1.0f - s_dim)));
+    }
+}
+
+/* What he was at shows (none of it while he's down). */
+static bool tumble_props(void)
+{
+    return !(s_tumble.kind == MUSE_TUMBLE_FALL && s_tumbled.busy && !s_tumbled.props);
+}
+
+static void update_flip(float now)
+{
+    if (!muse_board->set_turn) {
+        return;
+    }
+    int turn = muse_orient_turn(now);
+    float dt = now - s_flip_last;
+    dt = dt < 0 || dt > 0.2f ? 0.05f : dt;
+    s_flip_last = now;
+    if (muse_state_asleep()) {
+        /* Dark: straight round, nothing to see. */
+        s_tumble.kind = MUSE_TUMBLE_NONE;
+        s_tumbled = (muse_tumble_frame_t){ .props = true };
+        s_dim = 0;
+        s_teeter = 0;
+        if (turn != s_turn) {
+            apply_turn(turn);
+        }
+        return;
+    }
+    bool face = face_shows();
+    bool asked = s_tumble_req;
+    s_tumble_req = false;
+    if (asked && face && !s_night && s_tumble.kind == MUSE_TUMBLE_NONE) {
+        ESP_LOGI(TAG, "Muse knocked over (the bench)");
+        muse_tumble_start(&s_tumble, MUSE_TUMBLE_FALL, now, s_turn, s_turn, 0, s_tumbled.pose.on ? &s_tumbled : NULL);
+        photo_knock(now);
+    }
+    int going = s_tumble.kind != MUSE_TUMBLE_NONE ? s_tumble.to : s_turn;
+    if (turn != going) {
+        bool fall = face && !s_night;
+        int quarters = ((turn - s_turn) & 3) == 3 ? -1 : (turn - s_turn) & 3;
+        const muse_tumble_frame_t *was = s_tumble.kind != MUSE_TUMBLE_NONE || s_tumbled.pose.on ? &s_tumbled : NULL;
+        ESP_LOGI(TAG, "turning %d -> %d (%s)", s_turn, turn, fall ? "Muse knocked over" : "a dip");
+        muse_tumble_start(&s_tumble, fall ? MUSE_TUMBLE_FALL : MUSE_TUMBLE_DIP, now, s_turn, turn,
+                          MUSE_ORIENT_SPIN * quarters, was);
+        if (fall) {
+            photo_knock(now);
+        } else if (face && s_night) {
+            s_jostle_at = now + MUSE_TUMBLE_DIP_DOWN_S + MUSE_TUMBLE_DIP_HOLD_S;   /* woken by it, in bed */
+        }
+    }
+    float dim = 0;
+    if (s_tumble.kind != MUSE_TUMBLE_NONE) {
+        s_tumbled = muse_tumble_step(&s_tumble, now);
+        dim = s_tumbled.dim;
+        if (s_tumbled.turned && s_turn != s_tumble.to) {
+            s_dim = 1;   /* dark before it turns, whatever the slew */
+            apply_dimmed();
+            apply_turn(s_tumble.to);
+        }
+        if (s_tumbled.bump) {
+            muse_voice_earcon(MUSE_EARCON_BUMP);
+        }
+        if (s_tumbled.boing) {
+            muse_voice_earcon(MUSE_EARCON_BOING);
+        }
+        if (!s_tumbled.busy) {
+            s_tumble.kind = MUSE_TUMBLE_NONE;
+            s_tumbled = (muse_tumble_frame_t){ .props = true };
+        }
+    }
+    float step = dt / DIM_SLEW_S;
+    s_dim = dim > s_dim + step ? s_dim + step : dim < s_dim - step ? s_dim - step : dim;
+
+    /* Turned, not sure of it yet: a wobble, Muse up and nothing in his hands. */
+    int lean = muse_orient_leaning();
+    bool wobble = lean >= 0 && lean != s_turn && face && !s_night && !photo_shown();
+    s_teeter += wobble ? dt / TEETER_IN_S : -dt / TEETER_OUT_S;
+    s_teeter = s_teeter < 0 ? 0 : s_teeter > 1 ? 1 : s_teeter;
+    if (s_tumble.kind == MUSE_TUMBLE_NONE) {
+        s_tumbled.pose = muse_tumble_teeter(ease_in_out(s_teeter), now);
+    }
+}
+
+/* Muse knocked over, or wobbling, for the frame (pose_act and pose_time
+ * done): what he was at taken from him while he's down. In bed, woken a
+ * moment instead, seeing stars. */
+static void pose_tumble(muse_pose_t *pose, float now)
+{
+    if (pose->bed) {
+        float jt = now - s_jostle_at;
+        if (s_jostle_at > 0 && jt >= 0 && jt < JOSTLE_S) {
+            float dizzy = 1.0f - jt / JOSTLE_S;
+            pose->dizzy = dizzy > pose->dizzy ? dizzy : pose->dizzy;
+        }
+        return;
+    }
+    if (s_tumble.kind == MUSE_TUMBLE_DIP || !s_tumbled.pose.on) {
+        return;
+    }
+    pose->tumble = s_tumbled.pose;
+    pose->dizzy = 0;
+    pose->brace = 0;
+    pose->plugged = 0;
+    if (!s_tumbled.props) {
+        pose->act = MUSE_ACT_NONE;
+        pose->tea = false;
+    }
+}
+
+/*
  * A pat: Muse hops for joy, and between turns says its last reply again
  * (shown again, if replies aren't spoken now). Asleep, the cover takes the
  * tap and only wakes the screen.
@@ -649,6 +796,7 @@ static void update_flip(float now)
 static bool photo_shown(void);
 static bool photo_out_again(float now, const char *why);
 static void photo_put_away(float now, const char *why);
+static void photo_place(float rise, float now);
 
 EXT_RAM_BSS_ATTR static float s_lock_pat_at;   /* Muse tapped while locked: his battery shows (0: not yet) */
 static volatile bool s_lock_prompt;             /* the talk button, locked: the keypad, next frame */
@@ -2011,6 +2159,13 @@ static void photo_put_away(float now, const char *why)
         s_photo.phase = PHOTO_LOWER;
         s_photo.at = now;
         break;
+    case PHOTO_FALLEN:
+        /* Dropped: in the pocket, as if put away. */
+        s_photo.phase = PHOTO_NONE;
+        s_photo.kept = true;
+        s_photo.kept_at = now;
+        photo_place(-1, now);
+        break;
     default:
         return;
     }
@@ -2246,6 +2401,13 @@ static void unbox_tick(muse_mode_t mode, float now)
     float dt = now - s_unbox.last;
     dt = dt < 0 || dt > 0.2f ? 0.05f : dt;
     s_unbox.last = now;
+    if (!tumble_props()) {
+        /* Knocked over: it waits for him (the stage's clock stopped). */
+        s_unbox.at += dt;
+        if (s_unbox.full_at >= 0) {
+            s_unbox.full_at += dt;
+        }
+    }
     /* The phase first: the photo's handed over before it lets go. */
     float progress;
     muse_present_phase_t phase = unbox_phase(now, &progress);
@@ -2435,6 +2597,62 @@ static bool unbox_busy(void)
 }
 #endif
 
+/* Knocked out of his hands as the screen turns (update_flip): it falls
+ * the way the board went, gone by the time the screen's turned. */
+#define PHOTO_FALL_S 0.5f
+
+static void photo_knock(float now)
+{
+    if (!s_photo_card) {
+        return;
+    }
+    if (s_photo.phase == PHOTO_LOWER || s_photo.phase == PHOTO_STOW) {
+        /* On its way into the pocket: in it. */
+        s_photo.phase = PHOTO_NONE;
+        s_photo.kept = true;
+        s_photo.kept_at = now;
+        photo_place(-1, now);
+        return;
+    }
+    if (s_photo.phase != PHOTO_REACH && s_photo.phase != PHOTO_RISE && s_photo.phase != PHOTO_HOLD) {
+        return;
+    }
+    ESP_LOGI(TAG, "photo knocked out of his hands");
+    sharpen_stop();
+    s_photo.fell_shown = !lv_obj_has_flag(s_photo_card, LV_OBJ_FLAG_HIDDEN);
+    s_photo.fell_x = lv_obj_get_x(s_photo_card);
+    s_photo.fell_y = lv_obj_get_y(s_photo_card);
+    s_photo.phase = PHOTO_FALLEN;
+    s_photo.at = now;
+}
+
+static void photo_fall(float now)
+{
+    float k = (now - s_photo.at) / PHOTO_FALL_S;
+    bool on = s_photo.fell_shown && !s_tumbled.turned && k < 1;
+    show_obj(s_photo_card, on);
+    for (int a = 0; a < 2; a++) {
+        show_obj(s_arm[a][0], false);
+        show_obj(s_arm[a][1], false);
+        show_obj(s_paw[a], false);
+    }
+    if (!on) {
+        return;
+    }
+    /* Down is the turned screen's: (0, 1) there, turned back to the screen as it is. */
+    float d = k * k * s_h * 0.7f;
+    lv_obj_set_pos(s_photo_card, s_photo.fell_x - (int32_t)lroundf(sinf(s_tumble.spin) * d),
+                   s_photo.fell_y + (int32_t)lroundf(cosf(s_tumble.spin) * d));
+}
+
+/* Muse himself is what's on screen (frame_tick draws him): nothing over him. */
+static bool face_shows(void)
+{
+    return !muse_lock_locked() && !muse_menu_is_open() && !muse_power_menu_is_open() && !muse_dialog_is_open()
+           && !s_image_dsc.data && !photo_full_shown() && !muse_widget_ui_sheet_up()
+           && (!s_tv || lv_obj_get_scroll_x(s_tv) == FACE_COL * s_w);
+}
+
 /*
  * Each frame: takes a new image, moves the phases on, puts the photo away
  * when it's time, and places it. Returns how far Muse's hand is in his pocket
@@ -2445,7 +2663,8 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
     *holding = false;
     /* Out (on its way up, or up): taps anywhere put it away, and a sharper
      * copy may take its place. Going down, it's on its way back already. */
-    bool out = s_photo.phase == PHOTO_REACH || s_photo.phase == PHOTO_RISE || s_photo.phase == PHOTO_HOLD;
+    bool out = s_photo.phase == PHOTO_REACH || s_photo.phase == PHOTO_RISE || s_photo.phase == PHOTO_HOLD
+               || s_photo.phase == PHOTO_FALLEN;
     s_photo_out = out;
     if (s_photo_dismiss && out != !lv_obj_has_flag(s_photo_dismiss, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_set_flag(s_photo_dismiss, LV_OBJ_FLAG_HIDDEN, !out);
@@ -2572,6 +2791,13 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
             photo_full_hide(now);
         }
         break;
+    case PHOTO_FALLEN:
+        if (tumble_props()) {
+            /* Up again: out of the pocket it comes, as at first. */
+            s_photo.phase = PHOTO_REACH;
+            s_photo.at = now;
+        }
+        break;
     case PHOTO_STOW:
         if (now - s_photo.at >= PHOTO_STOW_S) {
             /* In the pocket: kept a while, for a pat to take it out again. */
@@ -2603,6 +2829,9 @@ static float photo_tick(muse_mode_t mode, float mode_t, float now, bool *holding
     case PHOTO_STOW:
         reach = 1 - ease_in_out(phase_t(now, PHOTO_STOW_S));
         break;
+    case PHOTO_FALLEN:
+        photo_fall(now);
+        return 0;
     default:
         break;
     }
@@ -2837,8 +3066,10 @@ static bool update_sleep(void)
             }
         }
         /* The slider's preview shows as set; otherwise the gadget mode may
-         * dim or brighten it. */
-        apply_brightness(s_preview_brightness >= 0 ? target : muse_gadget_mode_brightness(target));
+         * dim or brighten it. The screen turning dims it a moment (s_dim). */
+        s_bright_base = s_preview_brightness >= 0 ? target : muse_gadget_mode_brightness(target);
+        s_bright_known = true;
+        apply_dimmed();
     }
     return s_dark;
 }
@@ -3877,8 +4108,9 @@ static void frame_tick(lv_timer_t *timer)
     pose_act(&pose, mode, mode_t, now);
     act_drop(&pose, now);
     pose_time(&pose, mode);
+    pose_tumble(&pose, now);
     /* Asleep in bed while idle; it sits up to listen and answer, or to a pat
-     * (or an earthquake, or being plugged in). */
+     * (or an earthquake, or being plugged in, or the screen turning). */
     pose.sleepy = pose.bed && mode == MUSE_MODE_IDLE && pose.happy < 0.05f && pose.dizzy <= 0.0f
                   && pose.plugged <= 0.0f && pose.brace <= 0.0f;
     muse_pixel_render(&pose);

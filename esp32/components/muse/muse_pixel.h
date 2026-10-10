@@ -58,6 +58,26 @@ typedef enum {
     MUSE_ACT_COUNT,
 } muse_act_t;
 
+/*
+ * Knocked over by the screen turning with the board (muse_ui.c; the timeline
+ * is muse_tumble.h's). While `on`, the whole picture he's drawn in is turned
+ * `tilt` radians clockwise about his feet (grid (32, 57) standing), which go
+ * to (x, y), and squashed by `squash` about them as he lands (-: stretched).
+ * Over that, each 0..1: `whoa`, the wobble before he goes, arms flung out,
+ * eyes wide; `daze`, lying there seeing stars; `dust`, a puff of dust going
+ * out from (dust_x, dust_y), where he hit the floor or pushed off it; `up`,
+ * getting up, teeth set; `pat`, dusting himself off, and `shake`, a shake to
+ * finish; `there`, all set back, pleased with himself. `floor`: the screen's
+ * bottom is the floor (the screen's turned), so his shadow's on it. What he
+ * was at (act, the mug, the photo) the UI takes away and gives back.
+ */
+typedef struct {
+    bool on;
+    bool floor;
+    float tilt, x, y, squash;
+    float whoa, daze, dust, dust_x, dust_y, up, pat, shake, there;
+} muse_tumble_pose_t;
+
 typedef struct {
     muse_mode_t mode;
     float t;         /* seconds since boot */
@@ -158,6 +178,9 @@ typedef struct {
     /* MUSE_ACT_BROWSE: the site's colour (0xRRGGBB) for its page's header
      * and the address bar's icon; 0 for none yet (starting up). */
     uint32_t browse_site;
+    /* Knocked over by the screen turning (muse_tumble_pose_t). A renderer
+     * may leave it alone: he just goes round with the screen. */
+    muse_tumble_pose_t tumble;
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */
