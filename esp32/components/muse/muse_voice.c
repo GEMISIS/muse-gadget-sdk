@@ -244,6 +244,8 @@ static bool earcon_play(muse_earcon_t which)
         [MUSE_EARCON_TAP_PRIMARY] = { 16, 1400, 1050 },
         [MUSE_EARCON_ARRIVED] = { 0, 0, 0 },   /* ARRIVED, below */
         [MUSE_EARCON_SHARPER] = { 0, 0, 0 },   /* SHARPER, below */
+        [MUSE_EARCON_BUMP] = { 0, 0, 0 },      /* BUMP, below */
+        [MUSE_EARCON_BOING] = { 0, 0, 0 },     /* BOING, below */
     };
     /* An image here after its reply: C6 then a G6 that rings on, softly. */
     static const struct {
@@ -253,6 +255,11 @@ static bool earcon_play(muse_earcon_t which)
     static const struct {
         uint16_t ms, f;
     } SHARPER[] = { { 45, 2093 }, { 45, 2637 }, { 120, 3136 } };
+    /* Knocked over, and back up (muse_tumble.h): a thud falling away low, and
+     * a spring gliding up from it, an octave and on, each softly. */
+    static const struct glide {
+        uint16_t ms, f0, f1;
+    } BUMP[] = { { 40, 520, 360 }, { 90, 300, 170 } }, BOING[] = { { 70, 330, 620 }, { 130, 520, 1040 } };
     /* Plugged in: E5 G#5 B5 plucked, up to an E6 that rings on, 0.5 s in all. */
     static const struct {
         uint16_t ms, f;
@@ -278,6 +285,13 @@ static bool earcon_play(muse_earcon_t which)
     if (which == MUSE_EARCON_SHARPER) {
         for (size_t k = 0; k < sizeof(SHARPER) / sizeof(SHARPER[0]); k++) {
             earcon_note(SHARPER[k].f, SHARPER[k].f, SHARPER[k].ms, level * 0.35f);
+        }
+        return true;
+    }
+    if (which == MUSE_EARCON_BUMP || which == MUSE_EARCON_BOING) {
+        const struct glide *notes = which == MUSE_EARCON_BUMP ? BUMP : BOING;
+        for (size_t k = 0; k < 2; k++) {
+            earcon_note(notes[k].f0, notes[k].f1, notes[k].ms, level * (which == MUSE_EARCON_BUMP ? 0.6f : 0.4f));
         }
         return true;
     }

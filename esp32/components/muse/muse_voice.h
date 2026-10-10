@@ -59,6 +59,8 @@ typedef enum {
     MUSE_EARCON_TAP_PRIMARY,   /* the same for Send, Done, OK: a lower, rounder tock */
     MUSE_EARCON_ARRIVED,  /* an image come after its reply: a gentle two-note ding, up a fifth */
     MUSE_EARCON_SHARPER,  /* a sharper copy of the image shown, in its place: a soft three-note glint */
+    MUSE_EARCON_BUMP,     /* Muse knocked over by the screen turning (muse_tumble.h), landing: a low, soft "oof" */
+    MUSE_EARCON_BOING,    /* and springing back up: a quick "boing" up an octave */
 } muse_earcon_t;
 
 void muse_voice_earcon(muse_earcon_t which);

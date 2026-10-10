@@ -110,7 +110,9 @@ menu "Waveshare 2.16 extras: microSD, clock, motion"
         help
             Charging stood on its keys, or carried upside down, the
             picture and touch turn 180 degrees so they read right way up
-            (muse_orient.c), in every mode.
+            (muse_orient.c), in every mode. With Muse on screen the turn
+            knocks him over, and he gets up the new way round
+            (muse_tumble.h); otherwise the screen dips dark as it turns.
 
     config MUSE_GADGET_HOME_EXTRAS
         bool "Clock and battery on the face"

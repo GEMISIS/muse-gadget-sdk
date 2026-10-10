@@ -37,6 +37,11 @@ bool muse_ui_dark(void);
  * and is dizzy for a moment after. */
 void muse_ui_quake(void);
 
+/* From any task (bench, ">tumble"): Muse knocked over where he stands, as
+ * the screen turning does (muse_tumble.h) but with no turn, if he's on
+ * screen at the next frame. */
+void muse_ui_tumble(void);
+
 /* From any task (just plugged in to charge, muse_input.c): Muse cheers for
  * about two seconds (muse_pose_t.plugged), if the face is drawn and idle
  * within a moment, the screen waking meanwhile; otherwise it's dropped. */

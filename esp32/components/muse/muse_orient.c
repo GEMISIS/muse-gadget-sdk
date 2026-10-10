@@ -74,6 +74,11 @@ static int turn_of(const float g[3])
     return a > b ? (up > 0 ? 0 : 2) : (side > 0 ? 1 : 3);
 }
 
+int muse_orient_leaning(void)
+{
+    return s_want;
+}
+
 int muse_orient_turn(float now)
 {
     if (now < s_next) {
