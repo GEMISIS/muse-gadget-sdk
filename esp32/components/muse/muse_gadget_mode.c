@@ -232,7 +232,7 @@ static void apply(muse_gadget_mode_t mode, const char *why)
     ESP_LOGI(TAG, "%s mode (%s): each chat hears it with its next message", NAMES[mode], why);
     muse_settings_set_gadget_mode(mode);
     muse_lock_mode_entered(mode);   /* a mode that asks for the passcode */
-    muse_state_set_caption("%s MODE", mode == MUSE_GADGET_DESK ? "DESK" : mode == MUSE_GADGET_NIGHT ? "NIGHT" : "ON-THE-GO");
+    /* No caption naming it: the face's look says which, and the caption's line is the pill's. */
 }
 
 void muse_gadget_mode_pick(muse_gadget_mode_t mode)
